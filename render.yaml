@@ -1,0 +1,14 @@
+# render.yaml
+
+services:
+  - type: web
+    name: vite-react-shadcn-app
+    env: node
+    plan: free
+    region: ohio
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: node server.js
+    envVars:
+      - key: NODE_VERSION
+        value: 18.18.0
+    autoDeploy: true
