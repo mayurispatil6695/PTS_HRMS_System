@@ -14,9 +14,12 @@ import { Calendar as CalendarComp } from '../../ui/calendar';
 import { format } from 'date-fns';
 import { cn } from '../../../lib/utils';
 import { toast } from 'sonner';
-import type { Employee } from './EmployeeList'; // adjust path if needed
+import type { Employee as BaseEmployee } from './EmployeeList';
 
-
+// ✅ Extend Employee to include role (since it's missing in the base type)
+interface Employee extends BaseEmployee {
+  role?: 'employee' | 'team_leader' | 'team_manager' | 'client';
+}
 
 interface NewEmployee {
   name: string;
@@ -36,15 +39,15 @@ interface NewEmployee {
   bankAccountNumber: string;
   bankName: string;
   ifscCode: string;
-  role: 'employee' | 'team_leader' | 'team_manager' | 'client';   // ✅ new
+  role: 'employee' | 'team_leader' | 'team_manager' | 'client';
 }
 
 interface AddEmployeeDialogProps {
   departments: string[];
-  designations: string[]; // ✅ add this
+  designations: string[];
   onSuccess?: (employeeUid: string) => void;
   onAddEmployee?: (newEmployee: NewEmployee) => Promise<boolean>;
-  employeeToEdit?: Employee|null;
+  employeeToEdit?: Employee | null;
   onEditSuccess?: () => void;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
@@ -223,7 +226,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         bankAccountNumber: employeeToEdit.bankDetails?.accountNumber || '',
         bankName: employeeToEdit.bankDetails?.bankName || '',
         ifscCode: employeeToEdit.bankDetails?.ifscCode || '',
-          role: employeeToEdit.role || 'employee'
+        role: employeeToEdit.role || 'employee'
       });
 
       if (employeeToEdit.department && departmentDesignations[employeeToEdit.department as keyof typeof departmentDesignations]) {
@@ -248,7 +251,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         bankAccountNumber: '',
         bankName: '',
         ifscCode: '',
-         role: 'employee'
+        role: 'employee'
       });
       setDesignations([]);
     }
@@ -324,14 +327,14 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
             bankName: formData.bankName,
             ifscCode: formData.ifscCode
           },
-           role: formData.role,
+          role: formData.role,
           updatedAt: new Date().toISOString()
         };
 
-      const employeeRef = ref(database, `users/${user.id}/employees/${employeeToEdit.id}`);
-await update(employeeRef, employeeData);
+        const employeeRef = ref(database, `users/${user.id}/employees/${employeeToEdit.id}`);
+        await update(employeeRef, employeeData);
         const employeeSelfRef = ref(database, `users/${employeeToEdit.id}/profile`);
-await update(employeeSelfRef, employeeData);
+        await update(employeeSelfRef, employeeData);
 
         toast.success('Employee updated successfully!');
         if (onEditSuccess) onEditSuccess();
@@ -382,18 +385,16 @@ await update(employeeSelfRef, employeeData);
           status: 'active'
         };
 
-       
-const employeeRef = ref(database, `users/${user.id}/employees/${employeeUid}`);
-
-await set(employeeRef, {
-  ...employeeData,
-  adminUid: user.id   // 🔥 VERY IMPORTANT for login
-});
-const employeeSelfRef = ref(database, `users/${employeeUid}/profile`);
-await set(employeeSelfRef, {
-  ...employeeData,
-  adminUid: user.id   // 🔥 IMPORTANT
-});
+        const employeeRef = ref(database, `users/${user.id}/employees/${employeeUid}`);
+        await set(employeeRef, {
+          ...employeeData,
+          adminUid: user.id
+        });
+        const employeeSelfRef = ref(database, `users/${employeeUid}/profile`);
+        await set(employeeSelfRef, {
+          ...employeeData,
+          adminUid: user.id
+        });
        
         if (onSuccess) onSuccess(employeeUid);
         toast.success('Employee created successfully!');
@@ -401,17 +402,16 @@ await set(employeeSelfRef, {
 
       setOpen(false);
     } catch (err: unknown) {
-  console.error('Error adding/updating employee:', err);
-
-  if (err instanceof Error) {
-    setError(err.message);
-  } else {
-    setError(`Failed to ${employeeToEdit ? 'update' : 'create'} employee account`);
-  }
-  } finally {
-  setLoading(false);   // 🔥 THIS FIXES YOUR ISSUE
-}
-};
+      console.error('Error adding/updating employee:', err);
+      if (err instanceof Error) {
+        setError(err.message);
+      } else {
+        setError(`Failed to ${employeeToEdit ? 'update' : 'create'} employee account`);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -645,9 +645,17 @@ await set(employeeSelfRef, {
                 </SelectContent>
               </Select>
             </div>
+
+            {/* ✅ Role selector – fixed any type */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-700">Role *</label>
-              <Select value={formData.role} onValueChange={(value: any) => setFormData({...formData, role: value})} disabled={loading}>
+              <Select 
+                value={formData.role} 
+                onValueChange={(value: 'employee' | 'team_leader' | 'team_manager' | 'client') => 
+                  setFormData({...formData, role: value})
+                } 
+                disabled={loading}
+              >
                 <SelectTrigger><SelectValue placeholder="Select role" /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="employee">Employee</SelectItem>
@@ -658,7 +666,8 @@ await set(employeeSelfRef, {
               </Select>
             </div>
           </div>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-700">Emergency Contact Name *</label>
               <div className="relative">
