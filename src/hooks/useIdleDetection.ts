@@ -113,14 +113,15 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     }, idleTimeout);
   }, [isIdle, idleTimeout, onIdleStart, onIdleEnd, userId, adminId, employeeName, sendIdleNotification, clearIdleNotification]);
 
+  // ✅ Only updates lastActive – never touches status
   const updateUserActivity = useCallback(async () => {
     if (userId && adminId && !isIdle) {
       try {
         const activityRef = ref(database, `users/${adminId}/employees/${userId}/lastActive`);
         await update(activityRef, {
           timestamp: Date.now(),
-          status: 'active',
           lastSeen: new Date().toISOString()
+          // ❌ No 'status' field here
         });
       } catch (error) {
         console.error('Error updating activity:', error);
