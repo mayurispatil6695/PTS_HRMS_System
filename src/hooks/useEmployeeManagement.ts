@@ -16,7 +16,7 @@ interface Employee {
   isActive: boolean;
   createdAt: string;
   profileImage?: string;
-  role?: string;
+role?: 'employee' | 'team_leader' | 'team_manager' | 'client';
   addedBy?: string;
   adminId?: string;
 }
@@ -29,6 +29,7 @@ interface NewEmployee {
   designation: string;
   password: string;
   profileImage: string;
+   role: 'employee' | 'team_leader' | 'team_manager' | 'client'; // ✅ new
 }
 
 export const useEmployeeManagement = () => {
@@ -44,7 +45,7 @@ export const useEmployeeManagement = () => {
   const { toast } = useToast();
 
   // Check if current user is admin
-  const isAdmin = currentUser?.role === 'admin' || currentUser?.role === 'super_admin' || currentUser?.role === 'Administrator';
+  const isAdmin = currentUser?.role === 'admin';
 
   const departments = [
     'Software Development',
@@ -177,7 +178,7 @@ export const useEmployeeManagement = () => {
         department: newEmployee.department,
         designation: newEmployee.designation,
         employeeId: empId,
-        role: 'employee',
+      role: newEmployee.role || 'employee',      // ✅ role from form
         isActive: true,
         createdAt: new Date().toISOString(),
         hashedPassword: bcrypt.hashSync(newEmployee.password, 10),
@@ -359,8 +360,9 @@ export const useEmployeeManagement = () => {
         emp.department,
         emp.designation,
         emp.employeeId,
+          emp.role || 'employee',
         emp.isActive ? 'Active' : 'Inactive',
-        emp.addedByEmail || emp.addedBy || 'System',
+        emp.addedBy || 'System',
         new Date(emp.createdAt).toLocaleDateString()
       ])
     ].map(row => row.join(',')).join('\n');

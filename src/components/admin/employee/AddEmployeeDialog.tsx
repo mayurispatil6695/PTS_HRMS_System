@@ -36,6 +36,7 @@ interface NewEmployee {
   bankAccountNumber: string;
   bankName: string;
   ifscCode: string;
+  role: 'employee' | 'team_leader' | 'team_manager' | 'client';   // ✅ new
 }
 
 interface AddEmployeeDialogProps {
@@ -179,7 +180,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     employmentType: 'full-time',
     bankAccountNumber: '',
     bankName: '',
-    ifscCode: ''
+    ifscCode: '',
+    role: 'employee' 
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -220,7 +222,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         employmentType: employeeToEdit.employmentType || 'full-time',
         bankAccountNumber: employeeToEdit.bankDetails?.accountNumber || '',
         bankName: employeeToEdit.bankDetails?.bankName || '',
-        ifscCode: employeeToEdit.bankDetails?.ifscCode || ''
+        ifscCode: employeeToEdit.bankDetails?.ifscCode || '',
+          role: employeeToEdit.role || 'employee'
       });
 
       if (employeeToEdit.department && departmentDesignations[employeeToEdit.department as keyof typeof departmentDesignations]) {
@@ -244,7 +247,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         employmentType: 'full-time',
         bankAccountNumber: '',
         bankName: '',
-        ifscCode: ''
+        ifscCode: '',
+         role: 'employee'
       });
       setDesignations([]);
     }
@@ -320,6 +324,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
             bankName: formData.bankName,
             ifscCode: formData.ifscCode
           },
+           role: formData.role,
           updatedAt: new Date().toISOString()
         };
 
@@ -372,7 +377,7 @@ await update(employeeSelfRef, employeeData);
           },
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
-          role: 'employee',
+          role: formData.role,  
           addedBy: user.id,
           status: 'active'
         };
@@ -640,9 +645,20 @@ await set(employeeSelfRef, {
                 </SelectContent>
               </Select>
             </div>
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700">Role *</label>
+              <Select value={formData.role} onValueChange={(value: any) => setFormData({...formData, role: value})} disabled={loading}>
+                <SelectTrigger><SelectValue placeholder="Select role" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="employee">Employee</SelectItem>
+                  <SelectItem value="team_leader">Team Leader</SelectItem>
+                  <SelectItem value="team_manager">Team Manager</SelectItem>
+                  <SelectItem value="client">Client</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-700">Emergency Contact Name *</label>
               <div className="relative">

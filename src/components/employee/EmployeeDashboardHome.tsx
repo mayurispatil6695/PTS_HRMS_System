@@ -47,6 +47,8 @@ interface AttendanceRecord {
   totalHours?: string;
   markedLateBy?: string;
   markedLateAt?: string;
+  markedHalfDayBy?: string;
+  markedHalfDayAt?: string;
   department?: string;
   designation?: string;
   selfie?: string;
@@ -150,6 +152,18 @@ interface FirebaseProjectData {
   [key: string]: unknown;
 }
 
+interface PunchOutUpdates {
+  punchOut: string;
+  timestamp: number;
+  selfieOut: string;
+  locationOut?: { lat: number; lng: number; name: string };
+  status?: string;
+  markedLateBy?: string | null;
+  markedLateAt?: string | null;
+  markedHalfDayBy?: string | null;
+  markedHalfDayAt?: string | null;
+}
+
 const EmployeeDashboardHome = () => {
   const { user } = useAuth();
   const [todayAttendance, setTodayAttendance] = useState<AttendanceRecord | null>(null);
@@ -159,7 +173,7 @@ const EmployeeDashboardHome = () => {
   const [showSelfieCapture, setShowSelfieCapture] = useState(false);
   const [pendingPunchType, setPendingPunchType] = useState<'in' | 'out' | null>(null);
   const [currentLocation, setCurrentLocation] = useState<{ lat: number; lng: number; name: string } | null>(null);
-  const [employeeProfile, setEmployeeProfile] = useState<{ workMode?: string } | null>(null); // NEW: store employee profile
+  const [employeeProfile, setEmployeeProfile] = useState<{ workMode?: string } | null>(null);
   const [stats, setStats] = useState({
     attendanceRate: 0,
     leavesUsed: 0,
@@ -204,6 +218,53 @@ const EmployeeDashboardHome = () => {
     { icon: Calendar, label: 'My Meetings', color: 'bg-orange-600 hover:bg-orange-700', onClick: () => navigate('/employee/meetings') },
   ]);
 
+  // Helper function to convert time string to minutes
+  const convertTimeToMinutes = (timeStr: string): number => {
+    try {
+      const [time, period] = timeStr.split(' ');
+      const [hours, minutes] = time.split(':').map(Number);
+      let totalHours = hours;
+      
+      if (period === 'PM' && hours < 12) {
+        totalHours += 12;
+      } else if (period === 'AM' && hours === 12) {
+        totalHours = 0;
+      }
+      
+      return totalHours * 60 + minutes;
+    } catch (error) {
+      console.error('Error converting time:', error);
+      return 0;
+    }
+  };
+
+  // Helper function to calculate total worked minutes (excluding breaks)
+  const calculateTotalWorkedMinutes = (
+    punchInTime: string, 
+    punchOutTime: string, 
+    breaks?: Record<string, { breakOut?: string; duration?: string }>
+  ): number => {
+    const punchInMinutes = convertTimeToMinutes(punchInTime);
+    const punchOutMinutes = convertTimeToMinutes(punchOutTime);
+    
+    let totalMinutes = punchOutMinutes - punchInMinutes;
+    if (totalMinutes < 0) {
+      totalMinutes += 24 * 60; // Handle overnight shifts
+    }
+    
+    // Subtract break times
+    if (breaks) {
+      Object.values(breaks).forEach(breakRecord => {
+        if (breakRecord.breakOut && breakRecord.duration) {
+          const [hours, minutes] = breakRecord.duration.split(':').map(Number);
+          totalMinutes -= (hours * 60 + minutes);
+        }
+      });
+    }
+    
+    return totalMinutes;
+  };
+
   // Get current location
   const getCurrentLocation = (): Promise<{ lat: number; lng: number; name: string }> => {
     if (!navigator.geolocation) {
@@ -236,7 +297,7 @@ const EmployeeDashboardHome = () => {
     });
   };
 
-  // NEW: Fetch employee profile to get workMode
+  // Fetch employee profile to get workMode
   useEffect(() => {
     if (!user?.id || !user?.adminUid) return;
 
@@ -245,7 +306,7 @@ const EmployeeDashboardHome = () => {
       const data = snapshot.val();
       if (data) {
         setEmployeeProfile({
-          workMode: data.workMode || 'office' // fallback to office if not set
+          workMode: data.workMode || 'office'
         });
       }
     });
@@ -706,7 +767,6 @@ const EmployeeDashboardHome = () => {
     setPendingPunchType(null);
   };
 
-  // UPDATED: performPunchIn now uses workMode from employeeProfile
   const performPunchIn = async (selfieImage: string, location: { lat: number; lng: number; name: string } | null): Promise<void> => {
     if (!user?.id || !user?.adminUid) {
       toast.error("User information not available");
@@ -728,7 +788,7 @@ const EmployeeDashboardHome = () => {
         punchIn: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
         punchOut: null,
         status: 'present',
-        workMode: employeeProfile?.workMode || 'office', // ✅ Use profile's workMode
+        workMode: employeeProfile?.workMode || 'office',
         timestamp: now.getTime(),
         department: user.department || '',
         designation: user.designation || '',
@@ -769,17 +829,67 @@ const EmployeeDashboardHome = () => {
     setLoading(true);
     try {
       const now = new Date();
-      const updates = {
-        punchOut: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      const punchOutTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      
+      const punchInTime = todayAttendance.punchIn;
+      const totalWorkedMinutes = calculateTotalWorkedMinutes(punchInTime, punchOutTime, todayAttendance.breaks);
+      const totalWorkedHours = totalWorkedMinutes / 60;
+      
+      let newStatus: string = 'present';
+      let isLate = false;
+      let isHalfDay = false;
+      
+      const punchInMinutes = convertTimeToMinutes(punchInTime);
+      const lateThresholdMinutes = 9 * 60 + 40;
+      
+      if (punchInMinutes > lateThresholdMinutes) {
+        isLate = true;
+        newStatus = 'late';
+      }
+      
+      if (totalWorkedHours < 8) {
+        isHalfDay = true;
+        newStatus = 'half-day';
+      }
+      
+      if (isLate && totalWorkedHours >= 8 && !isHalfDay) {
+        newStatus = 'late';
+      }
+      
+      const updates: PunchOutUpdates = {
+        punchOut: punchOutTime,
         timestamp: now.getTime(),
         selfieOut: selfieImage,
         locationOut: location || undefined
       };
       
+      if (newStatus !== 'present') {
+        updates.status = newStatus;
+        
+        if (newStatus === 'late') {
+          updates.markedLateBy = 'System (Auto-detected)';
+          updates.markedLateAt = new Date().toISOString();
+          updates.markedHalfDayBy = null;
+          updates.markedHalfDayAt = null;
+        } else if (newStatus === 'half-day') {
+          updates.markedHalfDayBy = 'System (Auto-detected)';
+          updates.markedHalfDayAt = new Date().toISOString();
+          updates.markedLateBy = null;
+          updates.markedLateAt = null;
+        }
+      }
+      
       const recordRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`);
       await update(recordRef, updates);
       
-      toast.success("Punched out successfully!");
+      if (newStatus === 'late') {
+        toast.success("Punched out! Note: You were marked as late (after 9:40 AM)");
+      } else if (newStatus === 'half-day') {
+        toast.success("Punched out! Note: Marked as half-day (less than 8 hours worked)");
+      } else {
+        toast.success("Punched out successfully!");
+      }
+      
       resetIdleTimer();
     } catch (error) {
       console.error("Punch-out error:", error);

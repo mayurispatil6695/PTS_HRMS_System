@@ -1,17 +1,3 @@
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: 'admin' | 'employee' | 'team_leader';
-  department: string;
-  designation: string;
-  employeeId: string;
-  isActive: boolean;
-  phone?: string;
-  profileImage?: string;
-}
-
 export interface Message {
   id: string;
   senderId: string;
