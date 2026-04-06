@@ -3,11 +3,8 @@ import { Mail, Lock, Eye, EyeOff, AlertCircle } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { motion } from 'framer-motion';
-import { signInWithEmailAndPassword } from 'firebase/auth';
-import { auth } from '../../firebase';
 import { useToast } from '../../hooks/use-toast';
 import { useAuth } from '../../hooks/useAuth';
-import { get, getDatabase, ref, query, orderByChild, equalTo } from 'firebase/database';
 
 interface LoginFormProps {
   userType: 'admin' | 'employee';
@@ -25,45 +22,27 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     if (!email || !password) {
       setError('Please fill in all fields');
       return;
     }
-
     setLoading(true);
     setError(null);
-
     try {
       const result = await login(email, password, userType);
-      
-      if (!result.success) {
-        throw new Error(result.message || 'Login failed');
-      }
-
-      if (onSuccess) {
-        onSuccess();
-      }
-
-      toast({
-        title: "Login Successful",
-        description: `Welcome back!`,
-      });
-
-    } catch (error: any) {
-      console.error('Login error:', error);
-      
+      if (!result.success) throw new Error(result.message || 'Login failed');
+      if (onSuccess) onSuccess();
+      toast({ title: "Login Successful", description: `Welcome back!` });
+    } catch (err: unknown) {
+      console.error('Login error:', err);
       let errorMessage = 'Login failed. Please try again.';
-      if (error.message) {
-        errorMessage = error.message;
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
       }
-
       setError(errorMessage);
-      toast({
-        title: "Login Failed",
-        description: errorMessage,
-        variant: "destructive",
-      });
+      toast({ title: "Login Failed", description: errorMessage, variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -85,9 +64,7 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
       )}
 
       <div className="space-y-2">
-        <label htmlFor="email" className="text-sm font-medium text-gray-700">
-          Email
-        </label>
+        <label htmlFor="email" className="text-sm font-medium text-gray-700">Email</label>
         <div className="relative">
           <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
           <Input
@@ -104,9 +81,7 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
       </div>
 
       <div className="space-y-2">
-        <label htmlFor="password" className="text-sm font-medium text-gray-700">
-          Password
-        </label>
+        <label htmlFor="password" className="text-sm font-medium text-gray-700">Password</label>
         <div className="relative">
           <Lock className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
           <Input
@@ -126,13 +101,10 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
             className="absolute right-3 top-3 text-gray-400 hover:text-gray-600"
             aria-label={showPassword ? "Hide password" : "Show password"}
           >
-            {showPassword ? (
-              <EyeOff className="h-4 w-4" />
-            ) : (
-              <Eye className="h-4 w-4" />
-            )}
+            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
+        {/* ❌ Forgot Password link removed */}
       </div>
 
       <Button 

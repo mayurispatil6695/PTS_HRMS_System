@@ -1,4 +1,5 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+// @refresh reset
+import React, { createContext, useContext, useState, useEffect, useMemo } from 'react';
 import {
   getAuth,
   signInWithEmailAndPassword,
@@ -65,7 +66,7 @@ interface EmployeeData {
   designation?: string;
   status?: string;
   managedBy?: string;
-  role?: 'employee' | 'team_manager' | 'team_leader' | 'client';   // ✅ role can be stored here too
+  role?: 'employee' | 'team_manager' | 'team_leader' | 'client';
 }
 
 interface AdminData {
@@ -92,8 +93,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> => {
     try {
-      const db = database;
-      const userRef = ref(db, `users/${firebaseUser.uid}`);
+      const userRef = ref(database, `users/${firebaseUser.uid}`);
       const userSnapshot = await get(userRef);
 
       if (userSnapshot.exists()) {
@@ -113,7 +113,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
         }
         
-        // For any non‑admin role
         if (userData.role === 'employee' || userData.role === 'team_manager' || userData.role === 'team_leader' || userData.role === 'client') {
           return {
             id: firebaseUser.uid,
@@ -131,8 +130,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
       }
 
-      // Fallback: search in all admins' employee lists
-      const snapshot = await get(ref(db, 'users'));
+      const snapshot = await get(ref(database, 'users'));
       if (snapshot.exists()) {
         let employeeData: EmployeeData | null = null;
         let adminUid = '';
@@ -154,7 +152,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
 
         if (employeeData) {
-          // ✅ Use the role from employeeData if present, otherwise default to 'employee'
           const role = employeeData.role || 'employee';
           return {
             id: firebaseUser.uid,
@@ -172,7 +169,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
         }
       }
-      
       return null;
     } catch (error) {
       console.error('Error fetching user data:', error);
@@ -205,7 +201,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       unsubscribe();
       if (presenceInterval) clearInterval(presenceInterval);
     };
-  }, []);
+  }, [user?.id]); // ✅ add dependency to avoid stale closure
 
   const login = async (identifier: string, password: string, _role: string) => {
     setLoading(true);
@@ -294,7 +290,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const logout = async () => {
     try {
       if (user) {
-        await update(ref(database, `users/${user.id}`), { status: 'inactive', lastActive: Date.now() });
+        await update(ref(database, `users/${user.id}`), { lastActive: Date.now() });
       }
       await signOut(auth);
       setUser(null);
@@ -304,14 +300,24 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   };
 
   const resetPassword = async (email: string) => {
-    try {
-      await sendPasswordResetEmail(auth, email);
-      return { success: true };
-    } catch (error) {
-      const err = error as { message?: string };
-      return { success: false, message: err.message || 'Password reset failed' };
+  try {
+    await sendPasswordResetEmail(auth, email);
+    return { success: true };
+  } catch (error: unknown) {
+    console.error('Reset password error:', error);
+    let message = 'Failed to send reset email';
+    if (error instanceof Error) {
+      if (error.message.includes('auth/user-not-found')) {
+        message = 'No account found with this email address';
+      } else if (error.message.includes('auth/invalid-email')) {
+        message = 'Invalid email address';
+      } else {
+        message = error.message;
+      }
     }
-  };
+    return { success: false, message };
+  }
+};
 
   const changePassword = async (newPassword: string) => {
     try {
@@ -326,8 +332,20 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  // ✅ Memoize context value to prevent unnecessary re-renders and help Fast Refresh
+  const contextValue = useMemo(() => ({
+    user,
+    login,
+    signup,
+    logout,
+    loading,
+    resetPassword,
+    changePassword,
+    updateUserStatus,
+  }), [user, loading]);
+
   return (
-    <AuthContext.Provider value={{ user, login, signup, logout, loading, resetPassword, changePassword, updateUserStatus }}>
+    <AuthContext.Provider value={contextValue}>
       {children}
     </AuthContext.Provider>
   );

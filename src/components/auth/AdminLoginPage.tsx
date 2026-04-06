@@ -161,14 +161,14 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
               </Button>
             </form>
 
-            <div className="mt-4 text-center">
+            {/* <div className="mt-4 text-center">
               <button
                 onClick={onForgotPassword}
                 className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
               >
                 Forgot Password?
               </button>
-            </div>
+            </div> */}
           </CardContent>
         </Card>
       </motion.div>
