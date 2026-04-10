@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Calendar, Users, Clock, Edit, Trash2, CheckCircle, ChevronDown, ChevronUp, User } from 'lucide-react';
+import { Calendar, Users, Clock, Edit, Trash2, CheckCircle, ChevronDown, ChevronUp, User, Paperclip, Play, Pause, Plus, X } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
@@ -15,6 +15,31 @@ import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../ui/collapsible';
 
+// Extended interfaces
+interface Subtask {
+  id: string;
+  title: string;
+  completed: boolean;
+  assignedTo?: string;
+}
+
+interface Attachment {
+  id: string;
+  name: string;
+  url: string;
+  uploadedBy: string;
+  date: string;
+}
+
+interface ExtendedTask extends Task {
+  subtasks?: Subtask[];
+  timeSpent?: number;
+  timerActive?: boolean;
+  timerStart?: number | null;
+  attachments?: Attachment[];
+  tags?: string[];
+  mentions?: string[];
+}
 
 interface Employee {
   id: string;
@@ -56,7 +81,7 @@ interface Project {
   department: string;
   assignedTeamLeader: string;
   assignedEmployees: string[];
-  tasks: Record<string, Task>;
+  tasks: Record<string, ExtendedTask>;
   startDate: string;
   endDate: string;
   priority: string;
@@ -76,6 +101,23 @@ interface ProjectCardProps {
   onClick?: () => void;
 }
 
+// Type for user data when fetching employees
+interface UserData {
+  role?: string;
+  profile?: {
+    name?: string;
+    department?: string;
+    designation?: string;
+    status?: string;
+  };
+  employee?: {
+    name?: string;
+    department?: string;
+    designation?: string;
+    status?: string;
+  };
+}
+
 const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onDelete, onClick }) => {
   const { user } = useAuth();
   const [isEditOpen, setIsEditOpen] = useState(false);
@@ -85,7 +127,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onD
   const [error, setError] = useState<string | null>(null);
   const [expandedTasks, setExpandedTasks] = useState<Record<string, boolean>>({});
   const [updateNote, setUpdateNote] = useState('');
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [selectedTask, setSelectedTask] = useState<ExtendedTask | null>(null);
   const [newTaskStatus, setNewTaskStatus] = useState('');
   const [showTaskDialog, setShowTaskDialog] = useState(false);
 
@@ -98,14 +140,35 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onD
     endDate: ''
   });
 
+  // Timer interval
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (project && project.tasks) {
+      interval = setInterval(async () => {
+        for (const [taskId, task] of Object.entries(project.tasks)) {
+          if (task.timerActive && task.timerStart) {
+            const elapsed = Math.floor((Date.now() - task.timerStart) / 1000);
+            if (elapsed >= 10) {
+              await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
+                timeSpent: (task.timeSpent || 0) + elapsed,
+                timerStart: Date.now()
+              });
+            }
+          }
+        }
+      }, 10000);
+    }
+    return () => clearInterval(interval);
+  }, [project, projectId]);
+
   // Fetch all employees globally (non‑admin users) to resolve names
   useEffect(() => {
     const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
-      const usersData = snapshot.val();
+      const usersData = snapshot.val() as Record<string, UserData> | null;
       if (usersData) {
         const empList: Employee[] = [];
-        for (const [uid, userData] of Object.entries(usersData) as any[]) {
+        for (const [uid, userData] of Object.entries(usersData)) {
           if (userData.role === 'admin') continue;
           const profile = userData.profile || userData.employee;
           if (profile && profile.name) {
@@ -170,6 +233,73 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onD
     });
     return () => off(projectRef);
   }, [projectId]);
+
+  // Helper functions for new features
+  const startTimer = async (taskId: string) => {
+    await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
+      timerActive: true,
+      timerStart: Date.now()
+    });
+    toast({ title: "Timer started", description: "Timer has started" });
+  };
+
+  const stopTimer = async (taskId: string) => {
+    const taskRef = ref(database, `projects/${projectId}/tasks/${taskId}`);
+    const snap = await get(taskRef);
+    const task = snap.val();
+    if (task && task.timerStart) {
+      const elapsed = Math.floor((Date.now() - task.timerStart) / 1000);
+      await update(taskRef, {
+        timerActive: false,
+        timerStart: null,
+        timeSpent: (task.timeSpent || 0) + elapsed
+      });
+      toast({ title: "Timer stopped", description: `Added ${Math.floor(elapsed / 60)} minutes.` });
+    }
+  };
+
+  const addSubtask = async (taskId: string) => {
+    const title = prompt('Enter subtask title:');
+    if (title) {
+      const newSubtask: Subtask = {
+        id: Date.now().toString(),
+        title,
+        completed: false
+      };
+      const task = project?.tasks[taskId];
+      const existingSubtasks = task?.subtasks || [];
+      await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
+        subtasks: [...existingSubtasks, newSubtask]
+      });
+      toast({ title: "Subtask added", description: `Added "${title}"` });
+    }
+  };
+
+  const toggleSubtask = async (taskId: string, subtaskId: string) => {
+    const task = project?.tasks[taskId];
+    if (!task) return;
+    const updatedSubtasks = (task.subtasks || []).map(sub =>
+      sub.id === subtaskId ? { ...sub, completed: !sub.completed } : sub
+    );
+    await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
+      subtasks: updatedSubtasks
+    });
+  };
+
+  const uploadAttachment = (taskId: string) => {
+    toast({ title: "File upload", description: "File upload not yet implemented. Would store in Firebase Storage." });
+  };
+
+  const mentionUser = async (taskId: string, userId: string) => {
+    const task = project?.tasks[taskId];
+    const currentMentions = task?.mentions || [];
+    if (!currentMentions.includes(userId)) {
+      await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
+        mentions: [...currentMentions, userId]
+      });
+      toast({ title: "Mention added", description: `@${employees.find(e => e.id === userId)?.name} mentioned` });
+    }
+  };
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -287,24 +417,10 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onD
         note: updateNote
       };
 
-      const adminUpdates = {
-        [`tasks/${selectedTask.id}/status`]: newTaskStatus,
-        [`tasks/${selectedTask.id}/updatedAt`]: new Date().toISOString(),
-        [`tasks/${selectedTask.id}/updates/${timestamp}`]: updateData
-      };
-      await update(ref(database, `projects/${projectId}`), adminUpdates);
-
-      // Update local state
-      setProject(prev => {
-        if (!prev) return null;
-        const updatedTasks = { ...prev.tasks };
-        updatedTasks[selectedTask.id] = {
-          ...updatedTasks[selectedTask.id],
-          status: newTaskStatus,
-          updatedAt: new Date().toISOString(),
-          updates: { ...(updatedTasks[selectedTask.id].updates || {}), [timestamp]: updateData }
-        };
-        return { ...prev, tasks: updatedTasks };
+      await update(ref(database, `projects/${projectId}/tasks/${selectedTask.id}`), {
+        status: newTaskStatus,
+        updatedAt: new Date().toISOString(),
+        [`updates/${timestamp}`]: updateData
       });
 
       setSelectedTask(null);
@@ -342,7 +458,7 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onD
   const completedTasksCount = tasksArray.filter(task => task.status === 'completed').length;
   const totalTasksCount = tasksArray.length;
 
-  const tasksByEmployee: Record<string, Task[]> = {};
+  const tasksByEmployee: Record<string, ExtendedTask[]> = {};
   tasksArray.forEach(task => {
     if (!tasksByEmployee[task.assignedTo]) tasksByEmployee[task.assignedTo] = [];
     tasksByEmployee[task.assignedTo].push(task);
@@ -437,21 +553,99 @@ const ProjectCard: React.FC<ProjectCardProps> = ({ projectId, index, onEdit, onD
                     {tasks.map(task => {
                       const taskUpdates = task.updates ? Object.entries(task.updates).sort(([a],[b])=>parseInt(b)-parseInt(a)).map(([timestamp,update])=>({timestamp,...update})) : [];
                       return (
-                        <div key={task.id} className="border rounded p-2">
+                        <div key={task.id} className="border rounded p-2 space-y-2">
                           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-2">
-                            <div className="flex-1 min-w-0"><h4 className="text-sm font-medium line-clamp-1 break-words">{task.title}</h4>{task.description && <p className="text-xs text-gray-500 line-clamp-2 break-words mt-1">{task.description}</p>}</div>
+                            <div className="flex-1 min-w-0">
+                              <h4 className="text-sm font-medium line-clamp-1 break-words">{task.title}</h4>
+                              {task.description && <p className="text-xs text-gray-500 line-clamp-2 break-words mt-1">{task.description}</p>}
+                            </div>
                             <div className="flex items-center gap-1 flex-wrap">
                               <Badge className={`text-xs ${getPriorityColor(task.priority)}`}>{task.priority}</Badge>
                               <Badge className={`text-xs ${getStatusColor(task.status)}`}>{task.status.replace('_', ' ')}</Badge>
-                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 ml-auto" onClick={(e)=>{e.stopPropagation(); toggleTaskExpand(task.id);}}>{expandedTasks[task.id] ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}</Button>
+                              <Button variant="ghost" size="sm" className="h-6 w-6 p-0 ml-auto" onClick={(e)=>{e.stopPropagation(); toggleTaskExpand(task.id);}}>
+                                {expandedTasks[task.id] ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                              </Button>
                             </div>
                           </div>
+
+                          {/* New features: Subtasks, Timer, Attachments, Mentions */}
+                          <div className="mt-2 space-y-2">
+                            {/* Subtasks */}
+                            {task.subtasks && task.subtasks.length > 0 && (
+                              <div className="pl-2 border-l-2 border-gray-200">
+                                <p className="text-xs font-medium">Subtasks</p>
+                                {task.subtasks.map(sub => (
+                                  <div key={sub.id} className="flex items-center gap-2 text-xs">
+                                    <input type="checkbox" checked={sub.completed} onChange={() => toggleSubtask(task.id, sub.id)} />
+                                    <span className={sub.completed ? 'line-through text-gray-500' : ''}>{sub.title}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <Button size="sm" variant="ghost" onClick={() => addSubtask(task.id)} className="text-xs h-6">
+                              <Plus className="h-3 w-3 mr-1" /> Add subtask
+                            </Button>
+
+                            {/* Timer */}
+                            <div className="flex items-center gap-2">
+                              <Clock className="h-3 w-3 text-gray-500" />
+                              <span className="text-xs">
+                                Time spent: {Math.floor((task.timeSpent || 0) / 3600)}h {Math.floor(((task.timeSpent || 0) % 3600) / 60)}m
+                              </span>
+                              {task.timerActive ? (
+                                <Button size="sm" variant="outline" onClick={() => stopTimer(task.id)} className="h-6 px-2 text-xs">
+                                  <Pause className="h-3 w-3 mr-1" /> Pause
+                                </Button>
+                              ) : (
+                                <Button size="sm" variant="outline" onClick={() => startTimer(task.id)} className="h-6 px-2 text-xs">
+                                  <Play className="h-3 w-3 mr-1" /> Start
+                                </Button>
+                              )}
+                            </div>
+
+                            {/* Attachments */}
+                            {task.attachments && task.attachments.length > 0 && (
+                              <div className="text-xs">
+                                <p className="font-medium">Attachments:</p>
+                                {task.attachments.map(att => (
+                                  <div key={att.id}>
+                                    <a href={att.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 underline">{att.name}</a>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <Button size="sm" variant="ghost" onClick={() => uploadAttachment(task.id)} className="text-xs h-6">
+                              <Paperclip className="h-3 w-3 mr-1" /> Attach file
+                            </Button>
+
+                            {/* Mentions */}
+                            {task.mentions && task.mentions.length > 0 && (
+                              <div className="text-xs text-gray-500">
+                                Mentions: {task.mentions.map(mid => `@${employees.find(e => e.id === mid)?.name || mid}`).join(', ')}
+                              </div>
+                            )}
+                            <Select onValueChange={(val) => mentionUser(task.id, val)}>
+                              <SelectTrigger className="h-6 text-xs w-32"><SelectValue placeholder="Mention @user" /></SelectTrigger>
+                              <SelectContent>
+                                {employees.map(emp => (
+                                  <SelectItem key={emp.id} value={emp.id}>@{emp.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+
                           <Collapsible open={expandedTasks[task.id]}>
                             <CollapsibleContent className="mt-2 space-y-2">
-                              <div className="flex flex-col xs:flex-row xs:items-center gap-2 text-xs flex-wrap"><span className="whitespace-nowrap">Due: {formatDisplayDate(task.dueDate)}</span><span className="whitespace-nowrap">Created: {formatDisplayDate(task.createdAt)}</span>{task.updatedAt && <span className="whitespace-nowrap">Updated: {formatDisplayDate(task.updatedAt)}</span>}</div>
+                              <div className="flex flex-col xs:flex-row xs:items-center gap-2 text-xs flex-wrap">
+                                <span>Due: {formatDisplayDate(task.dueDate)}</span>
+                                <span>Created: {formatDisplayDate(task.createdAt)}</span>
+                                {task.updatedAt && <span>Updated: {formatDisplayDate(task.updatedAt)}</span>}
+                              </div>
                               <Dialog open={showTaskDialog} onOpenChange={setShowTaskDialog}>
                                 <DialogTrigger asChild>
-                                  <Button variant="outline" size="sm" className="text-xs h-6 w-full sm:w-auto" onClick={(e)=>{e.stopPropagation(); setSelectedTask(task); setNewTaskStatus(task.status); setUpdateNote('');}}>Update Status</Button>
+                                  <Button variant="outline" size="sm" className="text-xs h-6 w-full sm:w-auto" onClick={(e)=>{e.stopPropagation(); setSelectedTask(task); setNewTaskStatus(task.status); setUpdateNote('');}}>
+                                    Update Status
+                                  </Button>
                                 </DialogTrigger>
                                 <DialogContent className="sm:max-w-md">
                                   <DialogHeader><DialogTitle>Update Task Status</DialogTitle></DialogHeader>

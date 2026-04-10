@@ -7,23 +7,10 @@ import { Textarea } from '../../ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../ui/select';
 import { Badge } from '../../ui/badge';
 import { X, Plus } from 'lucide-react';
-import { ref, onValue, off, set, push, get } from 'firebase/database';
+import { ref, onValue, off, set, push } from 'firebase/database';
 import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { toast } from '../../ui/use-toast';
-
-interface StoredTask extends Task {
-  updates: Record<string, {
-    updatedBy: string;
-    updatedById: string;
-    changes: {
-      field: string;
-      oldValue: string;
-      newValue: string;
-    }[];
-    note: string;
-  }>;
-}
 
 interface Employee {
   id: string;
@@ -43,10 +30,64 @@ interface Task {
   dueDate: string;
   status: string;
   createdAt: string;
+  employeeName?: string;
+}
+
+interface Subtask {
+  id: string;
+  title: string;
+  completed: boolean;
+  assignedTo?: string;
+}
+
+interface Attachment {
+  id: string;
+  name: string;
+  url: string;
+  uploadedBy: string;
+  date: string;
+}
+
+interface ExtendedTask extends Task {
+  subtasks?: Subtask[];
+  timeSpent?: number;
+  timerActive?: boolean;
+  timerStart?: number | null;
+  attachments?: Attachment[];
+  tags?: string[];
+  mentions?: string[];
+  employeeName?: string;
+}
+
+interface ProjectUpdate {
+  updatedBy: string;
+  updatedById: string;
+  changes: { field: string; oldValue: string; newValue: string }[];
+  note: string;
+}
+
+interface FirebaseProjectData {
+  id: string;
+  name: string;
+  clientName: string;
+  description: string;
+  startDate: string;
+  endDate: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'active' | 'completed' | 'on_hold';
+  projectType: 'common' | 'department';
+  department: string;
+  assignedTeamLeader: string;
+  assignedEmployees: string[];
+  createdAt: string;
+  createdBy: string;
+  tasks: Record<string, ExtendedTask>;
+  updates: Record<string, ProjectUpdate>;
 }
 
 interface ProjectFormData {
   name: string;
+  clientName: string;
   description: string;
   department: string;
   assignedTeamLeader: string;
@@ -54,9 +95,9 @@ interface ProjectFormData {
   tasks: Task[];
   startDate: string;
   endDate: string;
-  priority: string;
-  status: string;
-  projectType: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  status: 'active' | 'completed' | 'on_hold';
+  projectType: 'common' | 'department';
   specificDepartment?: string;
 }
 
@@ -65,10 +106,7 @@ interface EnhancedProjectFormProps {
   onCancel: () => void;
 }
 
-const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
-  onSuccess = () => {},
-  onCancel
-}) => {
+const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, onCancel }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([]);
@@ -84,6 +122,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
 
   const [formData, setFormData] = useState<ProjectFormData>({
     name: '',
+    clientName: '',
     description: '',
     department: '',
     assignedTeamLeader: '',
@@ -92,72 +131,53 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     startDate: '',
     endDate: '',
     priority: 'medium',
-    status: 'planned',
+    status: 'active',
     projectType: 'common',
     specificDepartment: ''
   });
 
-  const departments = ['Software Development', 'Digital Marketing','Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', ' Artificial Intelligence'];
+  const departments = ['Software Development', 'Digital Marketing','Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', 'Artificial Intelligence'];
 
- useEffect(() => {
-  if (!user) return;
-
-  setLoading(true);
-  setError(null);
-
-  const usersRef = ref(database, 'users');
-
-  const fetchEmployees = onValue(usersRef, (snapshot) => {
-    try {
-      const employeesData: Employee[] = [];
-      
-      snapshot.forEach((childSnapshot) => {
-        const uid = childSnapshot.key;
-        const userData = childSnapshot.val();
-
-        // Skip if user is an admin
-        if (userData.role === 'admin') return;
-
-        // Get employee profile (stored in 'profile' or 'employee' node)
-        const profile = userData.profile || userData.employee;
-        if (!profile || !profile.name) return;
-
-        // Only include active employees
-        if (profile.status !== 'active') return;
-
-        employeesData.push({
-          id: uid || '',
-          name: profile.name || '',
-          email: profile.email || '',
-          department: profile.department || '',
-          designation: profile.designation || '',
-          isActive: true,
+  // Fetch all employees (non-admin) from global users
+  useEffect(() => {
+    if (!user) return;
+    setLoading(true);
+    const usersRef = ref(database, 'users');
+    const fetchEmployees = onValue(usersRef, (snapshot) => {
+      try {
+        const employeesData: Employee[] = [];
+        snapshot.forEach((childSnapshot) => {
+          const uid = childSnapshot.key;
+          const userData = childSnapshot.val();
+          if (userData.role === 'admin') return;
+          const profile = userData.profile || userData.employee;
+          if (!profile || !profile.name) return;
+          if (profile.status !== 'active') return;
+          employeesData.push({
+            id: uid || '',
+            name: profile.name || '',
+            email: profile.email || '',
+            department: profile.department || '',
+            designation: profile.designation || '',
+            isActive: true,
+          });
         });
-      });
+        setEmployees(employeesData);
+        setLoading(false);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load employees');
+        setLoading(false);
+      }
+    });
+    return () => off(usersRef);
+  }, [user]);
 
-      setEmployees(employeesData);
-      setLoading(false);
-    } catch (err) {
-      console.error('Error processing employee data:', err);
-      setError('Failed to process employee data');
-      setLoading(false);
-    }
-  }, (error) => {
-    console.error('Error fetching employees:', error);
-    setError('Failed to load employees');
-    setLoading(false);
-  });
-
-  return () => off(usersRef);
-}, [user]);
   useEffect(() => {
     if (formData.projectType === 'common') {
       setFilteredEmployees(employees);
     } else if (formData.projectType === 'department' && formData.specificDepartment) {
-      const deptEmployees = employees.filter(emp => 
-        emp.department === formData.specificDepartment
-      );
-      setFilteredEmployees(deptEmployees);
+      setFilteredEmployees(employees.filter(emp => emp.department === formData.specificDepartment));
     } else {
       setFilteredEmployees([]);
     }
@@ -177,39 +197,24 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
 
   const addTask = () => {
     if (!newTask.title || !newTask.assignedTo || !newTask.dueDate) return;
-    
     const task: Task = {
       id: Date.now().toString(),
       ...newTask,
-      status: 'pending',
+      status: 'todo',
       createdAt: new Date().toISOString()
     };
-    
-    setFormData(prev => ({
-      ...prev,
-      tasks: [...prev.tasks, task]
-    }));
-    
-    setNewTask({
-      title: '',
-      description: '',
-      assignedTo: '',
-      priority: 'medium',
-      dueDate: ''
-    });
+    setFormData(prev => ({ ...prev, tasks: [...prev.tasks, task] }));
+    setNewTask({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '' });
   };
 
   const removeTask = (taskId: string) => {
-    setFormData(prev => ({
-      ...prev,
-      tasks: prev.tasks.filter(task => task.id !== taskId)
-    }));
+    setFormData(prev => ({ ...prev, tasks: prev.tasks.filter(task => task.id !== taskId) }));
   };
 
   const handleProjectTypeChange = (value: string) => {
     setFormData(prev => ({
       ...prev,
-      projectType: value,
+      projectType: value as 'common' | 'department',
       specificDepartment: value === 'common' ? '' : prev.specificDepartment,
       assignedTeamLeader: '',
       assignedEmployees: [],
@@ -227,23 +232,18 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     }));
   };
 
-  const getTypeColor = (type: string) => {
-    return type === 'common' ? 'bg-blue-100 text-blue-700' : 'bg-green-100 text-green-700';
-  };
-
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
 
     try {
-      // Create project ID
-      const projectId = push(ref(database, `users/${user.id}/projects`)).key;
+      const projectId = push(ref(database, 'projects')).key;
       if (!projectId) throw new Error('Failed to generate project ID');
 
-      // Prepare base project data
-      const projectData = {
+      const projectData: FirebaseProjectData = {
         id: projectId,
         name: formData.name,
+        clientName: formData.clientName,
         description: formData.description,
         startDate: formData.startDate,
         endDate: formData.endDate,
@@ -260,429 +260,136 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
           [Date.now().toString()]: {
             updatedBy: user.name || 'Admin',
             updatedById: user.id,
-            changes: [{
-              field: 'status',
-              oldValue: '',
-              newValue: 'created'
-            }],
+            changes: [{ field: 'status', oldValue: '', newValue: 'created' }],
             note: 'Project created'
           }
         }
       };
 
-      // Add tasks to project data
+      // Add tasks with extra fields
       formData.tasks.forEach(task => {
+        const assignedEmployee = employees.find(e => e.id === task.assignedTo);
         projectData.tasks[task.id] = {
           ...task,
-          updates: {
-            [Date.now().toString()]: {
-              updatedBy: user.name || 'Admin',
-              updatedById: user.id,
-              changes: [{
-                field: 'status',
-                oldValue: '',
-                newValue: task.status
-              }],
-              note: 'Task created'
-            }
-          }
+          employeeName: assignedEmployee?.name || '',
+          subtasks: [],
+          timeSpent: 0,
+          timerActive: false,
+          timerStart: null,
+          attachments: [],
+          tags: [],
+          mentions: []
         };
       });
 
-     
       await set(ref(database, `projects/${projectId}`), projectData);
-      // Prepare employees to assign (team leader + assigned employees)
-    // In the handleSubmit function, modify the employee assignment logic:
-const employeesToAssign = [
-  ...(formData.assignedTeamLeader ? [formData.assignedTeamLeader] : []),
-  ...formData.assignedEmployees
-].filter((value, index, self) => self.indexOf(value) === index);
 
-await Promise.all(
-  employeesToAssign.map(async (employeeId) => {
-    const isTeamLead = employees.find(e => e.id === employeeId)?.designation === 'Team Lead';
-    const tasksToAssign = isTeamLead 
-      ? formData.tasks 
-      : formData.tasks.filter(task => task.assignedTo === employeeId);
-
-    const employeeProjectData = {
-      ...projectData,
-      tasks: tasksToAssign.reduce((acc, task) => {
-        acc[task.id] = {
-          ...task,
-          updates: {
-            [Date.now().toString()]: {
-              updatedBy: user.name || 'Admin',
-              updatedById: user.id,
-              changes: [{ field: 'status', oldValue: '', newValue: task.status }],
-              note: 'Task created'
-            }
-          }
+      // Assign to employees (for their personal dashboards)
+      const employeesToAssign = [...(formData.assignedTeamLeader ? [formData.assignedTeamLeader] : []), ...formData.assignedEmployees];
+      await Promise.all(employeesToAssign.map(async (empId) => {
+        const empProjectData = {
+          ...projectData,
+          tasks: Object.fromEntries(
+            Object.entries(projectData.tasks).filter(([, task]) => task.assignedTo === empId)
+          )
         };
-        return acc;
-      }, {} as Record<string, any>)
-    };
+        await set(ref(database, `users/${empId}/projects/${projectId}`), empProjectData);
+      }));
 
-    // 1. Store in admin's employee sub‑node (for admin overview)
-    await set(
-      ref(database, `users/${user.id}/employees/${employeeId}/projects/${projectId}`),
-      employeeProjectData
-    );
-
-    // ✅ 2. Store in employee's own projects node (for employee dashboard)
-    await set(
-      ref(database, `users/${employeeId}/projects/${projectId}`),
-      employeeProjectData
-    );
-  })
-);
-
-      toast({
-        title: "Project Created",
-        description: "Project has been successfully created and assigned",
-      });
-
-      onSuccess();
+      toast({ title: "Project Created", description: "Project created successfully" });
+      onSuccess?.();
       onCancel();
     } catch (error) {
-      console.error('Error creating project:', error);
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: "Failed to create project. Please try again.",
-      });
+      console.error(error);
+      toast({ variant: "destructive", title: "Error", description: "Failed to create project" });
     }
   };
 
-  if (loading) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Loading employees...</CardTitle>
-        </CardHeader>
-        <CardContent className="flex justify-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (error) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Error</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-red-500">{error}</div>
-        </CardContent>
-      </Card>
-    );
-  }
+  if (loading) return <div>Loading employees...</div>;
+  if (error) return <div className="text-red-500">{error}</div>;
 
   return (
     <Card>
-      <CardHeader>
-        <CardTitle>Create New Project</CardTitle>
-      </CardHeader>
+      <CardHeader><CardTitle>Create New Project</CardTitle></CardHeader>
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="name">Project Name</Label>
-              <Input
-                id="name"
-                value={formData.name}
-                onChange={(e) => setFormData(prev => ({ ...prev, name: e.target.value }))}
-                placeholder="Enter project name"
-                required
-              />
-            </div>
-            
-            <div className="space-y-2">
-              <Label>Project Type</Label>
-              <Select 
-                value={formData.projectType} 
-                onValueChange={handleProjectTypeChange}
-                required
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select project type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="common">Common Project</SelectItem>
-                  <SelectItem value="department">Department Project</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+            <div><Label>Project Name</Label><Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} required /></div>
+            <div><Label>Client Name</Label><Input value={formData.clientName} onChange={e => setFormData({...formData, clientName: e.target.value})} /></div>
           </div>
-
-          {formData.projectType === 'department' && (
-            <div className="space-y-2">
-              <Label>Department</Label>
-              <Select 
-                value={formData.specificDepartment || ''} 
-                onValueChange={handleDepartmentChange}
-                required
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select department" />
-                </SelectTrigger>
-                <SelectContent>
-                  {departments.map(dept => (
-                    <SelectItem key={dept} value={dept}>{dept}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          )}
-
-          <div className="space-y-2">
-            <Label htmlFor="description">Description</Label>
-            <Textarea
-              id="description"
-              value={formData.description}
-              onChange={(e) => setFormData(prev => ({ ...prev, description: e.target.value }))}
-              placeholder="Enter project description"
-              required
-            />
-          </div>
-
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="teamLeader">Team Leader</Label>
-              <Select 
-                value={formData.assignedTeamLeader} 
-                onValueChange={(value) => setFormData(prev => ({ ...prev, assignedTeamLeader: value }))}
-                disabled={!formData.projectType || (formData.projectType === 'department' && !formData.specificDepartment)}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select team leader" />
-                </SelectTrigger>
-                <SelectContent>
-                  {teamLeaders.length > 0 ? (
-                    teamLeaders.map(leader => (
-                      <SelectItem key={leader.id} value={leader.id}>
-                        {leader.name} - {leader.department}
-                      </SelectItem>
-                    ))
-                  ) : (
-                    <SelectItem value="no-leaders" disabled>
-                      No available team leaders
-                    </SelectItem>
-                  )}
-                </SelectContent>
+            <div><Label>Project Type</Label>
+              <Select value={formData.projectType} onValueChange={handleProjectTypeChange}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="common">Common</SelectItem><SelectItem value="department">Department</SelectItem></SelectContent>
               </Select>
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="priority">Priority</Label>
-              <Select value={formData.priority} onValueChange={(value) => setFormData(prev => ({ ...prev, priority: value }))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select priority" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="high">High</SelectItem>
-                  <SelectItem value="urgent">Urgent</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label htmlFor="startDate">Start Date</Label>
-              <Input
-                id="startDate"
-                type="date"
-                value={formData.startDate}
-                onChange={(e) => setFormData(prev => ({ ...prev, startDate: e.target.value }))}
-                required
-              />
-            </div>
-            
-            <div className="space-y-2">
-              <Label htmlFor="endDate">End Date</Label>
-              <Input
-                id="endDate"
-                type="date"
-                value={formData.endDate}
-                onChange={(e) => setFormData(prev => ({ ...prev, endDate: e.target.value }))}
-                required
-              />
-            </div>
-          </div>
-
-          <div className="space-y-3">
-            <Label>Assign Team Members</Label>
-            <div className="flex items-center gap-2 mb-2">
-              <Badge className={getTypeColor(formData.projectType)}>
-                {formData.projectType === 'common' ? 'Common Project' : formData.specificDepartment}
-              </Badge>
-              <span className="text-sm text-gray-500">
-                {formData.assignedEmployees.length} members selected
-              </span>
-            </div>
-            
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-40 overflow-y-auto p-2 border rounded">
-              {developers.length > 0 ? (
-                developers.map(developer => (
-                  <div key={developer.id} className="flex items-center space-x-2">
-                    <input
-                      type="checkbox"
-                      id={`dev-${developer.id}`}
-                      checked={formData.assignedEmployees.includes(developer.id)}
-                      onChange={() => handleEmployeeToggle(developer.id)}
-                      className="rounded"
-                    />
-                    <label htmlFor={`dev-${developer.id}`} className="text-sm">
-                      {developer.name} ({developer.department})
-                    </label>
-                  </div>
-                ))
-              ) : (
-                <div className="col-span-3 text-center text-sm text-gray-500 py-2">
-                  {formData.projectType === 'department' && !formData.specificDepartment 
-                    ? 'Please select a department first'
-                    : 'No employees available for the selected project type/department'}
-                </div>
-              )}
-            </div>
-            <div className="flex flex-wrap gap-1 mt-2">
-              {formData.assignedEmployees.map(empId => {
-                const emp = employees.find(e => e.id === empId);
-                return emp ? (
-                  <Badge key={empId} variant="secondary" className="text-xs">
-                    {emp.name} ({emp.department})
-                  </Badge>
-                ) : null;
-              })}
-            </div>
-          </div>
-
-          <div className="space-y-4 border-t pt-4">
-            <Label className="text-lg font-semibold">Project Tasks</Label>
-            
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-4 bg-gray-50 rounded-lg">
-              <Input
-                placeholder="Task title"
-                value={newTask.title}
-                onChange={(e) => setNewTask(prev => ({ ...prev, title: e.target.value }))}
-              />
-              <Input
-                type="date"
-                value={newTask.dueDate}
-                onChange={(e) => setNewTask(prev => ({ ...prev, dueDate: e.target.value }))}
-              />
-              <Select 
-                value={newTask.assignedTo} 
-                onValueChange={(value) => setNewTask(prev => ({ ...prev, assignedTo: value }))}
-                disabled={formData.assignedEmployees.length === 0}
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Assign to team member" />
-                </SelectTrigger>
-                <SelectContent>
-                  {formData.assignedEmployees.length > 0 ? (
-                    formData.assignedEmployees.map(empId => {
-                      const emp = employees.find(e => e.id === empId);
-                      return emp ? (
-                        <SelectItem key={empId} value={empId}>{emp.name}</SelectItem>
-                      ) : null;
-                    })
-                  ) : (
-                    <SelectItem value="no-members" disabled>
-                      No team members assigned
-                    </SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-              <Select value={newTask.priority} onValueChange={(value) => setNewTask(prev => ({ ...prev, priority: value as 'low' | 'medium' | 'high' }))}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Task priority" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low">Low</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="high">High</SelectItem>
-                </SelectContent>
-              </Select>
-              <div className="md:col-span-2">
-                <Textarea
-                  placeholder="Task description"
-                  value={newTask.description}
-                  onChange={(e) => setNewTask(prev => ({ ...prev, description: e.target.value }))}
-                />
-              </div>
-              <Button 
-                type="button" 
-                onClick={addTask} 
-                className="flex items-center gap-2"
-                disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate}
-              >
-                <Plus className="h-4 w-4" />
-                Add Task
-              </Button>
-            </div>
-
-            {formData.tasks.length > 0 && (
-              <div className="space-y-2">
-                <Label>Added Tasks ({formData.tasks.length})</Label>
-                {formData.tasks.map(task => {
-                  const assignedEmployee = employees.find(e => e.id === task.assignedTo);
-                  return (
-                    <div key={task.id} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div className="flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="font-medium">{task.title}</span>
-                          <Badge className={
-                            task.priority === 'high' ? 'bg-red-100 text-red-700' :
-                            task.priority === 'medium' ? 'bg-yellow-100 text-yellow-700' :
-                            'bg-blue-100 text-blue-700'
-                          }>
-                            {task.priority}
-                          </Badge>
-                        </div>
-                        <p className="text-sm text-gray-600">{task.description}</p>
-                        <p className="text-xs text-gray-500">
-                          Assigned to: {assignedEmployee?.name} | Due: {new Date(task.dueDate).toLocaleDateString()}
-                        </p>
-                      </div>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => removeTask(task.id)}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  );
-                })}
+            {formData.projectType === 'department' && (
+              <div><Label>Department</Label>
+                <Select value={formData.specificDepartment} onValueChange={handleDepartmentChange}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>{departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
+                </Select>
               </div>
             )}
           </div>
-
-          <div className="flex justify-end space-x-4">
-            <Button type="button" variant="outline" onClick={onCancel}>
-              Cancel
-            </Button>
-            <Button 
-              type="submit"
-              disabled={
-                !formData.name || 
-                !formData.description || 
-                !formData.projectType || 
-                (formData.projectType === 'department' && !formData.specificDepartment) || 
-                !formData.assignedTeamLeader || 
-                !formData.startDate || 
-                !formData.endDate
-              }
-            >
-              Create Project
-            </Button>
+          <div><Label>Description</Label><Textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} required /></div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><Label>Team Leader</Label>
+              <Select value={formData.assignedTeamLeader} onValueChange={val => setFormData({...formData, assignedTeamLeader: val})}>
+                <SelectTrigger><SelectValue placeholder="Select team leader" /></SelectTrigger>
+                <SelectContent>{teamLeaders.map(l => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}</SelectContent>
+              </Select>
+            </div>
+            <div><Label>Priority</Label>
+              <Select value={formData.priority} onValueChange={val => setFormData({...formData, priority: val as 'low' | 'medium' | 'high' | 'urgent'})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="urgent">Urgent</SelectItem></SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div><Label>Start Date</Label><Input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} required /></div>
+            <div><Label>End Date</Label><Input type="date" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} required /></div>
+          </div>
+          <div><Label>Team Members</Label>
+            <div className="border rounded p-2 max-h-40 overflow-auto">
+              {developers.map(dev => (
+                <div key={dev.id} className="flex items-center gap-2">
+                  <input type="checkbox" checked={formData.assignedEmployees.includes(dev.id)} onChange={() => handleEmployeeToggle(dev.id)} />
+                  <span>{dev.name} ({dev.department})</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <div className="border-t pt-4"><Label className="text-lg">Tasks</Label>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-gray-50 rounded">
+              <Input placeholder="Task title" value={newTask.title} onChange={e => setNewTask({...newTask, title: e.target.value})} />
+              <Input type="date" value={newTask.dueDate} onChange={e => setNewTask({...newTask, dueDate: e.target.value})} />
+              <Select value={newTask.assignedTo} onValueChange={val => setNewTask({...newTask, assignedTo: val})}>
+                <SelectTrigger><SelectValue placeholder="Assign to" /></SelectTrigger>
+                <SelectContent>{formData.assignedEmployees.map(eid => { const emp = employees.find(e => e.id === eid); return emp ? <SelectItem key={eid} value={eid}>{emp.name}</SelectItem> : null; })}</SelectContent>
+              </Select>
+              <Select value={newTask.priority} onValueChange={val => setNewTask({...newTask, priority: val as 'low' | 'medium' | 'high'})}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent>
+              </Select>
+              <div className="md:col-span-2"><Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})} /></div>
+              <Button type="button" onClick={addTask} disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate}><Plus className="h-4 w-4" /> Add Task</Button>
+            </div>
+            {formData.tasks.map(task => {
+              const emp = employees.find(e => e.id === task.assignedTo);
+              return (
+                <div key={task.id} className="flex justify-between items-center border p-2 mt-2 rounded">
+                  <div><span className="font-medium">{task.title}</span> – {emp?.name}<br /><span className="text-xs">Due: {task.dueDate}</span></div>
+                  <Button variant="ghost" size="sm" onClick={() => removeTask(task.id)}><X className="h-4 w-4" /></Button>
+                </div>
+              );
+            })}
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
+            <Button type="submit">Create Project</Button>
           </div>
         </form>
       </CardContent>

@@ -1,16 +1,28 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { FolderOpen, Plus, List, Grid, Users } from 'lucide-react';
+import { FolderOpen, Plus, List, Grid, Users, LayoutGrid, Calendar } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { toast } from '../ui/use-toast';
 import EnhancedProjectForm from './project/EnhancedProjectForm';
 import ProjectCard from './project/ProjectCard';
+import KanbanBoard from './project/KanbanBoard';
+import ListView from './project/ListView';
+import TimelineView from './project/TimelineView';
 import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group';
 import { ref, onValue, off } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
+
+// Employee interface
+interface Employee {
+  id: string;
+  name: string;
+  email: string;
+  department: string;
+  designation: string;
+}
 
 // Firebase project data structure
 interface FirebaseProjectData {
@@ -49,6 +61,23 @@ interface Project {
   createdBy: string;
 }
 
+// User data interface for Firebase users
+interface UserData {
+  role?: string;
+  name?: string;
+  profile?: EmployeeProfile;
+  employee?: EmployeeProfile;
+}
+
+// Employee profile data interface
+interface EmployeeProfile {
+  name?: string;
+  email?: string;
+  department?: string;
+  designation?: string;
+  status?: string;
+}
+
 const ProjectManagement = () => {
   const { user } = useAuth();
   const userId = user?.id;
@@ -59,27 +88,54 @@ const ProjectManagement = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
+  const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline'>('kanban');
 
   const isAdmin = useMemo(() => userRole === 'admin', [userRole]);
-   const [adminNames, setAdminNames] = useState<Record<string, string>>({});
+  const [adminNames, setAdminNames] = useState<Record<string, string>>({});
+  const [globalEmployees, setGlobalEmployees] = useState<Employee[]>([]);
 
   // Fetch admin names from users node
-useEffect(() => {
-  const usersRef = ref(database, 'users');
-  const unsubscribe = onValue(usersRef, (snapshot) => {
-    const users = snapshot.val();
-    if (users) {
-      const names: Record<string, string> = {};
-      for (const [uid, userData] of Object.entries(users) as any[]) {
-        if (userData.role === 'admin') {
-          names[uid] = userData.name || uid.slice(0, 8);
+  useEffect(() => {
+    const usersRef = ref(database, 'users');
+    const unsubscribe = onValue(usersRef, (snapshot) => {
+      const users = snapshot.val() as Record<string, UserData> | null;
+      if (users) {
+        const names: Record<string, string> = {};
+        for (const [uid, userData] of Object.entries(users)) {
+          if (userData.role === 'admin') {
+            names[uid] = userData.name || uid.slice(0, 8);
+          }
         }
+        setAdminNames(names);
       }
-      setAdminNames(names);
-    }
-  });
-  return () => off(usersRef);
-}, []);
+    });
+    return () => off(usersRef);
+  }, []);
+
+  // Fetch all employees (non‑admin) globally
+  useEffect(() => {
+    const usersRef = ref(database, 'users');
+    const unsubscribe = onValue(usersRef, (snapshot) => {
+      const employeesList: Employee[] = [];
+      snapshot.forEach((child) => {
+        const userData = child.val() as UserData;
+        if (userData.role === 'admin') return;
+        const profile = userData.profile || userData.employee;
+        if (profile?.name) {
+          employeesList.push({
+            id: child.key || '',
+            name: profile.name,
+            email: profile.email || '',
+            department: profile.department || '',
+            designation: profile.designation || '',
+          });
+        }
+      });
+      setGlobalEmployees(employeesList);
+    });
+    return () => off(usersRef);
+  }, []);
+
   // Fetch projects from the global `/projects` node
   useEffect(() => {
     if (!userId) return;
@@ -99,7 +155,6 @@ useEffect(() => {
             return;
           }
 
-          // Convert object to array
           const allProjects: Project[] = Object.entries(data).map(([projId, projData]) => ({
             id: projId,
             name: projData.name || '',
@@ -117,12 +172,10 @@ useEffect(() => {
             createdBy: projData.createdBy || '',
           }));
 
-          // For non‑admin users, filter projects where they are assigned
           const filteredProjects = isAdmin
             ? allProjects
             : allProjects.filter((proj) => proj.assignedEmployees.includes(userId));
 
-          // Sort by creation date (newest first)
           filteredProjects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
           setProjects(filteredProjects);
@@ -219,7 +272,7 @@ useEffect(() => {
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <Users className="h-5 w-5 text-gray-600" />
-                 <CardTitle className="text-lg">Created by: {adminNames[creatorId] || creatorId.slice(0, 8)}</CardTitle>
+                  <CardTitle className="text-lg">Created by: {adminNames[creatorId] || creatorId.slice(0, 8)}</CardTitle>
                   <Badge variant="outline" className="ml-2">
                     {creatorProjects.length} Project{creatorProjects.length !== 1 ? 's' : ''}
                   </Badge>
@@ -235,31 +288,9 @@ useEffect(() => {
               </div>
             </CardHeader>
             <CardContent className="pt-6">
-              {viewMode === 'grid' ? (
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {creatorProjects.map((project, index) => (
-                    <ProjectCard
-                      key={project.id}
-                      projectId={project.id}
-                      index={index}
-                      onEdit={handleProjectEdit}
-                      onDelete={handleProjectDelete}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {creatorProjects.map((project, index) => (
-                    <ProjectCard
-                      key={project.id}
-                      projectId={project.id}
-                      index={index}
-                      onEdit={handleProjectEdit}
-                      onDelete={handleProjectDelete}
-                    />
-                  ))}
-                </div>
-              )}
+              {displayMode === 'kanban' && <KanbanBoard projects={creatorProjects} employees={globalEmployees} />}
+              {displayMode === 'list' && <ListView projects={creatorProjects} employees={globalEmployees} />}
+              {displayMode === 'timeline' && <TimelineView projects={creatorProjects} />}
             </CardContent>
           </Card>
         ))}
@@ -285,20 +316,30 @@ useEffect(() => {
         </div>
 
         <div className="flex gap-2">
-          <ToggleGroup
-            type="single"
-            value={viewMode}
-            onValueChange={(value) => {
-              if (value === 'grid' || value === 'list') setViewMode(value);
-            }}
-          >
-            <ToggleGroupItem value="grid">
-              <Grid className="h-4 w-4" />
-            </ToggleGroupItem>
-            <ToggleGroupItem value="list">
-              <List className="h-4 w-4" />
-            </ToggleGroupItem>
-          </ToggleGroup>
+          {/* View Mode Toggle: Kanban / List / Timeline */}
+          <div className="flex gap-1 mr-2">
+            <Button
+              variant={displayMode === 'kanban' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDisplayMode('kanban')}
+            >
+              <LayoutGrid className="h-4 w-4 mr-1" /> Board
+            </Button>
+            <Button
+              variant={displayMode === 'list' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDisplayMode('list')}
+            >
+              <List className="h-4 w-4 mr-1" /> List
+            </Button>
+            <Button
+              variant={displayMode === 'timeline' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDisplayMode('timeline')}
+            >
+              <Calendar className="h-4 w-4 mr-1" /> Timeline
+            </Button>
+          </div>
 
           {!isAdmin && (
             <Button onClick={() => setShowAddForm(true)}>
@@ -370,30 +411,12 @@ useEffect(() => {
             </div>
           ) : isAdmin ? (
             renderAdminView()
-          ) : viewMode === 'grid' ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {projects.map((project, index) => (
-                <ProjectCard
-                  key={project.id}
-                  projectId={project.id}
-                  index={index}
-                  onEdit={handleProjectEdit}
-                  onDelete={handleProjectDelete}
-                />
-              ))}
-            </div>
+          ) : displayMode === 'kanban' ? (
+            <KanbanBoard projects={projects} employees={globalEmployees} />
+          ) : displayMode === 'list' ? (
+            <ListView projects={projects} employees={globalEmployees} />
           ) : (
-            <div className="space-y-4">
-              {projects.map((project, index) => (
-                <ProjectCard
-                  key={project.id}
-                  projectId={project.id}
-                  index={index}
-                  onEdit={handleProjectEdit}
-                  onDelete={handleProjectDelete}
-                />
-              ))}
-            </div>
+            <TimelineView projects={projects} />
           )}
         </CardContent>
       </Card>

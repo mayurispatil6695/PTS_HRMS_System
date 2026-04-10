@@ -1,4 +1,3 @@
-// AdminDashboardHome.tsx
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Users, UserCheck, Calendar, Clock, FolderOpen, Camera, Bell, X, AlertTriangle } from 'lucide-react';
@@ -17,6 +16,7 @@ import { Badge } from '../ui/badge';
 import { DailyIdleReport } from './DailyIdleReport';
 import { AttendanceRecord } from '@/types/attendance';
 import { Project, Task, ProjectUpdate } from '@/types/project';
+
 import {
   Employee,
   MarketingPost,
@@ -27,7 +27,23 @@ import {
   IdleNotification,
 } from '@/types/admin';
 
-
+// Add this interface for Firebase project data
+interface FirebaseProjectData {
+  name?: string;
+  description?: string;
+  department?: string;
+  assignedTeamLeader?: string;
+  assignedEmployees?: string[];
+  tasks?: Record<string, unknown>;
+  startDate?: string;
+  endDate?: string;
+  priority?: string;
+  status?: string;
+  progress?: number;
+  createdAt?: string;
+  createdBy?: string;
+  updates?: Record<string, unknown>;
+}
 
 const AdminDashboardHome = () => {
   const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
@@ -312,45 +328,56 @@ useEffect(() => {
 
   return () => unsubscribe();
 }, [employees, notificationPermission, notifiedIdleIds]);
-  
-// Fetch ALL projects from all admins
-// Fetch ALL projects from all admins
- useEffect(() => {
-    if (!user) return;
+// Fetch ALL projects from global projects node
+useEffect(() => {
+  if (!user) return;
 
-    const projectsRef = ref(database, 'projects');
-    const unsubscribe = onValue(projectsRef, (snapshot) => {
-      try {
-        const data = snapshot.val();
-        if (!data) {
-          setProjects([]);
-          return;
-        }
-        const allProjects: Project[] = Object.entries(data).map(([projId, projData]: [string, any]) => ({
+  const projectsRef = ref(database, 'projects');
+  const unsubscribe = onValue(projectsRef, (snapshot) => {
+    try {
+      const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
+      if (!data) {
+        setProjects([]);
+        return;
+      }
+      const allProjects: Project[] = Object.entries(data).map(([projId, projData]) => {
+        // Convert tasks from object (keyed by taskId) to array
+        const tasksObj = projData.tasks as Record<string, Task> | undefined;
+        const tasksArray = tasksObj ? Object.values(tasksObj) : [];
+        
+        // Convert updates from object to array
+        const updatesObj = projData.updates as Record<string, ProjectUpdate> | undefined;
+        const updatesArray = updatesObj ? Object.values(updatesObj) : [];
+
+        // Cast priority and status to the correct union types
+        const priority = (projData.priority as Project['priority']) || 'medium';
+        const status = (projData.status as Project['status']) || 'not_started';
+
+        return {
           id: projId,
           name: projData.name || '',
           description: projData.description || '',
           department: projData.department || '',
           assignedTeamLeader: projData.assignedTeamLeader || '',
           assignedEmployees: projData.assignedEmployees || [],
-          tasks: projData.tasks || {},
+          tasks: tasksArray,
           startDate: projData.startDate || '',
           endDate: projData.endDate || '',
-          priority: projData.priority || 'medium',
-          status: projData.status || 'not_started',
+          priority: priority,
+          status: status,
           progress: projData.progress || 0,
           createdAt: projData.createdAt || '',
           createdBy: projData.createdBy || '',
-          updates: projData.updates || {},
-        }));
-        setProjects(allProjects);
-      } catch (err) {
-        console.error('Error loading global projects:', err);
-      }
-    });
-    return () => off(projectsRef);
-  }, [user]);
-
+          updates: updatesArray,
+        };
+      });
+      setProjects(allProjects);
+    } catch (err) {
+      console.error('Error loading global projects:', err);
+    }
+  });
+  return () => off(projectsRef);
+}, [user]);
   // Fetch ALL leave requests from all employees across all admins
   useEffect(() => {
     if (!user || employees.length === 0) return;

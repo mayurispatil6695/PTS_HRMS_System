@@ -134,52 +134,41 @@ const DailyTaskEmployee = () => {
 
   // Combine all tasks (standalone + project tasks)
   const allTasks = useMemo(() => [...taskHistory, ...projectTasks], [taskHistory, projectTasks]);
+useEffect(() => {
+  if (!user) return;
 
-  /* ================= FETCH ALL EMPLOYEES FROM ALL ADMINS ================= */
-  useEffect(() => {
-    if (!user) return;
-
-    const employeesRef = ref(database, "users");
+  const usersRef = ref(database, 'users');
+  const unsubscribe = onValue(usersRef, (snapshot) => {
     const allEmployees: Employee[] = [];
-
-    const unsubscribeEmployees = onValue(employeesRef, (snapshot: DataSnapshot) => {
-      allEmployees.length = 0;
-
-      if (snapshot.exists()) {
-        snapshot.forEach((adminSnap: DataSnapshot) => {
-          const adminId = adminSnap.key;
-          const employeesData = adminSnap.child("employees").val() as Record<string, FirebaseEmployeeData> | null;
-
-          if (employeesData && typeof employeesData === 'object') {
-            Object.entries(employeesData).forEach(([key, emp]) => {
-              if (emp.status === 'active') {
-                allEmployees.push({
-                  id: key,
-                  name: emp.name || '',
-                  email: emp.email || '',
-                  department: emp.department || 'No Department',
-                  designation: emp.designation || '',
-                  status: emp.status || 'active',
-                  adminId: adminId || ''
-                });
-              }
-            });
-          }
-        });
-      }
-
-      setEmployees([...allEmployees]);
-      setLoading(false);
-    }, (error: Error) => {
-      console.error('Error fetching employees:', error);
-      setLoading(false);
+    snapshot.forEach((childSnapshot) => {
+      const uid = childSnapshot.key;
+      const userData = childSnapshot.val();
+      if (userData.role === 'admin') return;
+      const profile = userData.profile || userData.employee;
+      if (!profile || !profile.name) return;
+      if (profile.status !== 'active') return;
+      
+      // ✅ Get the actual adminUid from the employee's profile
+      const adminId = profile.adminUid || '';
+      
+      allEmployees.push({
+        id: uid || '',
+        name: profile.name || '',
+        email: profile.email || '',
+        department: profile.department || 'No Department',
+        designation: profile.designation || '',
+        status: profile.status || 'active',
+        adminId: adminId,   // now correct
+      });
     });
-
-    return () => {
-      off(employeesRef);
-    };
-  }, [user]);
-
+    setEmployees(allEmployees);
+    setLoading(false);
+  }, (error) => {
+    console.error(error);
+    setLoading(false);
+  });
+  return () => off(usersRef);
+}, [user]);
   /* ================= FETCH ALL PROJECTS FROM ALL ADMINS ================= */
   useEffect(() => {
     if (!user) return;
@@ -220,44 +209,63 @@ const DailyTaskEmployee = () => {
   }, [user]);
 
   // Fetch project tasks from global projects node
-  useEffect(() => {
-    const projectsRef = ref(database, 'projects');
-    const unsubscribe = onValue(projectsRef, (snapshot) => {
-      const projectsData = snapshot.val();
-      if (!projectsData) {
-        setProjectTasks([]);
-        return;
-      }
-      const tasks: DailyTask[] = [];
-      for (const [projId, projData] of Object.entries(projectsData) as any[]) {
-        if (projData.tasks) {
-          for (const [taskId, taskData] of Object.entries(projData.tasks) as any[]) {
-            tasks.push({
-              id: taskId,
-              employeeId: taskData.assignedTo,
-              employeeName: taskData.employeeName || '',
-              email: taskData.email || '',
-              department: taskData.department || '',
-              task: taskData.title || taskData.task || '',
-              description: taskData.description || '',
-              date: taskData.dueDate ? taskData.dueDate.split('T')[0] : '',
-              time: '',
-              status: taskData.status || 'pending',
-              createdAt: taskData.createdAt || new Date().toISOString(),
-              projectId: projId,
-              projectName: projData.name,
-              assignedBy: taskData.createdBy,
-              assignedByName: taskData.createdByName,
-              adminId: projData.createdBy,
-            });
-          }
+ // Fetch project tasks from global projects node
+useEffect(() => {
+  const projectsRef = ref(database, 'projects');
+  const unsubscribe = onValue(projectsRef, (snapshot) => {
+    const projectsData = snapshot.val() as Record<string, {
+      name: string;
+      tasks?: Record<string, {
+        assignedTo?: string;
+        employeeName?: string;
+        email?: string;
+        department?: string;
+        title?: string;
+        task?: string;
+        description?: string;
+        dueDate?: string;
+        status?: string;
+        createdAt?: string;
+        createdBy?: string;
+        createdByName?: string;
+      }>;
+      createdBy?: string;
+    }> | null;
+    
+    if (!projectsData) {
+      setProjectTasks([]);
+      return;
+    }
+    
+    const tasks: DailyTask[] = [];
+    for (const [projId, projData] of Object.entries(projectsData)) {
+      if (projData.tasks) {
+        for (const [taskId, taskData] of Object.entries(projData.tasks)) {
+          tasks.push({
+            id: taskId,
+            employeeId: taskData.assignedTo || '',
+            employeeName: taskData.employeeName || '',
+            email: taskData.email || '',
+            department: taskData.department || '',
+            task: taskData.title || taskData.task || '',
+            description: taskData.description || '',
+            date: taskData.dueDate ? taskData.dueDate.split('T')[0] : '',
+            time: '',
+            status: (taskData.status as DailyTask['status']) || 'pending',
+            createdAt: taskData.createdAt || new Date().toISOString(),
+            projectId: projId,
+            projectName: projData.name,
+            assignedBy: taskData.createdBy,
+            assignedByName: taskData.createdByName,
+            adminId: projData.createdBy,
+          });
         }
       }
-      setProjectTasks(tasks);
-    });
-    return () => off(projectsRef);
-  }, []);
-
+    }
+    setProjectTasks(tasks);
+  });
+  return () => off(projectsRef);
+}, []);
   /* ================= FILTER EMPLOYEES BY DEPARTMENT ================= */
   useEffect(() => {
     if (selectedDepartment) {
@@ -482,8 +490,17 @@ const DailyTaskEmployee = () => {
     }
   };
 
-  const formatDate = (d: string) => format(new Date(d), 'MMM dd, yyyy');
-  const formatTime = (t: string) => t.slice(0, 5);
+ const formatDate = (d: string) => {
+  if (!d) return 'Invalid date';
+  const date = new Date(d);
+  if (isNaN(date.getTime())) return 'Invalid date';
+  return format(date, 'MMM dd, yyyy');
+};
+
+const formatTime = (t: string) => {
+  if (!t) return '';
+  return t.slice(0, 5);
+};
 
   const getBadge = (status: string) => {
     if (status === 'completed') return 'bg-green-100 text-green-700';
