@@ -12,6 +12,26 @@ import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
 
+// Firebase project data structure
+interface FirebaseProjectData {
+  name?: string;
+  description?: string;
+  department?: string;
+  assignedTeamLeader?: string;
+  assignedEmployees?: string[];
+  startDate?: string;
+  endDate?: string;
+  priority?: string;
+  status?: string;
+  projectType?: string;
+  specificDepartment?: string;
+  createdAt?: string;
+  createdBy?: string;
+  tasks?: Record<string, unknown>;
+  progress?: number;
+}
+
+// Project interface for the component
 interface Project {
   id: string;
   name: string;
@@ -27,17 +47,6 @@ interface Project {
   specificDepartment?: string;
   createdAt: string;
   createdBy: string;
-  userId?: string;
-  employeeName?: string;
-  employeeEmail?: string;
-}
-
-interface UserData {
-  id: string;
-  name: string;
-  email: string;
-  role: string;
-  department?: string;
 }
 
 const ProjectManagement = () => {
@@ -51,181 +60,123 @@ const ProjectManagement = () => {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
 
-  /* ================= CHECK IF USER IS ADMIN ================= */
-  const isAdmin = useMemo(() => {
-    return userRole === 'admin' || userRole === 'super_admin' || userRole === 'Administrator';
-  }, [userRole]);
+  const isAdmin = useMemo(() => userRole === 'admin', [userRole]);
+   const [adminNames, setAdminNames] = useState<Record<string, string>>({});
 
-  /* ================= FETCH PROJECTS ================= */
+  // Fetch admin names from users node
+useEffect(() => {
+  const usersRef = ref(database, 'users');
+  const unsubscribe = onValue(usersRef, (snapshot) => {
+    const users = snapshot.val();
+    if (users) {
+      const names: Record<string, string> = {};
+      for (const [uid, userData] of Object.entries(users) as any[]) {
+        if (userData.role === 'admin') {
+          names[uid] = userData.name || uid.slice(0, 8);
+        }
+      }
+      setAdminNames(names);
+    }
+  });
+  return () => off(usersRef);
+}, []);
+  // Fetch projects from the global `/projects` node
   useEffect(() => {
     if (!userId) return;
 
     setLoading(true);
     setError(null);
 
-    if (!isAdmin) {
-      // REGULAR USER: Fetch only their own projects
-      const projectsRef = ref(database, `users/${userId}/projects`);
-
-      const unsubscribe = onValue(
-        projectsRef,
-        (snapshot) => {
-          try {
-            const data = snapshot.val();
-            console.log("🔥 User Projects Data:", data);
-
-            if (!data) {
-              setProjects([]);
-              setLoading(false);
-              return;
-            }
-
-            const projectsData: Project[] = Object.entries(data)
-              .filter(([key]) => key && key.trim() !== '')
-              .map(([key, value]: [string, any]) => ({
-                id: key,
-                userId: userId,
-                ...(value as Omit<Project, 'id'>),
-              }))
-              .sort(
-                (a, b) =>
-                  new Date(b.createdAt || 0).getTime() -
-                  new Date(a.createdAt || 0).getTime()
-              );
-
-            setProjects(projectsData);
-          } catch (err) {
-            console.error("❌ Parsing error:", err);
-            setError("Error processing project data");
-          } finally {
+    const projectsRef = ref(database, 'projects');
+    const unsubscribe = onValue(
+      projectsRef,
+      (snapshot) => {
+        try {
+          const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
+          if (!data) {
+            setProjects([]);
             setLoading(false);
+            return;
           }
-        },
-        (err) => {
-          console.error("❌ Firebase error:", err);
-          setError("Failed to load projects");
+
+          // Convert object to array
+          const allProjects: Project[] = Object.entries(data).map(([projId, projData]) => ({
+            id: projId,
+            name: projData.name || '',
+            description: projData.description || '',
+            department: projData.department || '',
+            assignedTeamLeader: projData.assignedTeamLeader || '',
+            assignedEmployees: projData.assignedEmployees || [],
+            startDate: projData.startDate || '',
+            endDate: projData.endDate || '',
+            priority: projData.priority || 'medium',
+            status: projData.status || 'not_started',
+            projectType: projData.projectType || 'common',
+            specificDepartment: projData.specificDepartment,
+            createdAt: projData.createdAt || new Date().toISOString(),
+            createdBy: projData.createdBy || '',
+          }));
+
+          // For non‑admin users, filter projects where they are assigned
+          const filteredProjects = isAdmin
+            ? allProjects
+            : allProjects.filter((proj) => proj.assignedEmployees.includes(userId));
+
+          // Sort by creation date (newest first)
+          filteredProjects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+          setProjects(filteredProjects);
+          setLoading(false);
+        } catch (err) {
+          console.error('Error loading projects:', err);
+          setError('Failed to load projects');
           setLoading(false);
         }
-      );
+      },
+      (err) => {
+        console.error('Firebase error:', err);
+        setError('Failed to load projects from database');
+        setLoading(false);
+      }
+    );
 
-      return () => off(projectsRef);
-    } else {
-      // ADMIN: Fetch ALL projects from ALL users in the system
-      const usersRef = ref(database, 'users');
-      
-      const unsubscribe = onValue(
-        usersRef,
-        (snapshot) => {
-          try {
-            const usersData = snapshot.val();
-            console.log("🔥 All Users Data:", usersData);
-            
-            if (!usersData) {
-              setProjects([]);
-              setLoading(false);
-              return;
-            }
-
-            const allProjects: Project[] = [];
-            
-            // Loop through each user in the system
-            Object.entries(usersData).forEach(([uid, userData]: [string, any]) => {
-              // Skip if user doesn't have projects
-              if (!userData.projects) return;
-              
-              // Get employee name and email
-              const employeeName = userData.name || userData.email || `Employee (${uid.slice(0, 6)})`;
-              const employeeEmail = userData.email || '';
-              
-              // Loop through all projects of this user
-              Object.entries(userData.projects).forEach(([projectId, projectData]: [string, any]) => {
-                allProjects.push({
-                  id: projectId,
-                  userId: uid,
-                  employeeName: employeeName,
-                  employeeEmail: employeeEmail,
-                  ...(projectData as Omit<Project, 'id'>),
-                });
-              });
-            });
-
-            // Sort all projects by createdAt (newest first)
-            allProjects.sort(
-              (a, b) =>
-                new Date(b.createdAt || 0).getTime() -
-                new Date(a.createdAt || 0).getTime()
-            );
-
-            setProjects(allProjects);
-            console.log(`✅ Loaded ${allProjects.length} projects from ${Object.keys(usersData).length} users`);
-          } catch (err) {
-            console.error("❌ Error fetching all projects:", err);
-            setError("Error loading all projects data");
-          } finally {
-            setLoading(false);
-          }
-        },
-        (err) => {
-          console.error("❌ Firebase error:", err);
-          setError("Failed to load projects from database");
-          setLoading(false);
-        }
-      );
-
-      return () => off(usersRef);
-    }
+    return () => off(projectsRef);
   }, [userId, isAdmin]);
 
-  /* ================= COUNTS ================= */
+  // Counts for badges
   const counts = useMemo(() => {
     const completed = projects.filter((p) => p.status === 'completed').length;
     const inProgress = projects.filter((p) => p.status === 'in_progress').length;
     const pending = projects.filter((p) => p.status === 'pending').length;
     const onHold = projects.filter((p) => p.status === 'on_hold').length;
-    
     return { completed, inProgress, pending, onHold };
   }, [projects]);
 
-  /* ================= GROUP PROJECTS BY EMPLOYEE (FOR ADMIN) ================= */
-  const projectsByEmployee = useMemo(() => {
+  // Group projects by creator for admin view
+  const projectsByCreator = useMemo(() => {
     if (!isAdmin) return null;
-    
-    const grouped = projects.reduce((acc, project) => {
-      const employeeName = project.employeeName || 'Unknown Employee';
-      if (!acc[employeeName]) {
-        acc[employeeName] = [];
-      }
-      acc[employeeName].push(project);
-      return acc;
-    }, {} as Record<string, Project[]>);
-    
+    const grouped: Record<string, Project[]> = {};
+    for (const project of projects) {
+      const creatorId = project.createdBy || 'unknown';
+      if (!grouped[creatorId]) grouped[creatorId] = [];
+      grouped[creatorId].push(project);
+    }
     return grouped;
   }, [projects, isAdmin]);
 
-  /* ================= HANDLERS ================= */
   const handleProjectCreated = () => {
     setShowAddForm(false);
-    toast({
-      title: 'Project Created',
-      description: 'Your new project has been created successfully',
-    });
+    toast({ title: 'Project Created', description: 'Your new project has been created successfully' });
   };
 
   const handleProjectEdit = () => {
-    toast({
-      title: 'Project Updated',
-      description: 'Project updated successfully',
-    });
+    toast({ title: 'Project Updated', description: 'Project updated successfully' });
   };
 
   const handleProjectDelete = () => {
-    toast({
-      title: 'Project Deleted',
-      description: 'Project deleted successfully',
-    });
+    toast({ title: 'Project Deleted', description: 'Project deleted successfully' });
   };
 
-  /* ================= LOADING ================= */
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center h-64">
@@ -235,55 +186,50 @@ const ProjectManagement = () => {
     );
   }
 
-  /* ================= ERROR ================= */
   if (error) {
     return (
       <div className="text-center py-8 text-red-500">
         <p>{error}</p>
-        <Button 
-          onClick={() => window.location.reload()} 
-          variant="outline" 
-          className="mt-4"
-        >
+        <Button onClick={() => window.location.reload()} variant="outline" className="mt-4">
           Retry
         </Button>
       </div>
     );
   }
 
-  /* ================= RENDER ADMIN VIEW ================= */
+  // Admin view: group by creator
   const renderAdminView = () => {
-    if (!isAdmin || !projectsByEmployee) return null;
-
-    if (Object.keys(projectsByEmployee).length === 0) {
+    if (!projectsByCreator) return null;
+    const creatorEntries = Object.entries(projectsByCreator);
+    if (creatorEntries.length === 0) {
       return (
         <div className="text-center py-12 text-gray-500">
           <FolderOpen className="h-12 w-12 mx-auto mb-4 text-gray-400" />
           <p className="text-lg font-medium mb-2">No projects found</p>
-          <p className="text-sm">No employees have created any projects yet</p>
+          <p className="text-sm">No projects have been created yet</p>
         </div>
       );
     }
 
     return (
       <div className="space-y-8">
-        {Object.entries(projectsByEmployee).map(([employeeName, employeeProjects]) => (
-          <Card key={employeeName}>
+        {creatorEntries.map(([creatorId, creatorProjects]) => (
+          <Card key={creatorId}>
             <CardHeader className="bg-gray-50">
               <div className="flex items-center justify-between flex-wrap gap-2">
                 <div className="flex items-center gap-2">
                   <Users className="h-5 w-5 text-gray-600" />
-                  <CardTitle className="text-lg">{employeeName}</CardTitle>
+                 <CardTitle className="text-lg">Created by: {adminNames[creatorId] || creatorId.slice(0, 8)}</CardTitle>
                   <Badge variant="outline" className="ml-2">
-                    {employeeProjects.length} Project{employeeProjects.length !== 1 ? 's' : ''}
+                    {creatorProjects.length} Project{creatorProjects.length !== 1 ? 's' : ''}
                   </Badge>
                 </div>
                 <div className="flex gap-2">
                   <Badge variant="outline" className="bg-green-50">
-                    {employeeProjects.filter(p => p.status === 'completed').length} Completed
+                    {creatorProjects.filter((p) => p.status === 'completed').length} Completed
                   </Badge>
                   <Badge variant="outline" className="bg-blue-50">
-                    {employeeProjects.filter(p => p.status === 'in_progress').length} In Progress
+                    {creatorProjects.filter((p) => p.status === 'in_progress').length} In Progress
                   </Badge>
                 </div>
               </div>
@@ -291,7 +237,7 @@ const ProjectManagement = () => {
             <CardContent className="pt-6">
               {viewMode === 'grid' ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {employeeProjects.map((project, index) => (
+                  {creatorProjects.map((project, index) => (
                     <ProjectCard
                       key={project.id}
                       projectId={project.id}
@@ -303,7 +249,7 @@ const ProjectManagement = () => {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {employeeProjects.map((project, index) => (
+                  {creatorProjects.map((project, index) => (
                     <ProjectCard
                       key={project.id}
                       projectId={project.id}
@@ -321,7 +267,6 @@ const ProjectManagement = () => {
     );
   };
 
-  /* ================= UI ================= */
   return (
     <div className="space-y-6 px-4 sm:px-6">
       {/* HEADER */}
@@ -333,9 +278,9 @@ const ProjectManagement = () => {
         <div>
           <h1 className="text-2xl font-bold">Project Management</h1>
           <p className="text-gray-600 text-sm">
-            {isAdmin 
-              ? `Viewing all projects across the organization (${projects.length} total projects)` 
-              : "Create and manage your projects"}
+            {isAdmin
+              ? `Viewing all projects across the organization (${projects.length} total projects)`
+              : 'Create and manage your projects'}
           </p>
         </div>
 
@@ -344,9 +289,7 @@ const ProjectManagement = () => {
             type="single"
             value={viewMode}
             onValueChange={(value) => {
-              if (value === 'grid' || value === 'list') {
-                setViewMode(value);
-              }
+              if (value === 'grid' || value === 'list') setViewMode(value);
             }}
           >
             <ToggleGroupItem value="grid">
@@ -363,7 +306,6 @@ const ProjectManagement = () => {
               New Project
             </Button>
           )}
-          
           {isAdmin && (
             <Button onClick={() => setShowAddForm(true)} variant="outline">
               <Plus className="h-4 w-4 mr-2" />
@@ -384,9 +326,7 @@ const ProjectManagement = () => {
       {/* PROJECT LIST */}
       <Card>
         <CardHeader className="flex flex-col sm:flex-row justify-between gap-4">
-          <CardTitle>
-            {isAdmin ? 'All Employee Projects' : 'My Projects'} ({projects.length})
-          </CardTitle>
+          <CardTitle>{isAdmin ? 'All Projects' : 'My Projects'} ({projects.length})</CardTitle>
           <div className="flex gap-2 flex-wrap">
             {counts.completed > 0 && (
               <Badge variant="outline" className="bg-green-50">
@@ -417,9 +357,9 @@ const ProjectManagement = () => {
               <FolderOpen className="h-12 w-12 mx-auto mb-4 text-gray-400" />
               <p className="text-lg font-medium mb-2">No projects found</p>
               <p className="text-sm mb-4">
-                {isAdmin 
-                  ? "No projects have been created by any employees yet" 
-                  : "Get started by creating your first project"}
+                {isAdmin
+                  ? 'No projects have been created yet'
+                  : 'Get started by creating your first project'}
               </p>
               {!isAdmin && (
                 <Button onClick={() => setShowAddForm(true)}>

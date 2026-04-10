@@ -17,27 +17,6 @@ import { toast } from 'react-hot-toast';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 
-type FirebaseProject = Partial<Project> & {
-  progress?: number;
-  tasks?: Record<string, Task>;
-};
-
-interface Project {
-  id: string;
-  name: string;
-  description: string;
-  department: string;
-  startDate: string;
-  endDate: string;
-  priority: string;
-  status: string;
-  progress: number;
-  tasks: Record<string, Task>;
-  assignedTeamLeader?: string;
-  assignedEmployees?: string[];
-}
-
-// Define a type for change values (string | number | boolean | null)
 type ChangeValue = string | number | boolean | null;
 
 interface TaskUpdate {
@@ -72,6 +51,21 @@ interface Task {
   updatedAt?: string;
 }
 
+interface Project {
+  id: string;
+  name: string;
+  description: string;
+  department: string;
+  startDate: string;
+  endDate: string;
+  priority: string;
+  status: string;
+  progress: number;
+  tasks: Record<string, Task>;
+  assignedTeamLeader?: string;
+  assignedEmployees?: string[];
+}
+
 interface Employee {
   id: string;
   name: string;
@@ -79,7 +73,6 @@ interface Employee {
   designation: string;
 }
 
-// Type for Firebase project data as stored
 interface FirebaseProjectData {
   name?: string;
   description?: string;
@@ -136,12 +129,12 @@ const EmployeeProjects = () => {
     }
 
     if (isTeamLead) {
-      // Team lead: fetch projects from their own admin's node where they are the team leader
+      // Team lead: fetch projects from global node where they are the team leader
       if (!user.adminUid) {
         setLoading(false);
         return;
       }
-      const projectsRef = ref(database, `users/${user.adminUid}/projects`);
+      const projectsRef = ref(database, 'projects');
       const unsubscribe = onValue(projectsRef, (snapshot) => {
         try {
           const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
@@ -189,41 +182,34 @@ const EmployeeProjects = () => {
       });
       return () => unsubscribe();
     } else {
-      // Regular employee: fetch projects from ALL admins (global) where employee is assigned
-      const usersRef = ref(database, 'users');
-      const unsubscribe = onValue(usersRef, (snapshot) => {
+      // Regular employee: fetch from global projects node (single source of truth)
+      const projectsRef = ref(database, 'projects');
+      const unsubscribe = onValue(projectsRef, (snapshot) => {
         try {
-          const usersData = snapshot.val() as Record<string, { projects?: Record<string, FirebaseProjectData> }> | null;
-          if (!usersData) {
+          const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
+          if (!data) {
             setProjects([]);
             setLoading(false);
             return;
           }
           const allProjects: Project[] = [];
-          // Iterate over all users (potential admins)
-          for (const [uid, userData] of Object.entries(usersData)) {
-            // Skip if this user has no projects node
-            if (!userData.projects) continue;
-            // Iterate over that user's projects
-            for (const [projId, projData] of Object.entries(userData.projects)) {
-              // Check if current employee is assigned to this project
-              const assigned = projData.assignedEmployees || [];
-              if (assigned.includes(user.id)) {
-                allProjects.push({
-                  id: projId,
-                  name: projData.name || '',
-                  description: projData.description || '',
-                  department: projData.department || '',
-                  startDate: projData.startDate || '',
-                  endDate: projData.endDate || '',
-                  priority: projData.priority || 'low',
-                  status: projData.status || 'not_started',
-                  progress: Number(projData.progress ?? 0),
-                  tasks: projData.tasks || {},
-                  assignedTeamLeader: projData.assignedTeamLeader,
-                  assignedEmployees: projData.assignedEmployees || []
-                });
-              }
+          for (const [projId, projData] of Object.entries(data)) {
+            const assigned = projData.assignedEmployees || [];
+            if (assigned.includes(user.id)) {
+              allProjects.push({
+                id: projId,
+                name: projData.name || '',
+                description: projData.description || '',
+                department: projData.department || '',
+                startDate: projData.startDate || '',
+                endDate: projData.endDate || '',
+                priority: projData.priority || 'low',
+                status: projData.status || 'not_started',
+                progress: Number(projData.progress ?? 0),
+                tasks: projData.tasks || {},
+                assignedTeamLeader: projData.assignedTeamLeader,
+                assignedEmployees: projData.assignedEmployees || []
+              });
             }
           }
           setProjects(allProjects);
@@ -243,11 +229,11 @@ const EmployeeProjects = () => {
   }, [user, isTeamLead, employees]);
 
   const updateTaskStatus = async (projectId: string, taskId: string) => {
-    if (!user?.id || !user?.adminUid || !newTaskStatus) return;
+    if (!user?.id || !newTaskStatus) return;
 
     try {
-      const timestamp = Date.now().toString(); // Firebase key
-      const isoTime = new Date().toISOString(); // actual readable time
+      const timestamp = Date.now().toString();
+      const isoTime = new Date().toISOString();
       const changes = [{
         field: 'status',
         oldValue: projects.find(p => p.id === projectId)?.tasks[taskId]?.status || '',
@@ -255,63 +241,25 @@ const EmployeeProjects = () => {
       }];
 
       const updateData: TaskUpdate = {
-        timestamp: isoTime, // ✅ use ISO here
+        timestamp: isoTime,
         updatedBy: user.name || (isTeamLead ? 'Team Lead' : 'Employee'),
         updatedById: user.id,
-        updatedByRole: isTeamLead ? 'team_lead' : 'employee', // optional but recommended
+        updatedByRole: isTeamLead ? 'team_lead' : 'employee',
         changes,
         note: `Status updated by ${isTeamLead ? 'Team Lead' : 'Employee'}`
       };
-      // First update the task in admin's project
-      const adminUpdates = {
-        [`tasks/${taskId}/status`]: newTaskStatus,
-        [`tasks/${taskId}/updatedAt`]: new Date().toISOString(),
-        [`tasks/${taskId}/updates/${timestamp}`]: updateData
-      };
 
-      await update(
-        ref(database, `users/${user.adminUid}/projects/${projectId}`),
-        adminUpdates
-      );
-
-      // Get the task to find out who it's assigned to
-      const taskRef = ref(database, `users/${user.adminUid}/projects/${projectId}/tasks/${taskId}`);
-      const taskSnapshot = await get(taskRef);
-      const taskData = taskSnapshot.val();
-
-      if (isTeamLead) {
-        // If team lead is updating, only update the assigned employee's task
-        if (taskData.assignedTo) {
-          const employeeUpdates = {
-            [`tasks/${taskId}/status`]: newTaskStatus,
-            [`tasks/${taskId}/updatedAt`]: new Date().toISOString(),
-            [`tasks/${taskId}/updates/${timestamp}`]: updateData
-          };
-
-          await update(
-            ref(database, `users/${user.adminUid}/employees/${taskData.assignedTo}/projects/${projectId}`),
-            employeeUpdates
-          );
-        }
-      } else {
-        // If regular employee is updating, update their own task
-        const employeeUpdates = {
-          [`tasks/${taskId}/status`]: newTaskStatus,
-          [`tasks/${taskId}/updatedAt`]: new Date().toISOString(),
-          [`tasks/${taskId}/updates/${timestamp}`]: updateData
-        };
-
-        await update(
-          ref(database, `users/${user.adminUid}/employees/${user.id}/projects/${projectId}`),
-          employeeUpdates
-        );
-      }
+      // Update global project node
+      await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
+        status: newTaskStatus,
+        updatedAt: new Date().toISOString(),
+        [`updates/${timestamp}`]: updateData
+      });
 
       // Update local state
       setProjects(prev =>
         prev.map(p => {
           if (p.id !== projectId) return p;
-
           const updatedTasks = { ...p.tasks };
           updatedTasks[taskId] = {
             ...updatedTasks[taskId],
@@ -322,11 +270,7 @@ const EmployeeProjects = () => {
               [timestamp]: updateData
             }
           };
-
-          return {
-            ...p,
-            tasks: updatedTasks
-          };
+          return { ...p, tasks: updatedTasks };
         })
       );
 
@@ -340,7 +284,7 @@ const EmployeeProjects = () => {
   };
 
   const addTaskComment = async (projectId: string, taskId: string) => {
-    if (!user?.id || !user?.adminUid || !taskComment.trim()) {
+    if (!user?.id || !taskComment.trim()) {
       toast.error("Please enter a comment");
       return;
     }
@@ -354,51 +298,21 @@ const EmployeeProjects = () => {
         createdById: user.id
       };
 
-      // First add to admin's project
-      const adminCommentRef = ref(
-        database,
-        `users/${user.adminUid}/projects/${projectId}/tasks/${taskId}/comments/${timestamp}`
+      await set(
+        ref(database, `projects/${projectId}/tasks/${taskId}/comments/${timestamp}`),
+        commentData
       );
-      await set(adminCommentRef, commentData);
-
-      // Get the task to find out who it's assigned to
-      const taskRef = ref(database, `users/${user.adminUid}/projects/${projectId}/tasks/${taskId}`);
-      const taskSnapshot = await get(taskRef);
-      const taskData = taskSnapshot.val();
-
-      if (isTeamLead) {
-        // If team lead is commenting, only add to the assigned employee's task
-        if (taskData.assignedTo) {
-          const employeeCommentRef = ref(
-            database,
-            `users/${user.adminUid}/employees/${taskData.assignedTo}/projects/${projectId}/tasks/${taskId}/comments/${timestamp}`
-          );
-          await set(employeeCommentRef, commentData);
-        }
-      } else {
-        // If regular employee is commenting, add to their own task
-        const employeeCommentRef = ref(
-          database,
-          `users/${user.adminUid}/employees/${user.id}/projects/${projectId}/tasks/${taskId}/comments/${timestamp}`
-        );
-        await set(employeeCommentRef, commentData);
-      }
 
       // Update local state
       setProjects(prev =>
         prev.map(p => {
           if (p.id !== projectId) return p;
-
           const updatedTasks = { ...p.tasks };
           if (!updatedTasks[taskId].comments) {
             updatedTasks[taskId].comments = {};
           }
           updatedTasks[taskId].comments[timestamp] = commentData;
-
-          return {
-            ...p,
-            tasks: updatedTasks
-          };
+          return { ...p, tasks: updatedTasks };
         })
       );
 

@@ -315,115 +315,41 @@ useEffect(() => {
   
 // Fetch ALL projects from all admins
 // Fetch ALL projects from all admins
-useEffect(() => {
-  if (!user) return;
+ useEffect(() => {
+    if (!user) return;
 
-  const projectsRef = ref(database, "users");
-  const allProjects: Project[] = [];
-
-  // Define interface for raw task data from Firebase
-  interface RawTaskData {
-    id?: string;
-    title?: string;
-    description?: string;
-    assignedTo?: string;
-    status?: string;
-    priority?: string;
-    dueDate?: string;
-    createdAt?: number | string;
-    completedAt?: number | string;
-  }
-
-  // Helper to convert timestamp to ISO string
-  const toISOString = (timestamp: number | string | undefined): string => {
-    if (!timestamp) return new Date().toISOString();
-    if (typeof timestamp === 'string') return timestamp;
-    return new Date(timestamp).toISOString();
-  };
-
-  // Helper to map status string to union type
-  const mapStatus = (status: string): Project['status'] => {
-    switch (status) {
-      case 'active': return 'in_progress';
-      case 'paused': return 'on_hold';
-      case 'completed': return 'completed';
-      default: return 'not_started';
-    }
-  };
-
-  // Helper to map priority string to union type
-  const mapPriority = (priority: string): Project['priority'] => {
-    switch (priority?.toLowerCase()) {
-      case 'low': return 'low';
-      case 'medium': return 'medium';
-      case 'high': return 'high';
-      case 'urgent': return 'urgent';
-      default: return 'medium';
-    }
-  };
-
-  const unsubscribeProjects = onValue(projectsRef, (snapshot: DataSnapshot) => {
-    allProjects.length = 0;
-
-    if (snapshot.exists()) {
-      snapshot.forEach((adminSnap: DataSnapshot) => {
-        const projectsData = adminSnap.child("projects").val() as Record<string, unknown> | null;
-
-        if (projectsData && typeof projectsData === 'object') {
-          Object.entries(projectsData).forEach(([key, value]) => {
-            const projectRaw = value as Record<string, unknown>;
-
-            // Extract tasks
-           // Convert tasks from object (key-value) to array
-const rawTasksObj = projectRaw.tasks as Record<string, RawTaskData> | undefined;
-const mappedTasks: Task[] = rawTasksObj
-  ? Object.values(rawTasksObj).map((task) => ({
-      id: task.id || crypto.randomUUID(),
-      title: task.title || '',
-      description: task.description || '',
-      assignedTo: task.assignedTo || '',
-      status: (task.status as Task['status']) || 'pending',
-      priority: (task.priority as Task['priority']) || 'medium',
-      dueDate: task.dueDate || '',
-      createdAt: toISOString(task.createdAt),
-      completedAt: task.completedAt ? toISOString(task.completedAt) : undefined
-    }))
-  : [];
-
-            const project: Project = {
-              id: key,
-              name: (projectRaw.name as string) || '',
-              description: (projectRaw.description as string) || '',
-              department: (projectRaw.department as string) || '',
-              assignedTeamLeader: (projectRaw.assignedTeamLeader as string) || '',
-              assignedEmployees: (projectRaw.assignedEmployees as string[]) || (projectRaw.assignedTo as string[]) || [],
-              tasks: mappedTasks,
-              startDate: (projectRaw.startDate as string) || '',
-              endDate: (projectRaw.endDate as string) || '',
-              priority: mapPriority(projectRaw.priority as string),
-              status: mapStatus(projectRaw.status as string),
-              progress: (projectRaw.progress as number) || 0,
-              createdAt: toISOString(projectRaw.createdAt as number | string | undefined),
-              createdBy: (projectRaw.createdBy as string) || '',
-              lastUpdated: projectRaw.lastUpdated ? toISOString(projectRaw.lastUpdated as number | string) : undefined,
-              updates: (projectRaw.updates as ProjectUpdate[]) || []
-            };
-
-            allProjects.push(project);
-          });
+    const projectsRef = ref(database, 'projects');
+    const unsubscribe = onValue(projectsRef, (snapshot) => {
+      try {
+        const data = snapshot.val();
+        if (!data) {
+          setProjects([]);
+          return;
         }
-      });
-    }
-
-    setProjects([...allProjects]);
-  }, (error: Error) => {
-    console.error('Error fetching projects:', error);
-  });
-
-  return () => {
-    off(projectsRef);
-  };
-}, [user]);
+        const allProjects: Project[] = Object.entries(data).map(([projId, projData]: [string, any]) => ({
+          id: projId,
+          name: projData.name || '',
+          description: projData.description || '',
+          department: projData.department || '',
+          assignedTeamLeader: projData.assignedTeamLeader || '',
+          assignedEmployees: projData.assignedEmployees || [],
+          tasks: projData.tasks || {},
+          startDate: projData.startDate || '',
+          endDate: projData.endDate || '',
+          priority: projData.priority || 'medium',
+          status: projData.status || 'not_started',
+          progress: projData.progress || 0,
+          createdAt: projData.createdAt || '',
+          createdBy: projData.createdBy || '',
+          updates: projData.updates || {},
+        }));
+        setProjects(allProjects);
+      } catch (err) {
+        console.error('Error loading global projects:', err);
+      }
+    });
+    return () => off(projectsRef);
+  }, [user]);
 
   // Fetch ALL leave requests from all employees across all admins
   useEffect(() => {

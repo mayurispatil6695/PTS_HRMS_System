@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Card, CardHeader, CardTitle, CardContent
 } from '../ui/card';
@@ -11,14 +11,14 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '../ui/table';
-import { ref, push, set, onValue, off, query, orderByChild, DataSnapshot } from 'firebase/database';
+import { ref, push, set, onValue, off, query, orderByChild, DataSnapshot, remove } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from '../ui/use-toast';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { motion } from 'framer-motion';
-import { Users, Calendar, Clock, Filter, Search, RefreshCw } from 'lucide-react';
+import { Users, Calendar, Clock, Filter, Search, RefreshCw, Trash2 } from 'lucide-react';
 
 /* ================= TYPES ================= */
 
@@ -30,7 +30,6 @@ interface FirebaseEmployeeData {
   status: string;
   phone?: string;
   profileImage?: string;
-  // other possible fields
 }
 
 interface FirebaseProjectData {
@@ -66,7 +65,7 @@ interface Employee {
   department: string;
   designation?: string;
   status: string;
-  adminId: string; // Track which admin this employee belongs to
+  adminId: string;
 }
 
 interface Project {
@@ -104,6 +103,7 @@ const DailyTaskEmployee = () => {
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [taskHistory, setTaskHistory] = useState<DailyTask[]>([]);
+  const [projectTasks, setProjectTasks] = useState<DailyTask[]>([]);
   const [filteredTasks, setFilteredTasks] = useState<DailyTask[]>([]);
 
   const [selectedDepartment, setSelectedDepartment] = useState('');
@@ -131,6 +131,9 @@ const DailyTaskEmployee = () => {
     time: getTime(),
     status: 'pending' as const
   });
+
+  // Combine all tasks (standalone + project tasks)
+  const allTasks = useMemo(() => [...taskHistory, ...projectTasks], [taskHistory, projectTasks]);
 
   /* ================= FETCH ALL EMPLOYEES FROM ALL ADMINS ================= */
   useEffect(() => {
@@ -216,6 +219,45 @@ const DailyTaskEmployee = () => {
     };
   }, [user]);
 
+  // Fetch project tasks from global projects node
+  useEffect(() => {
+    const projectsRef = ref(database, 'projects');
+    const unsubscribe = onValue(projectsRef, (snapshot) => {
+      const projectsData = snapshot.val();
+      if (!projectsData) {
+        setProjectTasks([]);
+        return;
+      }
+      const tasks: DailyTask[] = [];
+      for (const [projId, projData] of Object.entries(projectsData) as any[]) {
+        if (projData.tasks) {
+          for (const [taskId, taskData] of Object.entries(projData.tasks) as any[]) {
+            tasks.push({
+              id: taskId,
+              employeeId: taskData.assignedTo,
+              employeeName: taskData.employeeName || '',
+              email: taskData.email || '',
+              department: taskData.department || '',
+              task: taskData.title || taskData.task || '',
+              description: taskData.description || '',
+              date: taskData.dueDate ? taskData.dueDate.split('T')[0] : '',
+              time: '',
+              status: taskData.status || 'pending',
+              createdAt: taskData.createdAt || new Date().toISOString(),
+              projectId: projId,
+              projectName: projData.name,
+              assignedBy: taskData.createdBy,
+              assignedByName: taskData.createdByName,
+              adminId: projData.createdBy,
+            });
+          }
+        }
+      }
+      setProjectTasks(tasks);
+    });
+    return () => off(projectsRef);
+  }, []);
+
   /* ================= FILTER EMPLOYEES BY DEPARTMENT ================= */
   useEffect(() => {
     if (selectedDepartment) {
@@ -227,14 +269,13 @@ const DailyTaskEmployee = () => {
     }
   }, [selectedDepartment, employees]);
 
-  /* ================= FETCH ALL TASKS FROM ALL EMPLOYEES ACROSS ALL ADMINS ================= */
+  /* ================= FETCH ALL STANDALONE TASKS ================= */
   useEffect(() => {
     if (!user || employees.length === 0) return;
 
     const unsubscribers: (() => void)[] = [];
-    const allTasks: DailyTask[] = [];
+    const allTasksTemp: DailyTask[] = [];
 
-    // Group employees by adminId
     const employeesByAdmin = employees.reduce((acc, emp) => {
       if (emp.adminId) {
         if (!acc[emp.adminId]) acc[emp.adminId] = [];
@@ -251,10 +292,9 @@ const DailyTaskEmployee = () => {
         const unsubscribe = onValue(tasksQuery, (snapshot: DataSnapshot) => {
           const data = snapshot.val() as Record<string, FirebaseTaskData> | null;
           
-          // Remove existing tasks for this employee
-          const index = allTasks.findIndex(t => t.employeeId === employee.id);
+          const index = allTasksTemp.findIndex(t => t.employeeId === employee.id);
           if (index !== -1) {
-            allTasks.splice(index, 1);
+            allTasksTemp.splice(index, 1);
           }
 
           if (data && typeof data === 'object') {
@@ -277,10 +317,10 @@ const DailyTaskEmployee = () => {
               assignedByName: taskData.assignedByName
             }));
             
-            allTasks.push(...tasks);
+            allTasksTemp.push(...tasks);
           }
           
-          setTaskHistory([...allTasks].sort((a, b) => 
+          setTaskHistory([...allTasksTemp].sort((a, b) => 
             new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
           ));
         });
@@ -294,7 +334,7 @@ const DailyTaskEmployee = () => {
 
   /* ================= APPLY FILTERS TO TASKS ================= */
   useEffect(() => {
-    let filtered = [...taskHistory];
+    let filtered = [...allTasks];
 
     if (searchTerm) {
       const term = searchTerm.toLowerCase();
@@ -318,7 +358,44 @@ const DailyTaskEmployee = () => {
     }
 
     setFilteredTasks(filtered);
-  }, [searchTerm, filterDate, filterStatus, filterDepartment, taskHistory]);
+  }, [searchTerm, filterDate, filterStatus, filterDepartment, allTasks]);
+
+  /* ================= DELETE TASK ================= */
+  const handleDeleteTask = async (task: DailyTask) => {
+    if (!window.confirm(`Are you sure you want to delete the task "${task.task}" for ${task.employeeName}?`)) {
+      return;
+    }
+
+    if (!task.id) {
+      toast({ title: "Error", description: "Task ID not found", variant: "destructive" });
+      return;
+    }
+
+    try {
+      // Determine if it's a standalone or project task
+      if (task.projectId) {
+        // Project task: delete from global projects node
+        const projectTaskRef = ref(database, `projects/${task.projectId}/tasks/${task.id}`);
+        await remove(projectTaskRef);
+        // Also remove from local projectTasks state
+        setProjectTasks(prev => prev.filter(t => t.id !== task.id));
+      } else {
+        // Standalone task: delete from employee's dailyTasks node
+        if (!task.adminId || !task.employeeId) {
+          toast({ title: "Error", description: "Unable to determine admin or employee", variant: "destructive" });
+          return;
+        }
+        const taskRef = ref(database, `users/${task.adminId}/employees/${task.employeeId}/dailyTasks/${task.id}`);
+        await remove(taskRef);
+        setTaskHistory(prev => prev.filter(t => t.id !== task.id));
+      }
+
+      toast({ title: "Success", description: "Task deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting task:", error);
+      toast({ title: "Error", description: "Failed to delete task", variant: "destructive" });
+    }
+  };
 
   /* ================= SUBMIT TASK ================= */
   const handleSubmit = async (e: React.FormEvent) => {
@@ -338,7 +415,6 @@ const DailyTaskEmployee = () => {
       return toast({ title: "Please select a valid project", variant: "destructive" });
     }
 
-    // Find the employee to get their adminId
     const selectedEmployee = employees.find(emp => emp.id === formData.employeeId);
     if (!selectedEmployee?.adminId) {
       return toast({ title: "Unable to determine employee's admin", variant: "destructive" });
@@ -359,26 +435,33 @@ const DailyTaskEmployee = () => {
         })
       };
 
-      // SAVE IN EMPLOYEE'S DAILY TASKS
-      const empTaskRef = push(
-        ref(database, `users/${selectedEmployee.adminId}/employees/${formData.employeeId}/dailyTasks`)
-      );
-      await set(empTaskRef, newTask);
-
-      // SAVE IN PROJECT IF PROJECT TASK
       if (taskType === 'project' && selectedProject) {
-        const projectAdmin = projects.find(p => p.id === selectedProject)?.adminId;
-        if (projectAdmin) {
-          const projTaskRef = push(
-            ref(database, `users/${projectAdmin}/projects/${selectedProject}/tasks`)
-          );
-          await set(projTaskRef, newTask);
-        }
+        // Save to global projects node
+        const projectRef = ref(database, `projects/${selectedProject}/tasks`);
+        const newTaskRef = push(projectRef);
+        await set(newTaskRef, {
+          title: newTask.task,
+          description: newTask.description,
+          assignedTo: newTask.employeeId,
+          employeeName: newTask.employeeName,
+          email: newTask.email,
+          department: newTask.department,
+          dueDate: newTask.date,
+          status: newTask.status,
+          createdAt: newTask.createdAt,
+          createdBy: newTask.assignedBy,
+          createdByName: newTask.assignedByName,
+        });
+      } else {
+        // Save to employee's dailyTasks node
+        const empTaskRef = push(
+          ref(database, `users/${selectedEmployee.adminId}/employees/${formData.employeeId}/dailyTasks`)
+        );
+        await set(empTaskRef, newTask);
       }
 
       toast({ title: "Task Added Successfully ✅", variant: "default" });
 
-      // Reset form
       setFormData({
         ...formData,
         task: '',
@@ -415,7 +498,6 @@ const DailyTaskEmployee = () => {
     setFilterDepartment('all');
   };
 
-  // Get unique departments for filter
   const departments = [...new Set(employees.map(emp => emp.department))].filter(Boolean);
 
   return (
@@ -625,12 +707,13 @@ const DailyTaskEmployee = () => {
                     <TableHead>Project</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Time</TableHead>
+                    <TableHead>Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {loading ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-8">
+                      <TableCell colSpan={8} className="text-center py-8">
                         <div className="flex justify-center items-center">
                           <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
                         </div>
@@ -638,7 +721,7 @@ const DailyTaskEmployee = () => {
                     </TableRow>
                   ) : filteredTasks.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={7} className="text-center py-8 text-gray-500">
+                      <TableCell colSpan={8} className="text-center py-8 text-gray-500">
                         No tasks found matching your filters
                       </TableCell>
                     </TableRow>
@@ -690,6 +773,16 @@ const DailyTaskEmployee = () => {
                             <Clock className="h-3 w-3 text-gray-400" />
                             <span className="text-sm">{formatTime(task.time)}</span>
                           </div>
+                        </TableCell>
+                        <TableCell>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleDeleteTask(task)}
+                            className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                          >
+                            <Trash2 className="h-4 w-4" />
+                          </Button>
                         </TableCell>
                       </motion.tr>
                     ))

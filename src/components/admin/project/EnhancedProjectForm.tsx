@@ -289,12 +289,8 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
         };
       });
 
-      // Store project in admin's projects
-      await set(
-        ref(database, `users/${user.id}/projects/${projectId}`),
-        projectData
-      );
-
+     
+      await set(ref(database, `projects/${projectId}`), projectData);
       // Prepare employees to assign (team leader + assigned employees)
     // In the handleSubmit function, modify the employee assignment logic:
 const employeesToAssign = [
