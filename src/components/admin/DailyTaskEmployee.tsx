@@ -11,7 +11,7 @@ import {
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from '../ui/table';
-import { ref, push, set, onValue, off, query, orderByChild } from 'firebase/database';
+import { ref, push, set, onValue, off, query, orderByChild, DataSnapshot } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from '../ui/use-toast';
@@ -22,6 +22,43 @@ import { Users, Calendar, Clock, Filter, Search, RefreshCw } from 'lucide-react'
 
 /* ================= TYPES ================= */
 
+interface FirebaseEmployeeData {
+  name: string;
+  email: string;
+  department: string;
+  designation?: string;
+  status: string;
+  phone?: string;
+  profileImage?: string;
+  // other possible fields
+}
+
+interface FirebaseProjectData {
+  name: string;
+  description?: string;
+  status?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+interface FirebaseTaskData {
+  task: string;
+  description?: string;
+  date: string;
+  time: string;
+  status: 'pending' | 'in-progress' | 'completed';
+  createdAt: string;
+  projectId?: string;
+  projectName?: string;
+  assignedBy?: string;
+  assignedByName?: string;
+  adminId?: string;
+  employeeId?: string;
+  employeeName?: string;
+  email?: string;
+  department?: string;
+}
+
 interface Employee {
   id: string;
   name: string;
@@ -29,7 +66,7 @@ interface Employee {
   department: string;
   designation?: string;
   status: string;
-  adminId?: string; // Track which admin this employee belongs to
+  adminId: string; // Track which admin this employee belongs to
 }
 
 interface Project {
@@ -37,7 +74,7 @@ interface Project {
   name: string;
   description?: string;
   status?: string;
-  adminId?: string; // Track which admin this project belongs to
+  adminId: string;
 }
 
 interface DailyTask {
@@ -54,7 +91,7 @@ interface DailyTask {
   createdAt: string;
   projectId?: string;
   projectName?: string;
-  adminId?: string; // Track which admin assigned this task
+  adminId?: string;
   assignedBy?: string;
   assignedByName?: string;
 }
@@ -102,18 +139,16 @@ const DailyTaskEmployee = () => {
     const employeesRef = ref(database, "users");
     const allEmployees: Employee[] = [];
 
-    const unsubscribeEmployees = onValue(employeesRef, (snapshot) => {
+    const unsubscribeEmployees = onValue(employeesRef, (snapshot: DataSnapshot) => {
       allEmployees.length = 0;
 
       if (snapshot.exists()) {
-        snapshot.forEach((adminSnap) => {
+        snapshot.forEach((adminSnap: DataSnapshot) => {
           const adminId = adminSnap.key;
-          const employeesData = adminSnap.child("employees").val();
+          const employeesData = adminSnap.child("employees").val() as Record<string, FirebaseEmployeeData> | null;
 
           if (employeesData && typeof employeesData === 'object') {
-            Object.entries(employeesData).forEach(([key, value]) => {
-              const emp = value as any;
-              
+            Object.entries(employeesData).forEach(([key, emp]) => {
               if (emp.status === 'active') {
                 allEmployees.push({
                   id: key,
@@ -132,7 +167,7 @@ const DailyTaskEmployee = () => {
 
       setEmployees([...allEmployees]);
       setLoading(false);
-    }, (error) => {
+    }, (error: Error) => {
       console.error('Error fetching employees:', error);
       setLoading(false);
     });
@@ -149,18 +184,16 @@ const DailyTaskEmployee = () => {
     const projectsRef = ref(database, "users");
     const allProjects: Project[] = [];
 
-    const unsubscribeProjects = onValue(projectsRef, (snapshot) => {
+    const unsubscribeProjects = onValue(projectsRef, (snapshot: DataSnapshot) => {
       allProjects.length = 0;
 
       if (snapshot.exists()) {
-        snapshot.forEach((adminSnap) => {
+        snapshot.forEach((adminSnap: DataSnapshot) => {
           const adminId = adminSnap.key;
-          const projectsData = adminSnap.child("projects").val();
+          const projectsData = adminSnap.child("projects").val() as Record<string, FirebaseProjectData> | null;
 
           if (projectsData && typeof projectsData === 'object') {
-            Object.entries(projectsData).forEach(([key, value]) => {
-              const project = value as any;
-              
+            Object.entries(projectsData).forEach(([key, project]) => {
               allProjects.push({
                 id: key,
                 name: project.name || '',
@@ -174,7 +207,7 @@ const DailyTaskEmployee = () => {
       }
 
       setProjects([...allProjects]);
-    }, (error) => {
+    }, (error: Error) => {
       console.error('Error fetching projects:', error);
     });
 
@@ -215,8 +248,8 @@ const DailyTaskEmployee = () => {
         const taskRef = ref(database, `users/${adminId}/employees/${employee.id}/dailyTasks`);
         const tasksQuery = query(taskRef, orderByChild('createdAt'));
 
-        const unsubscribe = onValue(tasksQuery, (snapshot) => {
-          const data = snapshot.val();
+        const unsubscribe = onValue(tasksQuery, (snapshot: DataSnapshot) => {
+          const data = snapshot.val() as Record<string, FirebaseTaskData> | null;
           
           // Remove existing tasks for this employee
           const index = allTasks.findIndex(t => t.employeeId === employee.id);
@@ -225,18 +258,24 @@ const DailyTaskEmployee = () => {
           }
 
           if (data && typeof data === 'object') {
-            const tasks: DailyTask[] = Object.entries(data).map(([key, value]) => {
-              const taskData = value as any;
-              return {
-                id: key,
-                employeeId: employee.id,
-                employeeName: employee.name,
-                email: employee.email,
-                department: employee.department,
-                adminId: adminId,
-                ...taskData
-              };
-            });
+            const tasks: DailyTask[] = Object.entries(data).map(([key, taskData]) => ({
+              id: key,
+              employeeId: employee.id,
+              employeeName: employee.name,
+              email: employee.email,
+              department: employee.department,
+              adminId: adminId,
+              task: taskData.task,
+              description: taskData.description || '',
+              date: taskData.date,
+              time: taskData.time,
+              status: taskData.status,
+              createdAt: taskData.createdAt,
+              projectId: taskData.projectId,
+              projectName: taskData.projectName,
+              assignedBy: taskData.assignedBy,
+              assignedByName: taskData.assignedByName
+            }));
             
             allTasks.push(...tasks);
           }

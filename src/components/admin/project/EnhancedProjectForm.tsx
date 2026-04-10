@@ -99,50 +99,57 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
 
   const departments = ['Software Development', 'Digital Marketing','Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', ' Artificial Intelligence'];
 
-  useEffect(() => {
-    if (!user) return;
+ useEffect(() => {
+  if (!user) return;
 
-    setLoading(true);
-    setError(null);
+  setLoading(true);
+  setError(null);
 
-    const employeesRef = ref(database, `users/${user.id}/employees`);
+  const usersRef = ref(database, 'users');
 
-    const fetchEmployees = onValue(employeesRef, (snapshot) => {
-      try {
-        const employeesData: Employee[] = [];
-        
-        snapshot.forEach((childSnapshot) => {
-          const employeeId = childSnapshot.key;
-          const employeeData = childSnapshot.val();
+  const fetchEmployees = onValue(usersRef, (snapshot) => {
+    try {
+      const employeesData: Employee[] = [];
+      
+      snapshot.forEach((childSnapshot) => {
+        const uid = childSnapshot.key;
+        const userData = childSnapshot.val();
 
-          if (employeeData && employeeData.status === 'active') {
-            employeesData.push({
-              id: employeeId || '',
-              name: employeeData.name || '',
-              email: employeeData.email || '',
-              department: employeeData.department || '',
-              designation: employeeData.designation || '',
-              isActive: employeeData.status === 'active',
-            });
-          }
+        // Skip if user is an admin
+        if (userData.role === 'admin') return;
+
+        // Get employee profile (stored in 'profile' or 'employee' node)
+        const profile = userData.profile || userData.employee;
+        if (!profile || !profile.name) return;
+
+        // Only include active employees
+        if (profile.status !== 'active') return;
+
+        employeesData.push({
+          id: uid || '',
+          name: profile.name || '',
+          email: profile.email || '',
+          department: profile.department || '',
+          designation: profile.designation || '',
+          isActive: true,
         });
+      });
 
-        setEmployees(employeesData);
-        setLoading(false);
-      } catch (err) {
-        console.error('Error processing employee data:', err);
-        setError('Failed to process employee data');
-        setLoading(false);
-      }
-    }, (error) => {
-      console.error('Error fetching employees:', error);
-      setError('Failed to load employees');
+      setEmployees(employeesData);
       setLoading(false);
-    });
+    } catch (err) {
+      console.error('Error processing employee data:', err);
+      setError('Failed to process employee data');
+      setLoading(false);
+    }
+  }, (error) => {
+    console.error('Error fetching employees:', error);
+    setError('Failed to load employees');
+    setLoading(false);
+  });
 
-    return () => off(employeesRef);
-  }, [user]);
-
+  return () => off(usersRef);
+}, [user]);
   useEffect(() => {
     if (formData.projectType === 'common') {
       setFilteredEmployees(employees);
@@ -298,8 +305,6 @@ const employeesToAssign = [
 await Promise.all(
   employeesToAssign.map(async (employeeId) => {
     const isTeamLead = employees.find(e => e.id === employeeId)?.designation === 'Team Lead';
-    
-    // Team Leads get all tasks, regular employees get only their assigned tasks
     const tasksToAssign = isTeamLead 
       ? formData.tasks 
       : formData.tasks.filter(task => task.assignedTo === employeeId);
@@ -313,21 +318,24 @@ await Promise.all(
             [Date.now().toString()]: {
               updatedBy: user.name || 'Admin',
               updatedById: user.id,
-              changes: [{
-                field: 'status',
-                oldValue: '',
-                newValue: task.status
-              }],
+              changes: [{ field: 'status', oldValue: '', newValue: task.status }],
               note: 'Task created'
             }
           }
         };
         return acc;
-      }, {} as Record<string, StoredTask>)
+      }, {} as Record<string, any>)
     };
 
+    // 1. Store in admin's employee sub‑node (for admin overview)
     await set(
       ref(database, `users/${user.id}/employees/${employeeId}/projects/${projectId}`),
+      employeeProjectData
+    );
+
+    // ✅ 2. Store in employee's own projects node (for employee dashboard)
+    await set(
+      ref(database, `users/${employeeId}/projects/${projectId}`),
       employeeProjectData
     );
   })

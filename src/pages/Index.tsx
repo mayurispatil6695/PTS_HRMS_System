@@ -1,9 +1,11 @@
-
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
 import EnhancedLoginPage from '../components/auth/EnhancedLoginPage';
 import AdminDashboard from '../components/admin/AdminDashboard';
 import EmployeeDashboard from '../components/employee/EmployeeDashboard';
+import TeamManagerDashboard from '../components/team-manager/TeamManagerDashboard';
+import TeamLeaderDashboard from '../components/team-leader/TeamLeaderDashboard';
+import ClientDashboard from '../components/client/ClientDashboard';
 import { useAuth } from '../hooks/useAuth';
 
 const Index = () => {
@@ -17,11 +19,27 @@ const Index = () => {
     );
   }
 
+  // Role‑based redirect mapping
+  const getDashboardPath = (role: string) => {
+    switch (role) {
+      case 'admin': return '/admin';
+      case 'team_manager': return '/manager';
+      case 'team_leader': return '/leader';
+      case 'client': return '/client';
+      default: return '/employee';
+    }
+  };
+
   return (
     <Routes>
-      <Route path="/login" element={!user ? <EnhancedLoginPage /> : <Navigate to={user.role === 'admin' ? '/admin' : '/employee'} />} />
+      <Route path="/login" element={!user ? <EnhancedLoginPage /> : <Navigate to={getDashboardPath(user.role)} />} />
+      
       <Route path="/admin/*" element={user?.role === 'admin' ? <AdminDashboard /> : <Navigate to="/login" />} />
+      <Route path="/manager/*" element={user?.role === 'team_manager' ? <TeamManagerDashboard /> : <Navigate to="/login" />} />
+      <Route path="/leader/*" element={user?.role === 'team_leader' ? <TeamLeaderDashboard /> : <Navigate to="/login" />} />
+      <Route path="/client/*" element={user?.role === 'client' ? <ClientDashboard /> : <Navigate to="/login" />} />
       <Route path="/employee/*" element={user?.role === 'employee' ? <EmployeeDashboard /> : <Navigate to="/login" />} />
+      
       <Route path="/" element={<Navigate to="/login" />} />
     </Routes>
   );

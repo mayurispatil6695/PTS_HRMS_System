@@ -73,6 +73,9 @@ interface FirebaseAttendanceRaw {
   markedLateAt?: string;
   markedHalfDayBy?: string;
   markedHalfDayAt?: string;
+  // ✅ Add location fields
+  location?: { lat: number; lng: number; name: string };
+  locationOut?: { lat: number; lng: number; name: string };
   [key: string]: unknown;
 }
 
@@ -149,168 +152,75 @@ const AttendanceManagement = () => {
   }, [user]);
 
   // Setup real-time listeners for attendance changes across all admins
-  useEffect(() => {
-    if (!user || employees.length === 0) {
-      setLoading(false);
-      return;
-    }
-
-    const allRecords: AttendanceRecordWithAdmin[] = [];
-    const unsubscribeFunctions: (() => void)[] = [];
-    const processedPunchOuts = new Set<string>();
-    const processedBreaks = new Set<string>();
-
-    const employeesByAdmin = employees.reduce((acc, emp) => {
-      if (emp.adminId) {
-        if (!acc[emp.adminId]) acc[emp.adminId] = [];
-        acc[emp.adminId].push(emp);
-      }
-      return acc;
-    }, {} as Record<string, Employee[]>);
-
-    Object.entries(employeesByAdmin).forEach(([adminId, adminEmployees]) => {
-      adminEmployees.forEach(employee => {
-        const attendanceRef = ref(database, `users/${adminId}/employees/${employee.id}/punching`);
-        const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
-        
-        const unsubscribeAttendance = onValue(attendanceQuery, (snapshot) => {
-          try {
-            const data = snapshot.val() as Record<string, FirebaseAttendanceRaw> | null;
-            if (data && typeof data === 'object') {
-              const records: AttendanceRecordWithAdmin[] = Object.entries(data).map(([key, value]) => ({
-                id: key,
-                employeeId: employee.id,
-                employeeName: employee.name,
-                adminId: adminId,
-                ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>),
-                selfie: value.selfie,
-                selfieOut: value.selfieOut,
-                breaks: value.breaks || {}
-              }));
-              
-              const existingRecords = allRecords.filter(r => r.employeeId !== employee.id);
-              allRecords.splice(0, allRecords.length, ...existingRecords, ...records);
-              setAttendanceRecords([...allRecords].sort((a, b) => b.timestamp - a.timestamp));
-            } else {
-              const updatedRecords = allRecords.filter(r => r.employeeId !== employee.id);
-              allRecords.splice(0, allRecords.length, ...updatedRecords);
-              setAttendanceRecords([...allRecords]);
-            }
-          } catch (error) {
-            console.error(`Error fetching attendance for employee ${employee.id}:`, error);
-          }
-        });
-
-        const newAttendanceRef = ref(database, `users/${adminId}/employees/${employee.id}/punching`);
-        const newAttendanceQuery = query(newAttendanceRef, orderByChild('timestamp'), limitToLast(1));
-        
-        const unsubscribeNewAttendance = onValue(newAttendanceQuery, (snapshot) => {
-          try {
-            const data = snapshot.val() as Record<string, FirebaseAttendanceRaw> | null;
-            if (data && typeof data === 'object') {
-              const records: AttendanceRecordWithAdmin[] = Object.entries(data).map(([key, value]) => ({
-                id: key,
-                employeeId: employee.id,
-                employeeName: employee.name,
-                adminId: adminId,
-                ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>),
-                selfie: value.selfie,
-                selfieOut: value.selfieOut,
-                breaks: value.breaks || {}
-              }));
-
-              records.forEach(record => {
-                if (record.timestamp > Date.now() - 300000) {
-                  const recordKey = `${record.employeeId}-${record.id}`;
-                  
-                  if (record.punchIn && !record.punchOut) {
-                    showSystemNotification({
-                      type: 'punch-in',
-                      employeeName: record.employeeName,
-                      employeeId: record.employeeId,
-                      department: employee.department,
-                      email: employee.email,
-                      time: record.punchIn,
-                      timestamp: record.timestamp,
-                      adminId: adminId
-                    });
-                  } else if (record.punchOut && !processedPunchOuts.has(recordKey)) {
-                    processedPunchOuts.add(recordKey);
-                    showSystemNotification({
-                      type: 'punch-out',
-                      employeeName: record.employeeName,
-                      employeeId: record.employeeId,
-                      department: employee.department,
-                      email: employee.email,
-                      time: record.punchOut,
-                      timestamp: record.timestamp,
-                      adminId: adminId
-                    });
-                  }
-                }
-              });
-            }
-          } catch (error) {
-            console.error(`Error checking new attendance for employee ${employee.id}:`, error);
-          }
-        });
-
-        const breaksRef = ref(database, `users/${adminId}/employees/${employee.id}/punching`);
-        const unsubscribeBreaks = onValue(breaksRef, (snapshot) => {
-          try {
-            const data = snapshot.val() as Record<string, { breaks?: Record<string, BreakRecord> }> | null;
-            if (data && typeof data === 'object') {
-              Object.entries(data).forEach(([recordId, recordData]) => {
-                if (recordData.breaks) {
-                  Object.entries(recordData.breaks).forEach(([breakId, breakData]) => {
-                    if (breakData.timestamp > Date.now() - 300000) {
-                      const breakKey = `${employee.id}-${recordId}-${breakId}`;
-                      
-                      if (breakData.breakIn && !breakData.breakOut && !processedBreaks.has(breakKey)) {
-                        processedBreaks.add(breakKey);
-                        showSystemNotification({
-                          type: 'break-in',
-                          employeeName: employee.name,
-                          employeeId: employee.id,
-                          department: employee.department,
-                          email: employee.email,
-                          time: breakData.breakIn,
-                          timestamp: breakData.timestamp,
-                          adminId: adminId
-                        });
-                      } else if (breakData.breakOut && !processedBreaks.has(breakKey)) {
-                        processedBreaks.add(breakKey);
-                        showSystemNotification({
-                          type: 'break-out',
-                          employeeName: employee.name,
-                          employeeId: employee.id,
-                          department: employee.department,
-                          email: employee.email,
-                          time: breakData.breakOut,
-                          timestamp: breakData.timestamp,
-                          adminId: adminId
-                        });
-                      }
-                    }
-                  });
-                }
-              });
-            }
-          } catch (error) {
-            console.error(`Error checking breaks for employee ${employee.id}:`, error);
-          }
-        });
-
-        unsubscribeFunctions.push(unsubscribeAttendance, unsubscribeNewAttendance, unsubscribeBreaks);
-      });
-    });
-
+// Setup real-time listeners for attendance changes across all admins
+useEffect(() => {
+  if (!user || employees.length === 0) {
     setLoading(false);
-    
-    return () => {
-      unsubscribeFunctions.forEach(unsubscribe => unsubscribe());
-    };
-  }, [user, employees]);
+    return;
+  }
+
+  // Use a Map to store records by employee ID + record ID to avoid duplicates
+  const recordsMap = new Map<string, AttendanceRecordWithAdmin>();
+  const unsubscribeFunctions: (() => void)[] = [];
+
+  const employeesByAdmin = employees.reduce((acc, emp) => {
+    if (emp.adminId) {
+      if (!acc[emp.adminId]) acc[emp.adminId] = [];
+      acc[emp.adminId].push(emp);
+    }
+    return acc;
+  }, {} as Record<string, Employee[]>);
+
+  Object.entries(employeesByAdmin).forEach(([adminId, adminEmployees]) => {
+    adminEmployees.forEach(employee => {
+      const attendanceRef = ref(database, `users/${adminId}/employees/${employee.id}/punching`);
+      const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
+      
+      const unsubscribe = onValue(attendanceQuery, (snapshot) => {
+        try {
+          const data = snapshot.val() as Record<string, FirebaseAttendanceRaw> | null;
+          if (data && typeof data === 'object') {
+            // Add/update records for this employee
+            Object.entries(data).forEach(([key, value]) => {
+              const recordId = `${employee.id}-${key}`;
+              recordsMap.set(recordId, {
+                id: key,
+                employeeId: employee.id,
+                employeeName: employee.name,
+                adminId: adminId,
+                ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>),
+                selfie: value.selfie,
+                selfieOut: value.selfieOut,
+                breaks: value.breaks || {}
+              });
+            });
+          } else {
+            // Remove all records for this employee if data is null
+            const keysToDelete: string[] = [];
+            recordsMap.forEach((_, key) => {
+              if (key.startsWith(`${employee.id}-`)) keysToDelete.push(key);
+            });
+            keysToDelete.forEach(key => recordsMap.delete(key));
+          }
+          
+          // Convert map to array and sort
+          const allRecords = Array.from(recordsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
+          setAttendanceRecords(allRecords);
+        } catch (error) {
+          console.error(`Error fetching attendance for employee ${employee.id}:`, error);
+        }
+      });
+
+      unsubscribeFunctions.push(unsubscribe);
+    });
+  });
+
+  setLoading(false);
+  
+  return () => {
+    unsubscribeFunctions.forEach(unsubscribe => unsubscribe());
+  };
+}, [user, employees]);
 
   const showSystemNotification = (notification: Omit<Notification, 'id' | 'read'>) => {
     const newNotification: Notification = {
@@ -522,60 +432,72 @@ const AttendanceManagement = () => {
     }
   };
 
-  const calculateTimeDuration = (startTime: string, endTime: string | null) => {
-    if (!endTime) return 'N/A';
-    
-    try {
-      const parseTime = (timeStr: string) => {
-        const [time, period] = timeStr.split(' ');
-        const [hours, minutes] = time.split(':').map(Number);
-        let totalHours = hours;
-        
-        if (period === 'PM' && hours < 12) {
-          totalHours += 12;
-        } else if (period === 'AM' && hours === 12) {
-          totalHours = 0;
-        }
-        
-        return totalHours * 60 + minutes;
-      };
+const calculateTimeDuration = (startTime: string, endTime: string | null) => {
+  if (!endTime) return 'N/A';
 
-      const startMinutes = parseTime(startTime);
-      const endMinutes = parseTime(endTime);
-
-      let durationMinutes = endMinutes - startMinutes;
-      if (durationMinutes < 0) {
-        durationMinutes += 24 * 60;
-      }
-
-      const hours = Math.floor(durationMinutes / 60);
-      const minutes = durationMinutes % 60;
-
-      return `${hours}h ${minutes}m`;
-    } catch (error) {
-      console.error('Error calculating time duration:', error);
-      return 'N/A';
+  const parseTime = (timeStr: string): number => {
+    let hours = 0, minutes = 0;
+    const trimmed = timeStr.trim().toUpperCase();
+    // Check for 24-hour format (no AM/PM)
+    if (!trimmed.includes('AM') && !trimmed.includes('PM')) {
+      const parts = trimmed.split(':');
+      hours = parseInt(parts[0], 10);
+      minutes = parseInt(parts[1], 10);
+    } else {
+      // Handle AM/PM (case-insensitive)
+      const [time, period] = trimmed.split(' ');
+      const [h, m] = time.split(':').map(Number);
+      hours = h;
+      minutes = m;
+      if (period === 'PM' && hours < 12) hours += 12;
+      if (period === 'AM' && hours === 12) hours = 0;
     }
+    return hours * 60 + minutes;
   };
+
+  try {
+    const startMinutes = parseTime(startTime);
+    const endMinutes = parseTime(endTime);
+    let durationMinutes = endMinutes - startMinutes;
+    if (durationMinutes < 0) durationMinutes += 24 * 60;
+    // Cap at 12 hours (avoid impossible values)
+    if (durationMinutes > 12 * 60) durationMinutes -= 24 * 60;
+
+    const hours = Math.floor(durationMinutes / 60);
+    const minutes = durationMinutes % 60;
+    return `${hours}h ${minutes}m`;
+  } catch (error) {
+    console.error('Error calculating time duration:', error);
+    return 'N/A';
+  }
+};
 
   const calculateTotalBreakTime = (breaks: Record<string, BreakRecord> | undefined) => {
-    if (!breaks) return 'N/A';
+  if (!breaks) return 'N/A';
 
-    let totalBreakMinutes = 0;
-    
-    Object.values(breaks).forEach(breakRecord => {
-      if (breakRecord.breakOut && breakRecord.duration) {
-        const [hours, minutes] = breakRecord.duration.split(':').map(Number);
-        totalBreakMinutes += hours * 60 + minutes;
+  let totalBreakMinutes = 0;
+
+  Object.values(breaks).forEach(breakRecord => {
+    if (breakRecord.breakOut && breakRecord.duration) {
+      const durationStr = breakRecord.duration;
+      // Try to parse "HH:MM" format first
+      const colonMatch = durationStr.match(/^(\d+):(\d+)$/);
+      if (colonMatch) {
+        totalBreakMinutes += parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
+      } else {
+        // Fallback for weird formats like "1.8h.3m"
+        const hoursMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*h/i);
+        const minutesMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*m/i);
+        if (hoursMatch) totalBreakMinutes += parseFloat(hoursMatch[1]) * 60;
+        if (minutesMatch) totalBreakMinutes += parseFloat(minutesMatch[1]);
       }
-    });
+    }
+  });
 
-    const hours = Math.floor(totalBreakMinutes / 60);
-    const minutes = totalBreakMinutes % 60;
-
-    return `${hours}h ${minutes}m`;
-  };
-
+  const hours = Math.floor(totalBreakMinutes / 60);
+  const minutes = totalBreakMinutes % 60;
+  return `${hours}h ${minutes}m`;
+};
   const exportAttendance = async () => {
     if (filteredRecords.length === 0) {
       toast({
@@ -867,6 +789,7 @@ const AttendanceManagement = () => {
                         <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Break Time</th>
                         <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
                         <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Work Mode</th>
+                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
                         <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In Selfie</th>
                         <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out Selfie</th>
                         <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
@@ -933,6 +856,16 @@ const AttendanceManagement = () => {
                               {record.workMode || 'office'}
                             </Badge>
                           </td>
+                          <td className="px-4 py-3 text-sm text-gray-600">
+  {record.location || record.locationOut ? (
+    <div className="text-xs space-y-1">
+      {record.location && <div>📍 In: {record.location.name?.slice(0, 40) || `${record.location.lat}, ${record.location.lng}`}</div>}
+      {record.locationOut && <div>📍 Out: {record.locationOut.name?.slice(0, 40) || `${record.locationOut.lat}, ${record.locationOut.lng}`}</div>}
+    </div>
+  ) : (
+    <span className="text-gray-400">—</span>
+  )}
+</td>
                           {/* Punch In Selfie */}
                           <td className="px-4 py-3 whitespace-nowrap">
                             {record.selfie ? (

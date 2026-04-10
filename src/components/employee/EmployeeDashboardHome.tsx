@@ -1,5 +1,5 @@
 // EmployeeDashboardHome.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { 
   Clock, 
@@ -28,12 +28,15 @@ import { Badge } from '../ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, push, set, onValue, update, get, query, orderByChild, DataSnapshot } from 'firebase/database';
+import { ref, push, set, onValue, update, get, query, orderByChild, DataSnapshot, increment } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import { useIdleDetection } from '../../hooks/useIdleDetection';
 import SelfieCapture from '../attendance/SelfieCapture';
+import { useSimpleIdleTracker } from '../../hooks/useSimpleIdleTracker';
 
+
+// EmployeeDashboardHome.tsx
 interface AttendanceRecord {
   id: string;
   employeeId: string;
@@ -163,7 +166,6 @@ interface PunchOutUpdates {
   markedHalfDayBy?: string | null;
   markedHalfDayAt?: string | null;
 }
-
 const EmployeeDashboardHome = () => {
   const { user } = useAuth();
   const [todayAttendance, setTodayAttendance] = useState<AttendanceRecord | null>(null);
@@ -174,15 +176,10 @@ const EmployeeDashboardHome = () => {
   const [pendingPunchType, setPendingPunchType] = useState<'in' | 'out' | null>(null);
   const [currentLocation, setCurrentLocation] = useState<{ lat: number; lng: number; name: string } | null>(null);
   const [employeeProfile, setEmployeeProfile] = useState<{ workMode?: string } | null>(null);
+  const [adminUid, setAdminUid] = useState<string | undefined>(undefined); // ✅ NEW
   const [stats, setStats] = useState({
-    attendanceRate: 0,
-    leavesUsed: 0,
-    activeProjects: 0,
-    upcomingMeetings: 0,
-    presentDays: 0,
-    totalDays: 0,
-    scheduledPosts: 0,
-    totalBreakTime: 0
+    attendanceRate: 0, leavesUsed: 0, activeProjects: 0, upcomingMeetings: 0,
+    presentDays: 0, totalDays: 0, scheduledPosts: 0, totalBreakTime: 0
   });
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
   const [upcomingMeetings, setUpcomingMeetings] = useState<Meeting[]>([]);
@@ -191,51 +188,81 @@ const EmployeeDashboardHome = () => {
   const [recentActivities, setRecentActivities] = useState<RecentActivity[]>([]);
   const [isTeamLead, setIsTeamLead] = useState(false);
   const navigate = useNavigate();
+  const lastNotifiedStatusRef = useRef<string | null>(null);
+  
+  useEffect(() => {
+  if ('Notification' in window && Notification.permission !== 'denied') {
+    Notification.requestPermission();
+  }
+}, []);
+  // ✅ Fetch employee profile AND adminUid from the employee's own profile node
+  useEffect(() => {
+    if (!user?.id) return;
 
-  // Idle detection
-  const { isIdle, resetIdleTimer } = useIdleDetection({
-    idleTimeout: 10000,
-    checkInterval: 1000,
-    userId: user?.id,
-    adminId: user?.adminUid,
-    onIdleStart: () => {
-      toast('You have been idle for 10 seconds', { icon: '⚠️' });
-    },
-    onIdleEnd: () => {
-      toast('Welcome back!', { icon: '👋' });
-    }
-  });
+    const profileRef = ref(database, `users/${user.id}/profile`);
+    const unsubscribe = onValue(profileRef, (snapshot: DataSnapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setEmployeeProfile({
+          workMode: data.workMode || 'office'
+        });
+        }
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+ 
+ useSimpleIdleTracker({
+  userId: user?.id,
+  idleThresholdMs: 10000,
+  checkIntervalMs: 60000,
+});
+  
 
   const months = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
 
-  const [quickActions] = useState([
-    { icon: Clock, label: 'Mark Attendance', color: 'bg-blue-600 hover:bg-blue-700', onClick: () => setShowSelfieCapture(true) },
-    { icon: Plane, label: 'Apply Leave', color: 'bg-green-600 hover:bg-green-700', onClick: () => navigate('/employee/leaves') },
-    { icon: FolderOpen, label: 'View Projects', color: 'bg-purple-600 hover:bg-purple-700', onClick: () => navigate('/employee/projects') },
-    { icon: Calendar, label: 'My Meetings', color: 'bg-orange-600 hover:bg-orange-700', onClick: () => navigate('/employee/meetings') },
-  ]);
-
-  // Helper function to convert time string to minutes
+  // Helper: robust time to minutes (case-insensitive, supports AM/PM and 24h)
   const convertTimeToMinutes = (timeStr: string): number => {
     try {
-      const [time, period] = timeStr.split(' ');
-      const [hours, minutes] = time.split(':').map(Number);
-      let totalHours = hours;
-      
-      if (period === 'PM' && hours < 12) {
-        totalHours += 12;
-      } else if (period === 'AM' && hours === 12) {
-        totalHours = 0;
+      let hours = 0, minutes = 0;
+      const trimmed = timeStr.trim().toUpperCase();
+      // Handle 24-hour format (no AM/PM)
+      if (!trimmed.includes('AM') && !trimmed.includes('PM')) {
+        const parts = trimmed.split(':');
+        hours = parseInt(parts[0], 10);
+        minutes = parseInt(parts[1], 10);
+      } else {
+        const [time, period] = trimmed.split(' ');
+        const [h, m] = time.split(':').map(Number);
+        hours = h;
+        minutes = m;
+        if (period === 'PM' && hours < 12) hours += 12;
+        if (period === 'AM' && hours === 12) hours = 0;
       }
-      
-      return totalHours * 60 + minutes;
-    } catch (error) {
-      console.error('Error converting time:', error);
+      return hours * 60 + minutes;
+    } catch {
       return 0;
     }
+  };
+
+  // Helper: parse duration string like "HH:MM", "1.8h.3m", "1h 30m"
+  const parseDurationToMinutes = (durationStr: string): number => {
+    // Try HH:MM first
+    const colonMatch = durationStr.match(/^(\d+):(\d+)$/);
+    if (colonMatch) {
+      return parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
+    }
+    // Fallback for "1.8h.3m" or "1h 30m"
+    const hoursMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*h/i);
+    const minutesMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*m/i);
+    let total = 0;
+    if (hoursMatch) total += parseFloat(hoursMatch[1]) * 60;
+    if (minutesMatch) total += parseFloat(minutesMatch[1]);
+    return Math.round(total);
   };
 
   // Helper function to calculate total worked minutes (excluding breaks)
@@ -251,13 +278,15 @@ const EmployeeDashboardHome = () => {
     if (totalMinutes < 0) {
       totalMinutes += 24 * 60; // Handle overnight shifts
     }
+    // Cap to 12 hours to avoid impossible values
+    if (totalMinutes > 12 * 60) totalMinutes -= 24 * 60;
+    if (totalMinutes < 0) totalMinutes = 0;
     
-    // Subtract break times
+    // Subtract break times using robust parser
     if (breaks) {
       Object.values(breaks).forEach(breakRecord => {
         if (breakRecord.breakOut && breakRecord.duration) {
-          const [hours, minutes] = breakRecord.duration.split(':').map(Number);
-          totalMinutes -= (hours * 60 + minutes);
+          totalMinutes -= parseDurationToMinutes(breakRecord.duration);
         }
       });
     }
@@ -368,8 +397,7 @@ const EmployeeDashboardHome = () => {
             if (record.breaks) {
               Object.values(record.breaks).forEach(breakItem => {
                 if (breakItem.duration) {
-                  const [hours, minutes] = breakItem.duration.split(':').map(Number);
-                  totalBreakTime += hours * 60 + minutes;
+                  totalBreakTime += parseDurationToMinutes(breakItem.duration);
                 }
               });
             }
@@ -738,6 +766,40 @@ const EmployeeDashboardHome = () => {
     }
   };
 
+  // Automated Late/Half-day Notifications
+useEffect(() => {
+  if (!todayAttendance) return;
+
+  const currentStatus = todayAttendance.status;
+  const previousStatus = lastNotifiedStatusRef.current;
+
+  // Only notify if status changed to 'late' or 'half-day' and we haven't notified for this status yet
+  if (currentStatus !== previousStatus && (currentStatus === 'late' || currentStatus === 'half-day')) {
+    let markedBy = 'System';
+    let markedAt = '';
+
+    if (currentStatus === 'late' && todayAttendance.markedLateBy) {
+      markedBy = todayAttendance.markedLateBy;
+      markedAt = todayAttendance.markedLateAt || '';
+    } else if (currentStatus === 'half-day' && todayAttendance.markedHalfDayBy) {
+      markedBy = todayAttendance.markedHalfDayBy;
+      markedAt = todayAttendance.markedHalfDayAt || '';
+    }
+
+    const statusText = currentStatus === 'late' ? 'Late' : 'Half Day';
+    const title = `Attendance Status: ${statusText}`;
+    const body = `You have been marked as ${statusText} by ${markedBy}.${markedAt ? ` (${new Date(markedAt).toLocaleString()})` : ''}`;
+
+    // Show browser notification if permission granted
+    if ('Notification' in window && Notification.permission === 'granted') {
+      new Notification(title, { body, icon: '/logo.png' });
+    }
+
+    // Update ref to prevent repeated notifications for the same status
+    lastNotifiedStatusRef.current = currentStatus;
+  }
+}, [todayAttendance]);
+
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
     
@@ -801,8 +863,7 @@ const EmployeeDashboardHome = () => {
       await set(newRecordRef, newRecord);
       
       toast.success("Punched in successfully with selfie verification!");
-      resetIdleTimer();
-    } catch (error) {
+        } catch (error) {
       console.error("Punch-in error:", error);
       toast.error("Failed to punch in");
     } finally {
@@ -835,24 +896,15 @@ const EmployeeDashboardHome = () => {
       const totalWorkedMinutes = calculateTotalWorkedMinutes(punchInTime, punchOutTime, todayAttendance.breaks);
       const totalWorkedHours = totalWorkedMinutes / 60;
       
-      let newStatus: string = 'present';
-      let isLate = false;
-      let isHalfDay = false;
-      
       const punchInMinutes = convertTimeToMinutes(punchInTime);
       const lateThresholdMinutes = 9 * 60 + 40;
+      const isLate = punchInMinutes > lateThresholdMinutes;
+      const isHalfDay = totalWorkedHours < 8;
       
-      if (punchInMinutes > lateThresholdMinutes) {
-        isLate = true;
-        newStatus = 'late';
-      }
-      
-      if (totalWorkedHours < 8) {
-        isHalfDay = true;
+      let newStatus = 'present';
+      if (isHalfDay) {
         newStatus = 'half-day';
-      }
-      
-      if (isLate && totalWorkedHours >= 8 && !isHalfDay) {
+      } else if (isLate) {
         newStatus = 'late';
       }
       
@@ -890,7 +942,7 @@ const EmployeeDashboardHome = () => {
         toast.success("Punched out successfully!");
       }
       
-      resetIdleTimer();
+     
     } catch (error) {
       console.error("Punch-out error:", error);
       toast.error("Failed to punch out");
@@ -906,6 +958,15 @@ const EmployeeDashboardHome = () => {
 
   const handlePunchOut = (): void => {
     setPendingPunchType('out');
+    setShowSelfieCapture(true);
+  };
+
+  const handleMarkAttendance = () => {
+    if (todayAttendance && !todayAttendance.punchOut) {
+      setPendingPunchType('out');
+    } else {
+      setPendingPunchType('in');
+    }
     setShowSelfieCapture(true);
   };
 
@@ -945,37 +1006,13 @@ const EmployeeDashboardHome = () => {
   };
 
   const calculateBreakDuration = (breakInTime: string, breakOutTime: string): string => {
-    try {
-      const parseTime = (timeStr: string): number => {
-        const [time, period] = timeStr.split(' ');
-        const [hours, minutes] = time.split(':').map(Number);
-        let totalHours = hours;
-        
-        if (period === 'PM' && hours < 12) {
-          totalHours += 12;
-        } else if (period === 'AM' && hours === 12) {
-          totalHours = 0;
-        }
-        
-        return totalHours * 60 + minutes;
-      };
-
-      const inMinutes = parseTime(breakInTime);
-      const outMinutes = parseTime(breakOutTime);
-
-      let durationMinutes = outMinutes - inMinutes;
-      if (durationMinutes < 0) {
-        durationMinutes += 24 * 60;
-      }
-
-      const hours = Math.floor(durationMinutes / 60);
-      const minutes = durationMinutes % 60;
-
-      return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-    } catch (error) {
-      console.error('Error calculating break duration:', error);
-      return '00:00';
-    }
+    const inMinutes = convertTimeToMinutes(breakInTime);
+    const outMinutes = convertTimeToMinutes(breakOutTime);
+    let durationMinutes = outMinutes - inMinutes;
+    if (durationMinutes < 0) durationMinutes += 24 * 60;
+    const hours = Math.floor(durationMinutes / 60);
+    const minutes = durationMinutes % 60;
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
   };
 
   const handleBreakOut = async (): Promise<void> => {
@@ -1014,6 +1051,13 @@ const EmployeeDashboardHome = () => {
       setBreakLoading(false);
     }
   };
+
+  const quickActions = [
+    { icon: Clock, label: 'Mark Attendance', color: 'bg-blue-600 hover:bg-blue-700', onClick: handleMarkAttendance },
+    { icon: Plane, label: 'Apply Leave', color: 'bg-green-600 hover:bg-green-700', onClick: () => navigate('/employee/leaves') },
+    { icon: FolderOpen, label: 'View Projects', color: 'bg-purple-600 hover:bg-purple-700', onClick: () => navigate('/employee/projects') },
+    { icon: Calendar, label: 'My Meetings', color: 'bg-orange-600 hover:bg-orange-700', onClick: () => navigate('/employee/meetings') },
+  ];
 
   const cardVariants = {
     hidden: { opacity: 0, y: 20 },
@@ -1074,18 +1118,6 @@ const EmployeeDashboardHome = () => {
 
   return (
     <div className="space-y-6">
-      {/* Idle Status Warning */}
-      {isIdle && (
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded-lg flex items-center gap-2"
-        >
-          <AlertTriangle className="h-5 w-5" />
-          <span>You have been idle for 10 seconds. Please interact with the page to continue.</span>
-        </motion.div>
-      )}
-
       {/* Welcome Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -1206,7 +1238,6 @@ const EmployeeDashboardHome = () => {
           </motion.div>
         )}
       </div>
-
       {/* Upcoming Meetings Preview */}
       {upcomingMeetings.length > 0 && (
         <motion.div

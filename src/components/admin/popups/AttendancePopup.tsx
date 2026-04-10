@@ -3,7 +3,19 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialo
 import { Badge } from '../../ui/badge';
 import { Clock, User, CalendarClock } from 'lucide-react';
 
-import { AttendanceRecord } from '@/types/attendance';
+// Define the missing AttendanceRecord type
+interface AttendanceRecord {
+  id: string;
+  employeeName: string;
+  department?: string;
+  punchIn: string;
+  punchOut?: string;
+  hoursWorked?: number;
+  date: string;
+  status: 'present' | 'late' | 'half-day' | 'on-leave' | 'absent';
+  location?: { lat: number; lng: number; name: string };
+  locationOut?: { lat: number; lng: number; name: string };
+}
 interface AttendancePopupProps {
   isOpen: boolean;
   onClose: () => void;

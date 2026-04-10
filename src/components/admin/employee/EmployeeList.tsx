@@ -68,32 +68,54 @@ const EmployeeList: React.FC<EmployeeListProps> = ({
   const [employeeToEdit, setEmployeeToEdit] = useState<Employee | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
-  // Fetch employees from Firebase
- useEffect(() => {
+useEffect(() => {
   if (!user || user.role !== 'admin') return;
 
-  const employeesRef = ref(database, `users/${user.id}/employees`);
+  const usersRef = ref(database, "users");
   setLoading(true);
 
   const unsubscribe = onValue(
-    employeesRef,
+    usersRef,
     (snapshot) => {
       const employeesData: Employee[] = [];
       const deptSet = new Set<string>();
       const desigSet = new Set<string>();
 
-      snapshot.forEach((childSnapshot) => {
-        const employee = childSnapshot.val();
+      snapshot.forEach((userSnap) => {
+        const userId = userSnap.key;
+        const userData = userSnap.val();
+        
+        // ✅ Skip if user is an admin
+        if (userData.role === 'admin') return;
+        
+        // ✅ Get employee profile (prefer the 'profile' node, fallback to 'employee')
+        const profile = userData.profile || userData.employee;
+        if (!profile || !profile.name) return; // Not an employee
+        
         employeesData.push({
-          id: childSnapshot.key || '',
-          ...employee,
-          isActive: employee.status === 'active',
-          employeeId:
-            employee.employeeId || `EMP-${childSnapshot.key?.slice(0, 8)}`
+          id: userId || '',
+          name: profile.name || '',
+          email: profile.email || '',
+          phone: profile.phone || '',
+          department: profile.department || '',
+          designation: profile.designation || '',
+          employeeId: profile.employeeId || `EMP-${userId?.slice(0, 8)}`,
+          isActive: profile.status === 'active',
+          status: profile.status || 'active',
+          createdAt: profile.createdAt || '',
+          profileImage: profile.profileImage,
+          addedBy: profile.addedBy,
+          joiningDate: profile.joiningDate,
+          salary: profile.salary,
+          emergencyContact: profile.emergencyContact,
+          address: profile.address,
+          workMode: profile.workMode,
+          employmentType: profile.employmentType,
+          bankDetails: profile.bankDetails,
         });
 
-        if (employee.department) deptSet.add(employee.department);
-        if (employee.designation) desigSet.add(employee.designation);
+        if (profile.department) deptSet.add(profile.department);
+        if (profile.designation) desigSet.add(profile.designation);
       });
 
       setEmployees(employeesData);
@@ -109,11 +131,8 @@ const EmployeeList: React.FC<EmployeeListProps> = ({
     }
   );
 
-  return () => {
-    unsubscribe(); // ✅ clean + safe
-  };
+  return () => unsubscribe();
 }, [user]);
-
   // Apply filters whenever search term, department or status changes
   useEffect(() => {
     let result = [...employees];

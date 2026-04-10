@@ -14,7 +14,7 @@ export interface AttendanceRecord {
   punchIn: string;
   punchOut?: string;
 
-  status: string;
+ status: "present" | "late" | "half-day" | "on-leave" | "absent";
   workMode?: string;
 
   timestamp: number;
@@ -28,4 +28,6 @@ export interface AttendanceRecord {
   // ✅ ADD THIS
   breaks?: Record<string, BreakRecord>;
   hoursWorked?: number;
+   location?: { lat: number; lng: number; name: string };
+  locationOut?: { lat: number; lng: number; name: string };
 }

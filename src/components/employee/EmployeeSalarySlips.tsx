@@ -4,11 +4,10 @@ import { Receipt, Download, Eye, Calendar, ChevronDown, ChevronUp } from 'lucide
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { Progress } from '../ui/progress';
 import { Textarea } from '../ui/textarea';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, off } from 'firebase/database';
+import { ref, onValue, off, set } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
@@ -38,8 +37,8 @@ interface SalaryUpdate {
   updatedById: string;
   changes: {
     field: string;
-    oldValue: any;
-    newValue: any;
+    oldValue: string | number;
+    newValue: string | number;
   }[];
   note?: string;
 }
@@ -49,6 +48,24 @@ interface Comment {
   createdAt: string;
   createdBy: string;
   createdById: string;
+}
+
+// Type for raw Firebase salary data
+interface RawSalaryData {
+  employeeId: string;
+  employeeName: string;
+  employeeEmail: string;
+  month: number;
+  year: number;
+  basicSalary: number;
+  allowances: number;
+  deductions: number;
+  netSalary: number;
+  generatedAt: string;
+  status: 'generated' | 'sent';
+  sentAt?: string;
+  updates?: Record<string, SalaryUpdate>;
+  comments?: Record<string, Comment>;
 }
 
 const EmployeeSalarySlips = () => {
@@ -77,27 +94,27 @@ const EmployeeSalarySlips = () => {
     
     const fetchSalaries = onValue(salaryRef, (snapshot) => {
       try {
-        const data = snapshot.val();
+        const data = snapshot.val() as Record<string, RawSalaryData> | null;
         if (data) {
           const salaryData: SalarySlip[] = Object.entries(data).map(([key, value]) => ({
             id: key,
-            ...(value as Omit<SalarySlip, 'id'>),
-            updates: (value as any).updates || {},
-            comments: (value as any).comments || {}
+            ...value,
+            updates: value.updates || {},
+            comments: value.comments || {}
           }));
           setSalarySlips(salaryData);
         } else {
           setSalarySlips([]);
         }
         setLoading(false);
-      } catch (error) {
-        console.error("Error loading salary slips:", error);
+      } catch (err) {
+        console.error("Error loading salary slips:", err);
         toast.error("Failed to load salary slips");
         setError("Failed to load salary data");
         setLoading(false);
       }
-    }, (error) => {
-      console.error("Error setting up listener:", error);
+    }, (err) => {
+      console.error("Error setting up listener:", err);
       toast.error("Failed to load salary slips");
       setError("Failed to load salary data");
       setLoading(false);
@@ -182,25 +199,18 @@ This is a computer-generated salary slip.
         createdById: user.id
       };
 
-      // Add comment to admin's record
       const adminCommentRef = ref(
         database,
         `users/${user.adminUid}/employees/${user.id}/salary/${slipId}/comments/${timestamp}`
       );
       await set(adminCommentRef, commentData);
 
-      // Update local state
       setSalarySlips(prev => 
         prev.map(slip => {
           if (slip.id !== slipId) return slip;
-          
           const updatedComments = { ...slip.comments };
           updatedComments[timestamp] = commentData;
-
-          return {
-            ...slip,
-            comments: updatedComments
-          };
+          return { ...slip, comments: updatedComments };
         })
       );
 

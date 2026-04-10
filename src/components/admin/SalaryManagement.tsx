@@ -29,6 +29,14 @@ interface Employee {
   salary?: number;
   workMode?: string;
   employmentType?: string;
+  salaryStructure?: {
+    basic: number;
+    hra: number;
+    allowances: number;
+    deductions: number;
+    pfApplicable: boolean;
+    pfPercentage: number;
+  };
 }
 
 interface SalarySlip {
@@ -184,7 +192,6 @@ const SalaryManagement: React.FC = () => {
       return employeeSlips[0].basicSalary;
     }
 
-    // Fallback to employee's salary if no slips exist
     const employee = employees.find(e => e.employeeId === employeeId);
     return employee?.salary || 0;
   };
@@ -193,10 +200,9 @@ const SalaryManagement: React.FC = () => {
     if (!user) return;
 
     try {
-      // Use the latest basic salary or fallback to employee's salary
       const basicSalary = getEmployeeBasicSalary(employee.employeeId) || employee.salary || 0;
-      const allowances = basicSalary * 0.3; // 30% of basic salary
-      const deductions = basicSalary * 0.12; // 12% of basic salary
+      const allowances = basicSalary * 0.3;
+      const deductions = basicSalary * 0.12;
       const netSalary = basicSalary + allowances - deductions;
 
       const newSlipRef = push(ref(database, `users/${user.id}/salaries`));
@@ -223,7 +229,7 @@ const SalaryManagement: React.FC = () => {
       toast({
         title: "Salary Slip Generated",
         description: `Salary slip generated for ${employee.name}`,
-        variant: "success"
+        variant: "default"
       });
     } catch (err) {
       console.error('Error generating salary slip:', err);
@@ -245,20 +251,20 @@ const SalaryManagement: React.FC = () => {
         throw new Error('Employee not found');
       }
 
-      const updates: Record<string, any> = {};
       const sentAt = new Date().toISOString();
-      
-      updates[`users/${user.id}/salaries/${slip.id}/status`] = 'sent';
-      updates[`users/${user.id}/salaries/${slip.id}/sentAt`] = sentAt;
-      updates[`users/${user.id}/employees/${employee.id}/salary/${slip.id}/status`] = 'sent';
-      updates[`users/${user.id}/employees/${employee.id}/salary/${slip.id}/sentAt`] = sentAt;
+      const updates: Record<string, string | null> = {
+        [`users/${user.id}/salaries/${slip.id}/status`]: 'sent',
+        [`users/${user.id}/salaries/${slip.id}/sentAt`]: sentAt,
+        [`users/${user.id}/employees/${employee.id}/salary/${slip.id}/status`]: 'sent',
+        [`users/${user.id}/employees/${employee.id}/salary/${slip.id}/sentAt`]: sentAt
+      };
 
       await update(ref(database), updates);
 
       toast({
         title: "Salary Slip Sent",
         description: `Salary slip sent to ${slip.employeeName} via email`,
-        variant: "success"
+        variant: "default"
       });
     } catch (err) {
       console.error('Error sending salary slip:', err);
@@ -292,7 +298,7 @@ const SalaryManagement: React.FC = () => {
       toast({
         title: "PDF Downloaded",
         description: `Salary slip PDF downloaded for ${slip.employeeName}`,
-        variant: "success"
+        variant: "default"
       });
     } catch (err) {
       console.error('Error generating PDF:', err);
@@ -328,12 +334,13 @@ const SalaryManagement: React.FC = () => {
     if (!user || !editingEmployee) return;
 
     try {
-      const updates: Record<string, any> = {};
-      updates[`users/${user.id}/employees/${editingEmployee.id}/name`] = employeeEditData.name;
-      updates[`users/${user.id}/employees/${editingEmployee.id}/designation`] = employeeEditData.designation;
-      updates[`users/${user.id}/employees/${editingEmployee.id}/salary`] = employeeEditData.salary;
-      updates[`users/${user.id}/employees/${editingEmployee.id}/workMode`] = employeeEditData.workMode;
-      updates[`users/${user.id}/employees/${editingEmployee.id}/employmentType`] = employeeEditData.employmentType;
+      const updates: Record<string, string | number> = {
+        [`users/${user.id}/employees/${editingEmployee.id}/name`]: employeeEditData.name,
+        [`users/${user.id}/employees/${editingEmployee.id}/designation`]: employeeEditData.designation,
+        [`users/${user.id}/employees/${editingEmployee.id}/salary`]: employeeEditData.salary,
+        [`users/${user.id}/employees/${editingEmployee.id}/workMode`]: employeeEditData.workMode,
+        [`users/${user.id}/employees/${editingEmployee.id}/employmentType`]: employeeEditData.employmentType
+      };
 
       await update(ref(database), updates);
       
@@ -342,7 +349,7 @@ const SalaryManagement: React.FC = () => {
       toast({
         title: "Employee Data Updated",
         description: "Employee information has been updated successfully",
-        variant: "success"
+        variant: "default"
       });
     } catch (err) {
       console.error('Error updating employee:', err);
@@ -361,13 +368,13 @@ const SalaryManagement: React.FC = () => {
     try {
       const netSalary = editData.basicSalary + editData.allowances - editData.deductions;
       
-      const updates: Record<string, any> = {};
-      
-      updates[`users/${user.id}/salaries/${editingSlip.id}/basicSalary`] = editData.basicSalary;
-      updates[`users/${user.id}/salaries/${editingSlip.id}/allowances`] = editData.allowances;
-      updates[`users/${user.id}/salaries/${editingSlip.id}/deductions`] = editData.deductions;
-      updates[`users/${user.id}/salaries/${editingSlip.id}/netSalary`] = netSalary;
-      updates[`users/${user.id}/salaries/${editingSlip.id}/lastUpdated`] = new Date().toISOString();
+      const updates: Record<string, string | number | null> = {
+        [`users/${user.id}/salaries/${editingSlip.id}/basicSalary`]: editData.basicSalary,
+        [`users/${user.id}/salaries/${editingSlip.id}/allowances`]: editData.allowances,
+        [`users/${user.id}/salaries/${editingSlip.id}/deductions`]: editData.deductions,
+        [`users/${user.id}/salaries/${editingSlip.id}/netSalary`]: netSalary,
+        [`users/${user.id}/salaries/${editingSlip.id}/lastUpdated`]: new Date().toISOString()
+      };
       
       const employee = employees.find(e => e.employeeId === editingSlip.employeeId);
       if (employee) {
@@ -385,7 +392,7 @@ const SalaryManagement: React.FC = () => {
       toast({
         title: "Salary Slip Updated",
         description: "Salary slip has been updated successfully",
-        variant: "success"
+        variant: "default"
       });
     } catch (err) {
       console.error('Error updating salary slip:', err);
@@ -405,9 +412,9 @@ const SalaryManagement: React.FC = () => {
       const slip = salarySlips.find(s => s.id === slipId);
       if (!slip) return;
 
-      const updates: Record<string, null> = {};
-      
-      updates[`users/${user.id}/salaries/${slipId}`] = null;
+      const updates: Record<string, null> = {
+        [`users/${user.id}/salaries/${slipId}`]: null
+      };
       
       const employee = employees.find(e => e.employeeId === slip.employeeId);
       if (employee) {
@@ -419,7 +426,7 @@ const SalaryManagement: React.FC = () => {
       toast({
         title: "Salary Slip Deleted",
         description: "Salary slip has been deleted successfully",
-        variant: "success"
+        variant: "default"
       });
     } catch (err) {
       console.error('Error deleting salary slip:', err);

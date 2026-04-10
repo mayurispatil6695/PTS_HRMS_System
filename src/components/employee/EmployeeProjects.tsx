@@ -3,8 +3,7 @@ import { motion } from 'framer-motion';
 import {
   FolderOpen, Calendar, Target, MessageSquare,
   CheckCircle, AlertCircle, Clock, ChevronDown, ChevronUp,
-  ChevronRight, Save, X,
-  Edit, Users
+  Save, X, Edit, Users
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
@@ -13,7 +12,7 @@ import { Progress } from '../ui/progress';
 import { Textarea } from '../ui/textarea';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, update, push, set, get } from 'firebase/database';
+import { ref, onValue, update, set, get } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
@@ -38,20 +37,18 @@ interface Project {
   assignedEmployees?: string[];
 }
 
-type TaskUpdateValue = string | number | boolean | null;
+// Define a type for change values (string | number | boolean | null)
+type ChangeValue = string | number | boolean | null;
 
 interface TaskUpdate {
-  timestamp: string; // ISO string (for UI)
+  timestamp: string;
   updatedBy: string;
   updatedById: string;
   updatedByRole?: 'admin' | 'team_lead' | 'employee';
-  changes: {
-    field: string;
-    oldValue: TaskUpdateValue;
-    newValue: TaskUpdateValue;
-  }[];
+  changes: { field: string; oldValue: ChangeValue; newValue: ChangeValue }[];
   note?: string;
 }
+
 interface Comment {
   text: string;
   createdAt: string;
@@ -71,8 +68,8 @@ interface Task {
   assignedToName?: string;
   updates?: Record<string, TaskUpdate>;
   comments?: Record<string, Comment>;
-  createdAt?: string;   // ✅ add this
-  updatedAt?: string;   // ✅ add this
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 interface Employee {
@@ -80,6 +77,21 @@ interface Employee {
   name: string;
   email: string;
   designation: string;
+}
+
+// Type for Firebase project data as stored
+interface FirebaseProjectData {
+  name?: string;
+  description?: string;
+  department?: string;
+  startDate?: string;
+  endDate?: string;
+  priority?: string;
+  status?: string;
+  progress?: number;
+  tasks?: Record<string, Task>;
+  assignedTeamLeader?: string;
+  assignedEmployees?: string[];
 }
 
 const EmployeeProjects = () => {
@@ -94,164 +106,139 @@ const EmployeeProjects = () => {
   const [newTaskStatus, setNewTaskStatus] = useState<string>('');
   const [taskComment, setTaskComment] = useState<string>('');
 
+  // Determine if current user is a team lead (from their own admin's employee record)
   useEffect(() => {
     if (!user?.adminUid || !user?.id) return;
-
     const employeeRef = ref(database, `users/${user.adminUid}/employees/${user.id}`);
-    onValue(employeeRef, (snapshot) => {
+    const unsubscribe = onValue(employeeRef, (snapshot) => {
       const data = snapshot.val();
       setIsTeamLead(data?.designation === 'Team Lead');
     });
+    return () => unsubscribe();
   }, [user]);
 
+  // Load all employees (for team lead view)
   useEffect(() => {
     if (!user?.adminUid) return;
-
-    // Load all employees for team lead to see who tasks are assigned to
     const employeesRef = ref(database, `users/${user.adminUid}/employees`);
     const unsubscribeEmployees = onValue(employeesRef, (snapshot) => {
       const data = snapshot.val();
-      if (data) {
-        setEmployees(data);
-      }
+      if (data) setEmployees(data);
     });
-
     return () => unsubscribeEmployees();
   }, [user?.adminUid]);
 
+  // Fetch projects based on role
   useEffect(() => {
-    if (!user?.id || !user?.adminUid) {
+    if (!user?.id) {
       setLoading(false);
       return;
     }
 
     if (isTeamLead) {
-      // For team leads, fetch only projects where they are assigned as team lead
+      // Team lead: fetch projects from their own admin's node where they are the team leader
+      if (!user.adminUid) {
+        setLoading(false);
+        return;
+      }
       const projectsRef = ref(database, `users/${user.adminUid}/projects`);
-      const unsubscribeProjects = onValue(projectsRef, (snapshot) => {
+      const unsubscribe = onValue(projectsRef, (snapshot) => {
         try {
-          const data = snapshot.val();
-          if (data) {
-           const allProjects: Project[] = Object.entries(data).map(([key, value]) => {
-  const project = value as FirebaseProject;
-
-  return {
-    id: key,
-    name: project.name || '',
-    description: project.description || '',
-    department: project.department || '',
-    startDate: project.startDate || '',
-    endDate: project.endDate || '',
-    priority: project.priority || 'low',
-    status: project.status || 'not_started',
-    progress: Number(project.progress ?? 0),
-    tasks: project.tasks || {},
-    assignedTeamLeader: project.assignedTeamLeader,
-    assignedEmployees: project.assignedEmployees || []
-  };
-});
-
-            // Filter projects where this team lead is assigned
-            const teamLeadProjects = allProjects.filter(
-              project => project.assignedTeamLeader === user.id
-            );
-
-            // Enhance tasks with assigned employee names
-            const enhancedProjects = teamLeadProjects.map(project => {
-              const enhancedTasks: Record<string, Task> = {};
-
-              if (project.tasks) {
-                Object.entries(project.tasks).forEach(([taskId, task]) => {
-                  enhancedTasks[taskId] = {
-                    ...task,
-                    assignedToName: task.assignedTo && employees[task.assignedTo]
-                      ? employees[task.assignedTo].name
-                      : 'Unassigned'
-                  };
-                });
-              }
-
-              return {
-                ...project,
-                tasks: enhancedTasks
+          const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
+          const allProjects: Project[] = data
+            ? Object.entries(data).map(([key, value]) => ({
+                id: key,
+                name: value.name || '',
+                description: value.description || '',
+                department: value.department || '',
+                startDate: value.startDate || '',
+                endDate: value.endDate || '',
+                priority: value.priority || 'low',
+                status: value.status || 'not_started',
+                progress: Number(value.progress ?? 0),
+                tasks: value.tasks || {},
+                assignedTeamLeader: value.assignedTeamLeader,
+                assignedEmployees: value.assignedEmployees || []
+              }))
+            : [];
+          const teamLeadProjects = allProjects.filter(p => p.assignedTeamLeader === user.id);
+          // Enhance tasks with assigned employee names
+          const enhanced = teamLeadProjects.map(proj => {
+            const enhancedTasks: Record<string, Task> = {};
+            Object.entries(proj.tasks).forEach(([tid, task]) => {
+              enhancedTasks[tid] = {
+                ...task,
+                assignedToName: task.assignedTo && employees[task.assignedTo]
+                  ? employees[task.assignedTo].name
+                  : 'Unassigned'
               };
             });
-
-            setProjects(enhancedProjects);
-          } else {
-            setProjects([]);
-          }
+            return { ...proj, tasks: enhancedTasks };
+          });
+          setProjects(enhanced);
           setLoading(false);
-        } catch (error) {
-          console.error("Error loading data:", error);
-          toast.error("Failed to load projects");
+        } catch (err) {
+          console.error(err);
+          setError('Failed to load projects');
           setLoading(false);
         }
-      }, (error) => {
-        console.error("Error setting up listener:", error);
-        toast.error("Failed to load projects");
+      }, (err) => {
+        console.error(err);
+        setError('Failed to load projects');
         setLoading(false);
       });
-
-      return () => unsubscribeProjects();
+      return () => unsubscribe();
     } else {
-      // For regular employees, get their assigned projects
-  // For regular employees, fetch from admin projects (source of truth)
-const projectsRef = ref(database, `users/${user.adminUid}/projects`);
-
-const unsubscribeProjects = onValue(
-  projectsRef,
-  (snapshot) => {
-    try {
-      const data = snapshot.val();
-
-      if (data) {
-        const allProjects: Project[] = [];
-
-        Object.entries(data).forEach(([key, value]) => {
-          if (!value) return;
-
-          const project = value as FirebaseProject;
-
-          // ✅ filter only projects where employee is assigned
-          if (!project.assignedEmployees?.includes(user.id)) return;
-
-          allProjects.push({
-            id: key,
-            name: project.name || '',
-            description: project.description || '',
-            department: project.department || '',
-            startDate: project.startDate || '',
-            endDate: project.endDate || '',
-            priority: project.priority || 'low',
-            status: project.status || 'not_started',
-            progress: Number(project.progress ?? 0),
-            tasks: project.tasks || {},
-            assignedTeamLeader: project.assignedTeamLeader,
-            assignedEmployees: project.assignedEmployees || []
-          });
-        });
-
-        setProjects(allProjects);
-      } else {
-        setProjects([]);
-      }
-
-      setLoading(false);
-    } catch (error) {
-      console.error("Error loading data:", error);
-      toast.error("Failed to load projects");
-      setLoading(false);
-    }
-  },
-  (error) => {
-    console.error("Error setting up listener:", error);
-    toast.error("Failed to load projects");
-    setLoading(false);
-  }
-);
-
-      return () => unsubscribeProjects();
+      // Regular employee: fetch projects from ALL admins (global) where employee is assigned
+      const usersRef = ref(database, 'users');
+      const unsubscribe = onValue(usersRef, (snapshot) => {
+        try {
+          const usersData = snapshot.val() as Record<string, { projects?: Record<string, FirebaseProjectData> }> | null;
+          if (!usersData) {
+            setProjects([]);
+            setLoading(false);
+            return;
+          }
+          const allProjects: Project[] = [];
+          // Iterate over all users (potential admins)
+          for (const [uid, userData] of Object.entries(usersData)) {
+            // Skip if this user has no projects node
+            if (!userData.projects) continue;
+            // Iterate over that user's projects
+            for (const [projId, projData] of Object.entries(userData.projects)) {
+              // Check if current employee is assigned to this project
+              const assigned = projData.assignedEmployees || [];
+              if (assigned.includes(user.id)) {
+                allProjects.push({
+                  id: projId,
+                  name: projData.name || '',
+                  description: projData.description || '',
+                  department: projData.department || '',
+                  startDate: projData.startDate || '',
+                  endDate: projData.endDate || '',
+                  priority: projData.priority || 'low',
+                  status: projData.status || 'not_started',
+                  progress: Number(projData.progress ?? 0),
+                  tasks: projData.tasks || {},
+                  assignedTeamLeader: projData.assignedTeamLeader,
+                  assignedEmployees: projData.assignedEmployees || []
+                });
+              }
+            }
+          }
+          setProjects(allProjects);
+          setLoading(false);
+        } catch (err) {
+          console.error(err);
+          setError('Failed to load projects');
+          setLoading(false);
+        }
+      }, (err) => {
+        console.error(err);
+        setError('Failed to load projects');
+        setLoading(false);
+      });
+      return () => unsubscribe();
     }
   }, [user, isTeamLead, employees]);
 
