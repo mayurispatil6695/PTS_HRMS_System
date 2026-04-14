@@ -1,3 +1,4 @@
+// src/components/admin/project/EnhancedProjectForm.tsx
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
@@ -11,6 +12,7 @@ import { ref, onValue, off, set, push } from 'firebase/database';
 import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { toast } from '../../ui/use-toast';
+
 
 interface Employee {
   id: string;
@@ -57,6 +59,7 @@ interface ExtendedTask extends Task {
   tags?: string[];
   mentions?: string[];
   employeeName?: string;
+  department?: string;
 }
 
 interface ProjectUpdate {
@@ -104,9 +107,18 @@ interface ProjectFormData {
 interface EnhancedProjectFormProps {
   onSuccess?: () => void;
   onCancel: () => void;
+  role?: 'admin' | 'team_manager' | 'team_leader' | 'employee' | 'client';
+  userId?: string;
+  department?: string;
 }
 
-const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, onCancel }) => {
+const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ 
+  onSuccess, 
+  onCancel, 
+  role = 'admin', 
+  userId = '', 
+  department = '' 
+}) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([]);
@@ -138,7 +150,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
 
   const departments = ['Software Development', 'Digital Marketing','Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', 'Artificial Intelligence'];
 
-  // Fetch all employees (non-admin) from global users
+  // Fetch all employees (non-admin) with role-based filtering
   useEffect(() => {
     if (!user) return;
     setLoading(true);
@@ -153,6 +165,16 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
           const profile = userData.profile || userData.employee;
           if (!profile || !profile.name) return;
           if (profile.status !== 'active') return;
+          
+          // Role-based filtering
+          if (role === 'team_manager' && department && profile.department !== department) return;
+          if (role === 'team_leader') {
+            // Team leader can only see employees from their own department
+            if (profile.department !== department) return;
+            // Team leader cannot assign to another team leader
+            if (profile.designation === 'Team Lead') return;
+          }
+          
           employeesData.push({
             id: uid || '',
             name: profile.name || '',
@@ -171,7 +193,14 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
       }
     });
     return () => off(usersRef);
-  }, [user]);
+  }, [user, role, department]);
+
+  // Auto-set team leader for team leader role
+  useEffect(() => {
+    if (role === 'team_leader' && userId) {
+      setFormData(prev => ({ ...prev, assignedTeamLeader: userId }));
+    }
+  }, [role, userId]);
 
   useEffect(() => {
     if (formData.projectType === 'common') {
@@ -183,6 +212,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
     }
   }, [employees, formData.projectType, formData.specificDepartment]);
 
+  // For team leader, only allow team members from their department (already filtered)
   const teamLeaders = filteredEmployees.filter(emp => emp.designation === 'Team Lead');
   const developers = filteredEmployees.filter(emp => emp.designation !== 'Team Lead');
 
@@ -272,6 +302,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
         projectData.tasks[task.id] = {
           ...task,
           employeeName: assignedEmployee?.name || '',
+          department: assignedEmployee?.department || '',
           subtasks: [],
           timeSpent: 0,
           timerActive: false,
@@ -283,6 +314,24 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
       });
 
       await set(ref(database, `projects/${projectId}`), projectData);
+
+// After projectData is saved
+const employeesToNotify = [...formData.assignedEmployees];
+if (formData.assignedTeamLeader && !employeesToNotify.includes(formData.assignedTeamLeader)) {
+  employeesToNotify.push(formData.assignedTeamLeader);
+}
+
+for (const empId of employeesToNotify) {
+  const notifRef = push(ref(database, `notifications/${empId}`));
+  await set(notifRef, {
+    title: 'New Project Assigned',
+    body: `You have been added to project: ${formData.name}`,
+    type: 'project_assigned',
+    read: false,
+    createdAt: Date.now(),
+    projectId: projectId,
+  });
+}
 
       // Assign to employees (for their personal dashboards)
       const employeesToAssign = [...(formData.assignedTeamLeader ? [formData.assignedTeamLeader] : []), ...formData.assignedEmployees];
@@ -307,6 +356,9 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
 
   if (loading) return <div>Loading employees...</div>;
   if (error) return <div className="text-red-500">{error}</div>;
+
+  // Determine if the team leader select should be disabled
+  const isTeamLeaderSelectDisabled = role === 'team_leader';
 
   return (
     <Card>
@@ -336,9 +388,15 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ onSuccess, on
           <div><Label>Description</Label><Textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} required /></div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div><Label>Team Leader</Label>
-              <Select value={formData.assignedTeamLeader} onValueChange={val => setFormData({...formData, assignedTeamLeader: val})}>
+              <Select 
+                value={formData.assignedTeamLeader} 
+                onValueChange={val => setFormData({...formData, assignedTeamLeader: val})}
+                disabled={isTeamLeaderSelectDisabled}
+              >
                 <SelectTrigger><SelectValue placeholder="Select team leader" /></SelectTrigger>
-                <SelectContent>{teamLeaders.map(l => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}</SelectContent>
+                <SelectContent>
+                  {teamLeaders.map(l => <SelectItem key={l.id} value={l.id}>{l.name}</SelectItem>)}
+                </SelectContent>
               </Select>
             </div>
             <div><Label>Priority</Label>

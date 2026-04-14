@@ -1,3 +1,4 @@
+// src/components/admin/ProjectManagement.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { FolderOpen, Plus, List, Grid, Users, LayoutGrid, Calendar } from 'lucide-react';
@@ -10,7 +11,7 @@ import KanbanBoard from './project/KanbanBoard';
 import ListView from './project/ListView';
 import TimelineView from './project/TimelineView';
 import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group';
-import { ref, onValue, off } from 'firebase/database';
+import { ref, onValue, off, remove } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
@@ -22,6 +23,11 @@ interface Employee {
   email: string;
   department: string;
   designation: string;
+}
+
+// Admin view: group by creator
+interface TaskItem {
+  status?: string;
 }
 
 // Firebase project data structure
@@ -41,6 +47,7 @@ interface FirebaseProjectData {
   createdBy?: string;
   tasks?: Record<string, unknown>;
   progress?: number;
+  clientId?: string; // optional for client filtering
 }
 
 // Project interface for the component
@@ -59,6 +66,9 @@ interface Project {
   specificDepartment?: string;
   createdAt: string;
   createdBy: string;
+  tasks?: Record<string, any>;
+  progress?: number;
+  clientId?: string;
 }
 
 // User data interface for Firebase users
@@ -78,10 +88,24 @@ interface EmployeeProfile {
   status?: string;
 }
 
-const ProjectManagement = () => {
-  const { user } = useAuth();
-  const userId = user?.id;
-  const userRole = user?.role;
+interface ProjectManagementProps {
+  role?: 'admin' | 'team_manager' | 'team_leader' | 'client' | 'employee';
+  userId?: string;
+  readOnly?: boolean;
+  department?: string; // for manager filtering
+}
+
+const ProjectManagement: React.FC<ProjectManagementProps> = ({ 
+  role: propRole, 
+  userId: propUserId, 
+  readOnly = false,
+  department: propDepartment 
+}) => {
+  const { user: authUser } = useAuth();
+  // Determine effective role and userId: use props if provided, else from auth
+  const effectiveRole = propRole || authUser?.role || 'employee';
+  const effectiveUserId = propUserId || authUser?.id || '';
+  const effectiveDepartment = propDepartment || authUser?.department || '';
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -90,7 +114,12 @@ const ProjectManagement = () => {
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline'>('kanban');
 
-  const isAdmin = useMemo(() => userRole === 'admin', [userRole]);
+  const isAdmin = effectiveRole === 'admin';
+  const isTeamManager = effectiveRole === 'team_manager';
+  const isTeamLeader = effectiveRole === 'team_leader';
+  const isClient = effectiveRole === 'client';
+  const isEmployee = effectiveRole === 'employee';
+
   const [adminNames, setAdminNames] = useState<Record<string, string>>({});
   const [globalEmployees, setGlobalEmployees] = useState<Employee[]>([]);
 
@@ -138,7 +167,7 @@ const ProjectManagement = () => {
 
   // Fetch projects from the global `/projects` node
   useEffect(() => {
-    if (!userId) return;
+    if (!effectiveUserId) return;
 
     setLoading(true);
     setError(null);
@@ -170,11 +199,26 @@ const ProjectManagement = () => {
             specificDepartment: projData.specificDepartment,
             createdAt: projData.createdAt || new Date().toISOString(),
             createdBy: projData.createdBy || '',
+            tasks: projData.tasks || {},
+            progress: projData.progress || 0,
+            clientId: projData.clientId,
           }));
 
-          const filteredProjects = isAdmin
-            ? allProjects
-            : allProjects.filter((proj) => proj.assignedEmployees.includes(userId));
+          let filteredProjects: Project[] = [];
+
+          // Role-based filtering
+          if (isAdmin) {
+            filteredProjects = allProjects;
+          } else if (isTeamManager && effectiveDepartment) {
+            filteredProjects = allProjects.filter(p => p.department === effectiveDepartment);
+          } else if (isTeamLeader) {
+            filteredProjects = allProjects.filter(p => p.assignedTeamLeader === effectiveUserId);
+          } else if (isClient) {
+            filteredProjects = allProjects.filter(p => p.clientId === effectiveUserId);
+          } else {
+            // Employee (default) – show only projects they are assigned to
+            filteredProjects = allProjects.filter(p => p.assignedEmployees?.includes(effectiveUserId));
+          }
 
           filteredProjects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
@@ -194,14 +238,13 @@ const ProjectManagement = () => {
     );
 
     return () => off(projectsRef);
-  }, [userId, isAdmin]);
+  }, [effectiveUserId, isAdmin, isTeamManager, isTeamLeader, isClient, effectiveDepartment]);
 
-  // Counts for badges
   const counts = useMemo(() => {
-    const completed = projects.filter((p) => p.status === 'completed').length;
-    const inProgress = projects.filter((p) => p.status === 'in_progress').length;
-    const pending = projects.filter((p) => p.status === 'pending').length;
-    const onHold = projects.filter((p) => p.status === 'on_hold').length;
+    const completed = projects.filter((p) => p.status === 'completed' || p.status === 'done').length;
+    const inProgress = projects.filter((p) => p.status === 'active' || p.status === 'in_progress').length;
+    const pending = projects.filter((p) => p.status === 'planned' || p.status === 'not_started' || p.status === 'pending').length;
+    const onHold = projects.filter((p) => p.status === 'paused' || p.status === 'on_hold').length;
     return { completed, inProgress, pending, onHold };
   }, [projects]);
 
@@ -222,13 +265,7 @@ const ProjectManagement = () => {
     toast({ title: 'Project Created', description: 'Your new project has been created successfully' });
   };
 
-  const handleProjectEdit = () => {
-    toast({ title: 'Project Updated', description: 'Project updated successfully' });
-  };
-
-  const handleProjectDelete = () => {
-    toast({ title: 'Project Deleted', description: 'Project deleted successfully' });
-  };
+  const canCreate = !readOnly && (isAdmin || isTeamManager || isTeamLeader);
 
   if (loading) {
     return (
@@ -250,11 +287,10 @@ const ProjectManagement = () => {
     );
   }
 
-  // Admin view: group by creator
   const renderAdminView = () => {
-    if (!projectsByCreator) return null;
-    const creatorEntries = Object.entries(projectsByCreator);
-    if (creatorEntries.length === 0) {
+    if (!isAdmin) return null;
+
+    if (Object.keys(projectsByCreator || {}).length === 0) {
       return (
         <div className="text-center py-12 text-gray-500">
           <FolderOpen className="h-12 w-12 mx-auto mb-4 text-gray-400" />
@@ -266,34 +302,78 @@ const ProjectManagement = () => {
 
     return (
       <div className="space-y-8">
-        {creatorEntries.map(([creatorId, creatorProjects]) => (
-          <Card key={creatorId}>
-            <CardHeader className="bg-gray-50">
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="flex items-center gap-2">
-                  <Users className="h-5 w-5 text-gray-600" />
-                  <CardTitle className="text-lg">Created by: {adminNames[creatorId] || creatorId.slice(0, 8)}</CardTitle>
-                  <Badge variant="outline" className="ml-2">
-                    {creatorProjects.length} Project{creatorProjects.length !== 1 ? 's' : ''}
-                  </Badge>
+        {Object.entries(projectsByCreator || {}).map(([creatorId, creatorProjects]) => {
+          let totalTasks = 0;
+          let completedTasks = 0;
+          let inProgressTasks = 0;
+          for (const project of creatorProjects) {
+            if (project.tasks) {
+              const tasksArray = Object.values(project.tasks) as TaskItem[];
+              totalTasks += tasksArray.length;
+              completedTasks += tasksArray.filter(t => t.status === 'completed' || t.status === 'done').length;
+              inProgressTasks += tasksArray.filter(t => t.status === 'in_progress').length;
+            }
+          }
+
+          const creatorName = adminNames[creatorId] || creatorId.slice(0, 8);
+
+          return (
+            <Card key={creatorId}>
+              <CardHeader className="bg-gray-50">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <Users className="h-5 w-5 text-gray-600" />
+                    <CardTitle className="text-lg">Created by: {creatorName}</CardTitle>
+                    <Badge variant="outline" className="ml-2">
+                      {creatorProjects.length} Project{creatorProjects.length !== 1 ? 's' : ''}
+                    </Badge>
+                  </div>
+                  <div className="flex gap-2">
+                    <Badge variant="outline" className="bg-green-50">
+                      ✓ {completedTasks} / {totalTasks} Tasks Completed
+                    </Badge>
+                    {inProgressTasks > 0 && (
+                      <Badge variant="outline" className="bg-blue-50">
+                        🔄 {inProgressTasks} In Progress
+                      </Badge>
+                    )}
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <Badge variant="outline" className="bg-green-50">
-                    {creatorProjects.filter((p) => p.status === 'completed').length} Completed
-                  </Badge>
-                  <Badge variant="outline" className="bg-blue-50">
-                    {creatorProjects.filter((p) => p.status === 'in_progress').length} In Progress
-                  </Badge>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="pt-6">
-              {displayMode === 'kanban' && <KanbanBoard projects={creatorProjects} employees={globalEmployees} />}
-              {displayMode === 'list' && <ListView projects={creatorProjects} employees={globalEmployees} />}
-              {displayMode === 'timeline' && <TimelineView projects={creatorProjects} />}
-            </CardContent>
-          </Card>
-        ))}
+              </CardHeader>
+              <CardContent className="pt-6">
+                {creatorProjects.map(project => {
+                  const tasksArray = project.tasks ? Object.values(project.tasks) as TaskItem[] : [];
+                  const projectProgress = tasksArray.length > 0
+                    ? Math.round((tasksArray.filter(t => t.status === 'completed' || t.status === 'done').length / tasksArray.length) * 100)
+                    : 0;
+
+                  return (
+                    <div key={project.id} className="mb-8 border rounded-lg p-4">
+                      <h3 className="text-lg font-semibold mb-2">{project.name}</h3>
+                      <div className="flex justify-between text-sm mb-1">
+                        <span>Overall Progress</span>
+                        <span>{projectProgress}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2.5 mb-4">
+                        <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${projectProgress}%` }}></div>
+                      </div>
+                      {displayMode === 'kanban' && (
+                        <KanbanBoard
+                          projects={[project]}
+                          employees={globalEmployees}
+                          onTaskClick={(task) => alert(`Task: ${task.title}\nStatus: ${task.status}\nPriority: ${task.priority}\nAssigned to: ${task.assignedTo || 'Unassigned'}`)}
+                          readOnly={readOnly}
+                        />
+                      )}
+                      {displayMode === 'list' && <ListView projects={[project]} employees={globalEmployees} readOnly={readOnly} />}
+                      {displayMode === 'timeline' && <TimelineView projects={[project]} readOnly={readOnly} />}
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
     );
   };
@@ -311,12 +391,18 @@ const ProjectManagement = () => {
           <p className="text-gray-600 text-sm">
             {isAdmin
               ? `Viewing all projects across the organization (${projects.length} total projects)`
+              : isTeamManager
+              ? `Managing projects for ${effectiveDepartment} department`
+              : isTeamLeader
+              ? 'Managing your team projects'
+              : isClient
+              ? 'Viewing your assigned projects'
               : 'Create and manage your projects'}
           </p>
         </div>
 
         <div className="flex gap-2">
-          {/* View Mode Toggle: Kanban / List / Timeline */}
+          {/* View Mode Toggle */}
           <div className="flex gap-1 mr-2">
             <Button
               variant={displayMode === 'kanban' ? 'default' : 'outline'}
@@ -341,16 +427,10 @@ const ProjectManagement = () => {
             </Button>
           </div>
 
-          {!isAdmin && (
+          {canCreate && (
             <Button onClick={() => setShowAddForm(true)}>
               <Plus className="h-4 w-4 mr-2" />
               New Project
-            </Button>
-          )}
-          {isAdmin && (
-            <Button onClick={() => setShowAddForm(true)} variant="outline">
-              <Plus className="h-4 w-4 mr-2" />
-              Create Project (as Admin)
             </Button>
           )}
         </div>
@@ -361,13 +441,18 @@ const ProjectManagement = () => {
         <EnhancedProjectForm
           onSuccess={handleProjectCreated}
           onCancel={() => setShowAddForm(false)}
+          role={effectiveRole}
+          userId={effectiveUserId}
+          department={effectiveDepartment}
         />
       )}
 
       {/* PROJECT LIST */}
       <Card>
         <CardHeader className="flex flex-col sm:flex-row justify-between gap-4">
-          <CardTitle>{isAdmin ? 'All Projects' : 'My Projects'} ({projects.length})</CardTitle>
+          <CardTitle>
+            {isAdmin ? 'All Projects' : isTeamManager ? 'Department Projects' : isTeamLeader ? 'Team Projects' : 'My Projects'} ({projects.length})
+          </CardTitle>
           <div className="flex gap-2 flex-wrap">
             {counts.completed > 0 && (
               <Badge variant="outline" className="bg-green-50">
@@ -400,9 +485,15 @@ const ProjectManagement = () => {
               <p className="text-sm mb-4">
                 {isAdmin
                   ? 'No projects have been created yet'
+                  : isTeamManager
+                  ? 'No projects found for your department'
+                  : isTeamLeader
+                  ? 'No projects assigned to your team'
+                  : isClient
+                  ? 'No projects assigned to you'
                   : 'Get started by creating your first project'}
               </p>
-              {!isAdmin && (
+              {canCreate && (
                 <Button onClick={() => setShowAddForm(true)}>
                   <Plus className="h-4 w-4 mr-2" />
                   Create Project
@@ -412,11 +503,11 @@ const ProjectManagement = () => {
           ) : isAdmin ? (
             renderAdminView()
           ) : displayMode === 'kanban' ? (
-            <KanbanBoard projects={projects} employees={globalEmployees} />
+            <KanbanBoard projects={projects} employees={globalEmployees} readOnly={readOnly} />
           ) : displayMode === 'list' ? (
-            <ListView projects={projects} employees={globalEmployees} />
+            <ListView projects={projects} employees={globalEmployees} readOnly={readOnly} />
           ) : (
-            <TimelineView projects={projects} />
+            <TimelineView projects={projects} readOnly={readOnly} />
           )}
         </CardContent>
       </Card>

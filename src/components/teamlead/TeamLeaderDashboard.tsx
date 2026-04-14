@@ -1,13 +1,14 @@
-// src/components/client/ClientDashboard.tsx
+// src/components/teamlead/TeamLeaderDashboard.tsx
 import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
-import ClientSidebar from './ClientSidebar';
-import ProjectManagement from '../admin/ProjectManagement';   // read‑only view
+import TeamLeaderSidebar from './TeamLeaderSidebar';
+import ProjectManagement from '../admin/ProjectManagement';
+import DailyTaskEmployee from '../admin/DailyTaskEmployee';
 
-const ClientDashboard = () => {
+const TeamLeaderDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -23,7 +24,7 @@ const ClientDashboard = () => {
       <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out md:translate-x-0 md:static md:inset-0 ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <ClientSidebar onClose={() => setSidebarOpen(false)} />
+        <TeamLeaderSidebar onClose={() => setSidebarOpen(false)} />
       </div>
 
       <div className="flex-1 flex flex-col overflow-hidden">
@@ -34,8 +35,8 @@ const ClientDashboard = () => {
                 <Menu className="h-5 w-5" />
               </Button>
               <div>
-                <h1 className="text-xl font-semibold text-gray-800">Client Portal</h1>
-                <p className="text-sm text-gray-600">Welcome, {user?.name}</p>
+                <h1 className="text-xl font-semibold text-gray-800">Team Lead Dashboard</h1>
+                <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
               </div>
             </div>
             <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">Logout</Button>
@@ -45,8 +46,9 @@ const ClientDashboard = () => {
         <main className="flex-1 overflow-auto">
           <div className="p-6">
             <Routes>
-              <Route path="/" element={<ProjectManagement role="client" userId={user?.id} readOnly />} />
-              <Route path="/projects" element={<ProjectManagement role="client" userId={user?.id} readOnly />} />
+              <Route path="/" element={<ProjectManagement role="team_leader" userId={user?.id} department={user?.department} />} />
+              <Route path="/projects" element={<ProjectManagement role="team_leader" userId={user?.id} department={user?.department} />} />
+              <Route path="/tasks" element={<DailyTaskEmployee role="team_leader" userId={user?.id} department={user?.department} />} />
             </Routes>
           </div>
         </main>
@@ -55,4 +57,4 @@ const ClientDashboard = () => {
   );
 };
 
-export default ClientDashboard;
+export default TeamLeaderDashboard;

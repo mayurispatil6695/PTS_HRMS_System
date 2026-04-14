@@ -41,6 +41,8 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
     { icon: FileText, label: 'Reports', path: '/admin/reports' },
     { icon: Receipt, label: 'Expenses Management', path: '/admin/expenses' },
     { icon: Settings, label: 'Settings', path: '/admin/settings' },
+    // Add this menu item
+{ icon: Users, label: 'Clients', path: '/admin/clients' },
   ];
 
   const isActive = (path: string) => {

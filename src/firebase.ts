@@ -1,7 +1,8 @@
-// src/firebase.ts
 import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
 import { getDatabase } from "firebase/database";
+import { getStorage } from "firebase/storage";  // ✅ Add this import
+
 const firebaseConfig = {
   apiKey: "AIzaSyBg7l4W3kfInLtUoC7cBKuhJ96dVep-cQ8",
   authDomain: "hrms-efb58.firebaseapp.com",
@@ -17,5 +18,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const database = getDatabase(app);
+const storage = getStorage(app);   // ✅ Now getStorage is defined
 
-export { auth, database ,app};
+// Export everything you need
+export { app, auth, database, storage };

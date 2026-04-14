@@ -10,7 +10,7 @@ export interface Project {
   startDate: string;
   endDate: string;
   priority: 'low' | 'medium' | 'high' | 'urgent';
-  status: 'not_started' | 'in_progress' | 'on_hold' | 'completed';
+ status: 'not_started' | 'in_progress' | 'on_hold' | 'completed' | 'active'; 
   progress: number;
   createdAt: string;
   createdBy: string;

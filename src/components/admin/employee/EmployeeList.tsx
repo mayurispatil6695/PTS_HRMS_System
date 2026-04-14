@@ -87,7 +87,7 @@ useEffect(() => {
         
         // ✅ Skip if user is an admin
         if (userData.role === 'admin') return;
-        
+        if (userData.role === 'client') return;
         // ✅ Get employee profile (prefer the 'profile' node, fallback to 'employee')
         const profile = userData.profile || userData.employee;
         if (!profile || !profile.name) return; // Not an employee

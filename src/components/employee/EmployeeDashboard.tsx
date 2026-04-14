@@ -1,7 +1,5 @@
-
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import EmployeeSidebar from './EmployeeSidebar';
 import EmployeeDashboardHome from './EmployeeDashboardHome';
 import EmployeeInfo from './EmployeeInfo';
@@ -13,12 +11,12 @@ import EmployeeLeaves from './EmployeeLeaves';
 import EmployeeSalarySlips from './EmployeeSalarySlips';
 import EmployeeReports from './EmployeeReports';
 import EmployeeChat from './EmployeeChat';
+import MyTask from './MyTask';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
-import MyTask from './MyTask';
-import { ref, update } from 'firebase/database';
-import { database } from '../../firebase';
+import { WorkSessionProvider } from '../../contexts/WorkSessionContext';
+import NotificationSystem from '../ui/NotificationSystem';
 
 const EmployeeDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -29,39 +27,8 @@ const EmployeeDashboard = () => {
     logout();
     navigate('/login');
   };
-  useEffect(() => {
-  if (!user) return;
 
-  let lastActivity = Date.now();
-
-  const updateActivity = () => {
-    lastActivity = Date.now();
-  };
-
-  window.addEventListener('mousemove', updateActivity);
-  window.addEventListener('keydown', updateActivity);
-  window.addEventListener('click', updateActivity);
-
-  const interval = setInterval(() => {
-    const idleTime = Date.now() - lastActivity;
-
-    const status = idleTime > 5 * 60 * 1000 ? 'idle' : 'active';
-
-    update(ref(database, `activity/${user.id}`), {
-      status,
-      lastActive: new Date().toISOString(),
-      idleTime
-    });
-
-  }, 10000);
-
-  return () => {
-    clearInterval(interval);
-    window.removeEventListener('mousemove', updateActivity);
-    window.removeEventListener('keydown', updateActivity);
-    window.removeEventListener('click', updateActivity);
-  };
-}, [user]);
+  // ❌ REMOVE the manual activity tracking useEffect (it's replaced by useIdleDetection)
 
   return (
     <div className="flex h-screen bg-gray-50">
@@ -82,49 +49,44 @@ const EmployeeDashboard = () => {
 
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
         <header className="bg-white shadow-sm border-b border-gray-200">
-          <div className="flex items-center justify-between px-4 py-3">
-            <div className="flex items-center gap-4">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="md:hidden"
-                onClick={() => setSidebarOpen(true)}
-              >
-                <Menu className="h-5 w-5" />
-              </Button>
-              <div>
-                <h1 className="text-xl font-semibold text-gray-800">Employee Portal</h1>
-                <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={handleLogout}
-              className="hover:bg-red-50 hover:text-red-600 transition-colors"
-            >
-              Logout
-            </Button>
-          </div>
-        </header>
+  <div className="flex items-center justify-between px-4 py-3">
+    <div className="flex items-center gap-4">
+      <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setSidebarOpen(true)}>
+        <Menu className="h-5 w-5" />
+      </Button>
+      <div>
+        <h1 className="text-xl font-semibold text-gray-800">Employee Portal</h1>
+        <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
+      </div>
+    </div>
+    <div className="flex items-center gap-4">
+      <NotificationSystem />
+      <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">
+        Logout
+      </Button>
+    </div>
+  </div>
+</header>
 
-        {/* Main content area */}
         <main className="flex-1 overflow-auto">
           <div className="p-6">
-            <Routes>
-              <Route path="/" element={<EmployeeDashboardHome />} />
-              <Route path="/info" element={<EmployeeInfo />} />
-              <Route path="/attendance" element={<EmployeeAttendance />} />
-              <Route path="/meetings" element={<EmployeeMeetings />} />
-              <Route path="/projects" element={<EmployeeProjects />} />
-              <Route path="/social-calendar" element={<SocialMediaCalendar />} />
-              <Route path="/leaves" element={<EmployeeLeaves />} />
-              <Route path="/salary" element={<EmployeeSalarySlips />} />
-              <Route path="/reports" element={<EmployeeReports />} />
-              <Route path="/chat" element={<EmployeeChat />} />
-              <Route path='/mytask' element={<MyTask />} />
-            </Routes>
+            {/* ✅ Wrap routes with WorkSessionProvider so all child pages can access work session state */}
+            <WorkSessionProvider>
+              <Routes>
+                <Route path="/" element={<EmployeeDashboardHome />} />
+                <Route path="/info" element={<EmployeeInfo />} />
+                <Route path="/attendance" element={<EmployeeAttendance />} />
+                <Route path="/meetings" element={<EmployeeMeetings />} />
+                <Route path="/projects" element={<EmployeeProjects />} />
+                <Route path="/social-calendar" element={<SocialMediaCalendar />} />
+                <Route path="/leaves" element={<EmployeeLeaves />} />
+                <Route path="/salary" element={<EmployeeSalarySlips />} />
+                <Route path="/reports" element={<EmployeeReports />} />
+                <Route path="/chat" element={<EmployeeChat />} />
+                <Route path="/mytask" element={<MyTask />} />
+              </Routes>
+            </WorkSessionProvider>
           </div>
         </main>
       </div>

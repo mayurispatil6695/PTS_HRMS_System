@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { Badge } from '../ui/badge';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, off, push, set } from 'firebase/database';
+import { ref, onValue, off, push, set, get } from 'firebase/database';
 import { toast } from '../ui/use-toast';
 
 interface LeaveRequest {
@@ -40,6 +40,14 @@ interface Notification {
   read: boolean;
 }
 
+// Interface for user data from Firebase
+interface FirebaseUserData {
+  role?: string;
+  name?: string;
+  email?: string;
+  [key: string]: unknown;
+}
+
 const EmployeeLeaves = () => {
   const { user } = useAuth();
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
@@ -56,21 +64,17 @@ const EmployeeLeaves = () => {
   const [currentNotification, setCurrentNotification] = useState<Notification | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   
-  // Use ref to track previous leave requests to avoid infinite loop
   const previousRequestsRef = useRef<LeaveRequest[]>([]);
   const notificationTimeoutRef = useRef<NodeJS.Timeout>();
 
   const leaveTypes = ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Maternity Leave', 'Paternity Leave', 'Emergency Leave'];
 
-  // Request notification permission on component mount
   useEffect(() => {
     if ('Notification' in window) {
       Notification.requestPermission().then(permission => {
         setNotificationPermission(permission);
       });
     }
-    
-    // Cleanup timeout on unmount
     return () => {
       if (notificationTimeoutRef.current) {
         clearTimeout(notificationTimeoutRef.current);
@@ -84,13 +88,10 @@ const EmployeeLeaves = () => {
       id: `${notification.type}-${notification.timestamp}`,
       read: false
     };
-
-    // Add to in-app notifications
     setNotifications(prev => [newNotification, ...prev]);
     setCurrentNotification(newNotification);
     setShowNotification(true);
 
-    // Show browser notification if permission is granted
     if (notificationPermission === 'granted') {
       const notificationDetails = getNotificationDetails(notification.type);
       try {
@@ -107,12 +108,7 @@ const EmployeeLeaves = () => {
       }
     }
 
-    // Clear previous timeout
-    if (notificationTimeoutRef.current) {
-      clearTimeout(notificationTimeoutRef.current);
-    }
-
-    // Auto-hide after 5 seconds
+    if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current);
     notificationTimeoutRef.current = setTimeout(() => {
       setShowNotification(false);
       setTimeout(() => setCurrentNotification(null), 500);
@@ -155,23 +151,16 @@ const EmployeeLeaves = () => {
       try {
         const data = snapshot.val();
         let requests: LeaveRequest[] = [];
-        
         if (data) {
           requests = Object.entries(data).map(([key, value]) => ({
             id: key,
             ...(value as Omit<LeaveRequest, 'id'>)
           }));
-          
-          // Sort by appliedAt date (newest first)
           requests.sort((a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime());
           
-          // Check for status changes by comparing with previous requests
           const previousRequests = previousRequestsRef.current;
-          
           requests.forEach(request => {
             const previousRequest = previousRequests.find(r => r.id === request.id);
-            
-            // If status changed from pending to approved
             if (previousRequest && previousRequest.status === 'pending' && request.status === 'approved') {
               showSystemNotification({
                 type: 'approved',
@@ -182,8 +171,6 @@ const EmployeeLeaves = () => {
                 timestamp: new Date(request.approvedAt || Date.now()).getTime()
               });
             }
-            
-            // If status changed from pending to rejected
             if (previousRequest && previousRequest.status === 'pending' && request.status === 'rejected') {
               showSystemNotification({
                 type: 'rejected',
@@ -195,57 +182,36 @@ const EmployeeLeaves = () => {
               });
             }
           });
-          
-          // Update the ref with current requests
           previousRequestsRef.current = requests;
         }
-        
         setLeaveRequests(requests);
       } catch (error) {
         console.error("Error fetching leave requests:", error);
-        toast({
-          title: "Error",
-          description: "Failed to load leave requests",
-          variant: "destructive"
-        });
+        toast({ title: "Error", description: "Failed to load leave requests", variant: "destructive" });
       } finally {
         setLoading(false);
       }
     }, (error) => {
       console.error("Firebase error:", error);
       setLoading(false);
-      toast({
-        title: "Error",
-        description: "Failed to connect to database",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: "Failed to connect to database", variant: "destructive" });
     });
 
-    // Cleanup subscription
     return () => {
       off(leavesRef);
       unsubscribe();
     };
-  }, [user?.id, user?.adminUid, showSystemNotification]); // Remove leaveRequests from dependencies
+  }, [user?.id, user?.adminUid, showSystemNotification]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     if (!user?.id || !user?.adminUid) {
-      toast({
-        title: "Error",
-        description: "User information not available",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: "User information not available", variant: "destructive" });
       return;
     }
 
     if (new Date(formData.startDate) > new Date(formData.endDate)) {
-      toast({
-        title: "Error",
-        description: "Start date cannot be after end date",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: "Start date cannot be after end date", variant: "destructive" });
       return;
     }
 
@@ -268,25 +234,34 @@ const EmployeeLeaves = () => {
       const newLeaveRef = push(leavesRef);
       await set(newLeaveRef, newRequest);
 
-      toast({
-        title: "Leave Applied",
-        description: "Your leave request has been submitted successfully."
+      // ✅ Notify all admins about new leave request
+      const usersSnapshot = await get(ref(database, 'users'));
+      const adminNotifications: Promise<void>[] = [];
+
+      // Iterate over snapshot using forEach (no await inside)
+      usersSnapshot.forEach((childSnap) => {
+        const userData = childSnap.val() as FirebaseUserData;
+        if (userData.role === 'admin') {
+          const notifRef = push(ref(database, `notifications/${childSnap.key}`));
+          adminNotifications.push(set(notifRef, {
+            title: 'New Leave Request',
+            body: `${user.name || 'Employee'} applied for ${formData.leaveType} leave from ${new Date(formData.startDate).toLocaleDateString()} to ${new Date(formData.endDate).toLocaleDateString()}`,
+            type: 'leave_request',
+            read: false,
+            createdAt: Date.now(),
+            employeeId: user.id,
+            leaveId: newLeaveRef.key,
+          }));
+        }
       });
-      
-      setFormData({
-        leaveType: '',
-        startDate: '',
-        endDate: '',
-        reason: ''
-      });
+      await Promise.all(adminNotifications);
+
+      toast({ title: "Leave Applied", description: "Your leave request has been submitted successfully." });
+      setFormData({ leaveType: '', startDate: '', endDate: '', reason: '' });
       setShowApplyForm(false);
     } catch (error) {
       console.error("Error submitting leave request:", error);
-      toast({
-        title: "Error",
-        description: "Failed to submit leave request",
-        variant: "destructive"
-      });
+      toast({ title: "Error", description: "Failed to submit leave request", variant: "destructive" });
     } finally {
       setLoading(false);
     }
@@ -314,11 +289,7 @@ const EmployeeLeaves = () => {
     const pending = leaveRequests.filter(req => req.status === 'pending').length;
     const approved = leaveRequests.filter(req => req.status === 'approved').length;
     const rejected = leaveRequests.filter(req => req.status === 'rejected').length;
-    
-    const approvedDays = leaveRequests
-      .filter(req => req.status === 'approved')
-      .reduce((total, req) => total + calculateDays(req.startDate, req.endDate), 0);
-    
+    const approvedDays = leaveRequests.filter(req => req.status === 'approved').reduce((total, req) => total + calculateDays(req.startDate, req.endDate), 0);
     return { total, pending, approved, rejected, approvedDays };
   };
 
@@ -334,7 +305,6 @@ const EmployeeLeaves = () => {
 
   return (
     <div className="space-y-6 relative">
-      {/* Notification Popup */}
       {showNotification && currentNotification && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -344,28 +314,19 @@ const EmployeeLeaves = () => {
           className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg max-w-sm w-full ${getNotificationDetails(currentNotification.type).color} border-l-4`}
         >
           <div className="flex items-start">
-            <div className="flex-shrink-0">
-              <Bell className="h-5 w-5" />
-            </div>
+            <div className="flex-shrink-0"><Bell className="h-5 w-5" /></div>
             <div className="ml-3 w-0 flex-1 pt-0.5">
-              <p className="text-sm font-medium">
-                {getNotificationDetails(currentNotification.type).title}
-              </p>
+              <p className="text-sm font-medium">{getNotificationDetails(currentNotification.type).title}</p>
               <p className="mt-1 text-sm">
                 {getNotificationDetails(currentNotification.type).description
                   .replace('{leaveType}', currentNotification.leaveType)
                   .replace('{startDate}', new Date(currentNotification.startDate).toLocaleDateString())
                   .replace('{endDate}', new Date(currentNotification.endDate).toLocaleDateString())}
               </p>
-              <p className="mt-1 text-xs text-gray-600">
-                {new Date(currentNotification.timestamp).toLocaleTimeString()}
-              </p>
+              <p className="mt-1 text-xs text-gray-600">{new Date(currentNotification.timestamp).toLocaleTimeString()}</p>
             </div>
             <div className="ml-4 flex-shrink-0 flex">
-              <button
-                onClick={() => setShowNotification(false)}
-                className="rounded-md inline-flex text-gray-400 hover:text-gray-500 focus:outline-none"
-              >
+              <button onClick={() => setShowNotification(false)} className="rounded-md inline-flex text-gray-400 hover:text-gray-500 focus:outline-none">
                 <span className="sr-only">Close</span>
                 <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
@@ -376,284 +337,65 @@ const EmployeeLeaves = () => {
         </motion.div>
       )}
 
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between"
-      >
-        <div>
-          <h1 className="text-2xl font-bold text-gray-800">My Leaves</h1>
-          <p className="text-gray-600">Apply for leave and track your requests</p>
-        </div>
-        <Button onClick={() => setShowApplyForm(true)}>
-          <Plus className="h-4 w-4 mr-2" />
-          Apply Leave
-        </Button>
+      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
+        <div><h1 className="text-2xl font-bold text-gray-800">My Leaves</h1><p className="text-gray-600">Apply for leave and track your requests</p></div>
+        <Button onClick={() => setShowApplyForm(true)}><Plus className="h-4 w-4 mr-2" /> Apply Leave</Button>
       </motion.div>
 
-      {/* Leave Stats */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.1 }}
-        >
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2">
-                <Plane className="h-4 w-4 text-blue-600" />
-                <div>
-                  <p className="text-sm text-gray-600">Total Requests</p>
-                  <p className="text-xl font-bold">{stats.total}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.2 }}
-        >
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2">
-                <Clock className="h-4 w-4 text-yellow-600" />
-                <div>
-                  <p className="text-sm text-gray-600">Pending</p>
-                  <p className="text-xl font-bold text-yellow-600">{stats.pending}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.3 }}
-        >
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-green-600" />
-                <div>
-                  <p className="text-sm text-gray-600">Approved</p>
-                  <p className="text-xl font-bold text-green-600">{stats.approved}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.4 }}
-        >
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2">
-                <Plane className="h-4 w-4 text-red-600" />
-                <div>
-                  <p className="text-sm text-gray-600">Rejected</p>
-                  <p className="text-xl font-bold text-red-600">{stats.rejected}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ delay: 0.5 }}
-        >
-          <Card>
-            <CardContent className="p-4">
-              <div className="flex items-center gap-2">
-                <Calendar className="h-4 w-4 text-purple-600" />
-                <div>
-                  <p className="text-sm text-gray-600">Days Used</p>
-                  <p className="text-xl font-bold text-purple-600">{stats.approvedDays}</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
+        {[
+          { icon: Plane, label: 'Total Requests', value: stats.total, color: 'text-blue-600', delay: 0.1 },
+          { icon: Clock, label: 'Pending', value: stats.pending, color: 'text-yellow-600', delay: 0.2 },
+          { icon: Calendar, label: 'Approved', value: stats.approved, color: 'text-green-600', delay: 0.3 },
+          { icon: Plane, label: 'Rejected', value: stats.rejected, color: 'text-red-600', delay: 0.4 },
+          { icon: Calendar, label: 'Days Used', value: stats.approvedDays, color: 'text-purple-600', delay: 0.5 }
+        ].map((item, idx) => (
+          <motion.div key={idx} initial={{ opacity: 0, scale: 0.9 }} animate={{ opacity: 1, scale: 1 }} transition={{ delay: item.delay }}>
+            <Card><CardContent className="p-4"><div className="flex items-center gap-2"><item.icon className={`h-4 w-4 ${item.color}`} /><div><p className="text-sm text-gray-600">{item.label}</p><p className={`text-xl font-bold ${item.color}`}>{item.value}</p></div></div></CardContent></Card>
+          </motion.div>
+        ))}
       </div>
 
-      {/* Apply Leave Form */}
       {showApplyForm && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-        >
-          <Card>
-            <CardHeader>
-              <CardTitle>Apply for Leave</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-4">
-                <Select 
-                  value={formData.leaveType} 
-                  onValueChange={(value) => setFormData({...formData, leaveType: value})}
-                  required
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select Leave Type" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {leaveTypes.map(type => (
-                      <SelectItem key={type} value={type}>{type}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Start Date</label>
-                    <Input
-                      type="date"
-                      value={formData.startDate}
-                      onChange={(e) => setFormData({...formData, startDate: e.target.value})}
-                      required
-                      min={new Date().toISOString().split('T')[0]}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">End Date</label>
-                    <Input
-                      type="date"
-                      value={formData.endDate}
-                      onChange={(e) => setFormData({...formData, endDate: e.target.value})}
-                      required
-                      min={formData.startDate || new Date().toISOString().split('T')[0]}
-                    />
-                  </div>
-                </div>
-
-                {formData.startDate && formData.endDate && (
-                  <div className="p-3 bg-blue-50 rounded-lg">
-                    <p className="text-sm text-blue-700">
-                      Duration: {calculateDays(formData.startDate, formData.endDate)} day(s)
-                    </p>
-                  </div>
-                )}
-
-                <Textarea
-                  placeholder="Reason for leave..."
-                  value={formData.reason}
-                  onChange={(e) => setFormData({...formData, reason: e.target.value})}
-                  required
-                  minLength={10}
-                />
-
-                <div className="flex gap-2">
-                  <Button type="submit" disabled={loading}>
-                    {loading ? "Submitting..." : "Apply Leave"}
-                  </Button>
-                  <Button 
-                    type="button" 
-                    variant="outline" 
-                    onClick={() => setShowApplyForm(false)}
-                    disabled={loading}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </form>
-            </CardContent>
-          </Card>
+        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+          <Card><CardHeader><CardTitle>Apply for Leave</CardTitle></CardHeader><CardContent>
+            <form onSubmit={handleSubmit} className="space-y-4">
+              <Select value={formData.leaveType} onValueChange={(value) => setFormData({...formData, leaveType: value})} required>
+                <SelectTrigger><SelectValue placeholder="Select Leave Type" /></SelectTrigger>
+                <SelectContent>{leaveTypes.map(type => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
+              </Select>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Start Date</label><Input type="date" value={formData.startDate} onChange={(e) => setFormData({...formData, startDate: e.target.value})} required min={new Date().toISOString().split('T')[0]} /></div>
+                <div><label className="text-sm font-medium mb-1 block">End Date</label><Input type="date" value={formData.endDate} onChange={(e) => setFormData({...formData, endDate: e.target.value})} required min={formData.startDate || new Date().toISOString().split('T')[0]} /></div>
+              </div>
+              {formData.startDate && formData.endDate && <div className="p-3 bg-blue-50 rounded-lg"><p className="text-sm text-blue-700">Duration: {calculateDays(formData.startDate, formData.endDate)} day(s)</p></div>}
+              <Textarea placeholder="Reason for leave..." value={formData.reason} onChange={(e) => setFormData({...formData, reason: e.target.value})} required minLength={10} />
+              <div className="flex gap-2"><Button type="submit" disabled={loading}>{loading ? "Submitting..." : "Apply Leave"}</Button><Button type="button" variant="outline" onClick={() => setShowApplyForm(false)} disabled={loading}>Cancel</Button></div>
+            </form>
+          </CardContent></Card>
         </motion.div>
       )}
 
-      {/* Leave Requests */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.6 }}
-      >
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Plane className="h-4 w-4" />
-              My Leave Requests ({leaveRequests.length})
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {leaveRequests.map((request, index) => (
-                <motion.div
-                  key={request.id}
-                  initial={{ opacity: 0, x: -20 }}
-                  animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.05 }}
-                  className="border rounded-lg p-4 hover:shadow-md transition-shadow"
-                >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h3 className="font-semibold">{request.leaveType}</h3>
-                        <Badge className={getStatusColor(request.status)}>
-                          {request.status}
-                        </Badge>
-                        {request.approvedBy && (
-                          <Badge variant="outline" className="ml-2">
-                            Approved by: {request.approvedBy}
-                          </Badge>
-                        )}
-                      </div>
-                      
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3 text-sm text-gray-600">
-                        <div>
-                          <p className="font-medium">Duration</p>
-                          <p>{calculateDays(request.startDate, request.endDate)} day(s)</p>
-                        </div>
-                        <div>
-                          <p className="font-medium">Start Date</p>
-                          <p>{new Date(request.startDate).toLocaleDateString()}</p>
-                        </div>
-                        <div>
-                          <p className="font-medium">End Date</p>
-                          <p>{new Date(request.endDate).toLocaleDateString()}</p>
-                        </div>
-                      </div>
-                      
-                      <div className="mb-3">
-                        <p className="text-sm font-medium text-gray-700">Reason:</p>
-                        <p className="text-sm text-gray-600">{request.reason}</p>
-                      </div>
-                      
-                      <p className="text-xs text-gray-500">
-                        Applied on: {new Date(request.appliedAt).toLocaleString()}
-                      </p>
-                      
-                      {request.status === 'approved' && request.approvedAt && (
-                        <p className="text-xs text-green-600">
-                          Approved on: {new Date(request.approvedAt).toLocaleString()}
-                        </p>
-                      )}
-                      
-                      {request.status === 'rejected' && request.rejectedAt && (
-                        <p className="text-xs text-red-600">
-                          Rejected on: {new Date(request.rejectedAt).toLocaleString()}
-                        </p>
-                      )}
-                    </div>
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
+        <Card><CardHeader><CardTitle className="flex items-center gap-2"><Plane className="h-4 w-4" /> My Leave Requests ({leaveRequests.length})</CardTitle></CardHeader><CardContent>
+          <div className="space-y-4">
+            {leaveRequests.map((request, index) => (
+              <motion.div key={request.id} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
+                <div className="flex items-start justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2"><h3 className="font-semibold">{request.leaveType}</h3><Badge className={getStatusColor(request.status)}>{request.status}</Badge>{request.approvedBy && <Badge variant="outline" className="ml-2">Approved by: {request.approvedBy}</Badge>}</div>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-3 text-sm text-gray-600"><div><p className="font-medium">Duration</p><p>{calculateDays(request.startDate, request.endDate)} day(s)</p></div><div><p className="font-medium">Start Date</p><p>{new Date(request.startDate).toLocaleDateString()}</p></div><div><p className="font-medium">End Date</p><p>{new Date(request.endDate).toLocaleDateString()}</p></div></div>
+                    <div className="mb-3"><p className="text-sm font-medium text-gray-700">Reason:</p><p className="text-sm text-gray-600">{request.reason}</p></div>
+                    <p className="text-xs text-gray-500">Applied on: {new Date(request.appliedAt).toLocaleString()}</p>
+                    {request.status === 'approved' && request.approvedAt && <p className="text-xs text-green-600">Approved on: {new Date(request.approvedAt).toLocaleString()}</p>}
+                    {request.status === 'rejected' && request.rejectedAt && <p className="text-xs text-red-600">Rejected on: {new Date(request.rejectedAt).toLocaleString()}</p>}
                   </div>
-                </motion.div>
-              ))}
-              {leaveRequests.length === 0 && (
-                <div className="text-center py-8 text-gray-500">
-                  No leave requests found
                 </div>
-              )}
-            </div>
-          </CardContent>
-        </Card>
+              </motion.div>
+            ))}
+            {leaveRequests.length === 0 && <div className="text-center py-8 text-gray-500">No leave requests found</div>}
+          </div>
+        </CardContent></Card>
       </motion.div>
     </div>
   );

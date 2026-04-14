@@ -6,7 +6,7 @@ import { useEmployeeManagement } from '../../hooks/useEmployeeManagement';
 import AddEmployeeDialog from './employee/AddEmployeeDialog';
 import EmployeeList from './employee/EmployeeList';
 import EmployeeDetailsDialog from './employee/EmployeeDetailsDialog';
-
+import AddClientDialog from './AddClientDialog';
 const EmployeeManagement = () => {
   const {
     filteredEmployees,
@@ -57,22 +57,7 @@ const EmployeeManagement = () => {
         </div>
       </motion.div>
 
-      {/* Filters */}
-      {/* <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-      >
-        <EmployeeFilters
-          searchTerm={searchTerm}
-          setSearchTerm={setSearchTerm}
-          filterDepartment={filterDepartment}
-          setFilterDepartment={setFilterDepartment}
-          filterStatus={filterStatus}
-          setFilterStatus={setFilterStatus}
-          departments={departments}
-        />
-      </motion.div> */}
+      
 
       {/* Employee List */}
       <motion.div

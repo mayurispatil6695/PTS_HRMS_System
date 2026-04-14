@@ -1,3 +1,4 @@
+// src/components/admin/project/TimelineView.tsx
 import React from 'react';
 import { Card, CardContent } from '../../ui/card';
 
@@ -19,9 +20,10 @@ interface TimelineProject {
 
 interface TimelineViewProps {
   projects: TimelineProject[];
+  readOnly?: boolean;
 }
 
-const TimelineView: React.FC<TimelineViewProps> = ({ projects }) => {
+const TimelineView: React.FC<TimelineViewProps> = ({ projects, readOnly = false }) => {
   const allTasks: Task[] = [];
   projects.forEach(project => {
     if (project.tasks) {

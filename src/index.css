@@ -104,3 +104,9 @@ All colors MUST be HSL.
     @apply bg-background text-foreground;
   }
 }
+.ql-container {
+  overflow: visible !important;
+}
+.ql-editor {
+  overflow-y: auto !important;
+}

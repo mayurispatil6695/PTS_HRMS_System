@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, query, orderByChild, update, remove, off } from 'firebase/database';
+import { ref, onValue, query, orderByChild, update, remove, off ,push ,set} from 'firebase/database';
 
 interface Employee {
   id: string;
@@ -334,6 +334,17 @@ const LeaveManagement = () => {
 
       const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
       await update(leaveRef, updates);
+
+      // Create notification for the employee
+const notifRef = push(ref(database, `notifications/${request.employeeId}`));
+await set(notifRef, {
+  title: newStatus === 'approved' ? 'Leave Approved' : 'Leave Rejected',
+  body: `Your ${request.leaveType} leave from ${new Date(request.startDate).toLocaleDateString()} to ${new Date(request.endDate).toLocaleDateString()} has been ${newStatus}.`,
+  type: newStatus === 'approved' ? 'leave_approved' : 'leave_rejected',
+  read: false,
+  createdAt: Date.now(),
+  leaveId: request.id,
+});
 
       // Show notification for status change
       if (newStatus === 'approved') {

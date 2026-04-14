@@ -1,3 +1,4 @@
+// src/components/admin/project/ListView.tsx
 import React from 'react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../ui/table';
 import { Badge } from '../../ui/badge';
@@ -20,7 +21,6 @@ interface Task {
   projectName: string;
 }
 
-// Minimal project interface for ListView
 interface ListViewProject {
   name: string;
   tasks?: Record<string, {
@@ -36,9 +36,10 @@ interface ListViewProject {
 interface ListViewProps {
   projects: ListViewProject[];
   employees: Employee[];
+  readOnly?: boolean;
 }
 
-const ListView: React.FC<ListViewProps> = ({ projects, employees }) => {
+const ListView: React.FC<ListViewProps> = ({ projects, employees, readOnly = false }) => {
   const allTasks: Task[] = [];
   projects.forEach(project => {
     if (project.tasks) {

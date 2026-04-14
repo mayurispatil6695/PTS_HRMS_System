@@ -4,45 +4,54 @@ import { motion } from 'framer-motion';
 import { 
   LayoutDashboard, 
   FolderOpen, 
-  MessageCircle,
+  CheckSquare, 
+  Clock, 
+  Calendar, 
+  Users,
+  FileText,
   X,
   Building2
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useAuth } from '../../hooks/useAuth';
 
-interface ClientSidebarProps {
+interface ManagerSidebarProps {
   onClose: () => void;
   isMobile?: boolean;
 }
 
-const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false }) => {
+const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = false }) => {
   const location = useLocation();
   const { user } = useAuth();
 
   const menuItems = [
-    { icon: LayoutDashboard, label: 'Dashboard', path: '/client/' },
-    { icon: FolderOpen, label: 'Projects', path: '/client/projects' },
-    { icon: MessageCircle, label: 'Chat', path: '/client/chat' },
+    { icon: LayoutDashboard, label: 'Dashboard', path: '/manager/' },
+    { icon: FolderOpen, label: 'Projects', path: '/manager/projects' },
+    { icon: CheckSquare, label: 'Tasks', path: '/manager/tasks' },
+    { icon: Clock, label: 'Attendance', path: '/manager/attendance' },
+    { icon: Calendar, label: 'Leaves', path: '/manager/leaves' },
+    { icon: Users, label: 'Employees', path: '/manager/employees' },
+    { icon: FileText, label: 'Reports', path: '/manager/reports' },
   ];
 
   const isActive = (path: string) => {
-    if (path === '/client/') {
-      return location.pathname === '/client' || location.pathname === '/client/';
+    if (path === '/manager/') {
+      return location.pathname === '/manager' || location.pathname === '/manager/';
     }
     return location.pathname.startsWith(path);
   };
 
   return (
     <div className={`h-full flex flex-col bg-white ${isMobile ? 'w-full' : 'w-64'}`}>
+      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
-          <div className="w-8 h-8 bg-orange-600 rounded-lg flex items-center justify-center">
+          <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
             <Building2 className="w-5 h-5 text-white" />
           </div>
           <div>
             <h2 className="font-semibold text-gray-800">HRMS</h2>
-            <p className="text-xs text-gray-500">Client Portal</p>
+            <p className="text-xs text-gray-500">Manager Panel</p>
           </div>
         </div>
         {isMobile && (
@@ -52,9 +61,10 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
         )}
       </div>
 
+      {/* User Info */}
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-gradient-to-br from-orange-500 to-red-600 rounded-full flex items-center justify-center text-white font-semibold">
+          <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-white font-semibold">
             {user?.name.split(' ').map(n => n[0]).join('')}
           </div>
           <div className="min-w-0">
@@ -65,6 +75,7 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
         </div>
       </div>
 
+      {/* Navigation */}
       <nav className="flex-1 overflow-y-auto p-4">
         <ul className="space-y-1">
           {menuItems.map((item, index) => (
@@ -79,7 +90,7 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
                 onClick={onClose}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 ${
                   isActive(item.path)
-                    ? 'bg-orange-50 text-orange-600 border-r-2 border-orange-600'
+                    ? 'bg-blue-50 text-blue-600 border-r-2 border-blue-600'
                     : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
                 }`}
               >
@@ -91,6 +102,7 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
         </ul>
       </nav>
 
+      {/* Footer */}
       <div className="p-4 border-t border-gray-200">
         <div className="text-xs text-gray-500 text-center truncate">
           © 2025 PTS System
@@ -100,4 +112,4 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
   );
 };
 
-export default ClientSidebar;
+export default ManagerSidebar;

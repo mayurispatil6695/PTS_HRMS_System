@@ -18,7 +18,9 @@ import SettingsManagement from './SettingsManagement';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
+import ClientManagement from './ClientManagement';
 import DailyTaskEmployee from './DailyTaskEmployee';
+import NotificationSystem from '../ui/NotificationSystem';
 const AdminDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -49,38 +51,39 @@ const AdminDashboard = () => {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Header */}
-        <header className="bg-white shadow-sm border-b border-gray-200">
-          <div className="flex items-center justify-between px-4 py-3">
-            <div className="flex items-center gap-4">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="md:hidden"
-                onClick={() => setSidebarOpen(true)}
-              >
-                <Menu className="h-5 w-5" />
-              </Button>
-              <div>
-                <h1 className="text-xl font-semibold text-gray-800">Admin Dashboard</h1>
-                <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
-              </div>
-            </div>
-            <Button
-              variant="outline"
-              onClick={handleLogout}
-              className="hover:bg-red-50 hover:text-red-600 transition-colors"
-            >
-              Logout
-            </Button>
-          </div>
-        </header>
+       <header className="bg-white shadow-sm border-b border-gray-200">
+  <div className="flex items-center justify-between px-4 py-3">
+    {/* Left side – menu & title */}
+    <div className="flex items-center gap-4">
+      <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setSidebarOpen(true)}>
+        <Menu className="h-5 w-5" />
+      </Button>
+      <div>
+        <h1 className="text-xl font-semibold text-gray-800">Admin Dashboard</h1>
+        <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
+      </div>
+    </div>
 
+    {/* Right side – notifications + logout */}
+    <div className="flex items-center gap-4">
+      <NotificationSystem />
+      <Button
+        variant="outline"
+        onClick={handleLogout}
+        className="hover:bg-red-50 hover:text-red-600 transition-colors"
+      >
+        Logout
+      </Button>
+    </div>
+  </div>
+</header>
         {/* Main content area */}
         <main className="flex-1 overflow-auto">
           <div className="p-6">
             <Routes>
               <Route path="/" element={<AdminDashboardHome />} />
               <Route path="/employees" element={<EmployeeManagement />} />
+              <Route path="/clients" element={<ClientManagement />} />
               <Route path="/employee-approval" element={<EmployeeApprovalManagement />} />
               <Route path="/attendance" element={<AttendanceManagement />} />
               <Route path="/meetings" element={<MeetingManagement />} />
@@ -91,6 +94,7 @@ const AdminDashboard = () => {
               <Route path="/reports" element={<ReportsManagement />} />
               <Route path="/expenses" element={<ExpenseManagement />} />
               <Route path="/settings" element={<SettingsManagement />} />
+              
               <Route path='/employeetask'element={<DailyTaskEmployee />}/>
             </Routes>
           </div>

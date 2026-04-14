@@ -1,9 +1,8 @@
-// src/components/admin/DailyIdleReport.tsx
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
-import { Download, Clock, RefreshCw } from 'lucide-react';
-import { ref, get } from 'firebase/database';
+import { Download, Clock, RefreshCw, AlertCircle } from 'lucide-react';
+import { ref, get, onValue, off } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -11,73 +10,107 @@ interface IdleSummary {
   employeeId: string;
   employeeName: string;
   totalIdleMs: number;
+  isLive?: boolean;
+  liveStartTime?: number;
 }
 
-interface EmployeeRecord {
+interface ActivityData {
+  isIdle?: boolean;
+  idleStartTime?: number;
+  employeeName?: string;
+}
+
+interface EmployeeData {
   name?: string;
   email?: string;
-  role?: string;
-  profile?: { name?: string; email?: string };
-  employee?: { name?: string; email?: string };
 }
 
 export const DailyIdleReport = () => {
   const { user } = useAuth();
-  const [selectedDate, setSelectedDate] = useState(
-    new Date().toISOString().split('T')[0]
-  );
+  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
   const [summaries, setSummaries] = useState<IdleSummary[]>([]);
   const [loading, setLoading] = useState(false);
+  const [liveIdleUsers, setLiveIdleUsers] = useState<IdleSummary[]>([]);
 
-  const fetchReport = async () => {
-    setLoading(true);
-    try {
-      // 1. Get all employees (global)
-      const employeesRef = ref(database, 'employees');
-      const employeesSnapshot = await get(employeesRef);
-      let employeesData = employeesSnapshot.val() as Record<string, EmployeeRecord> | null;
-
-      // Fallback: if global 'employees' node is empty, scan 'users' for non‑admin employees
-      if (!employeesData || Object.keys(employeesData).length === 0) {
-        const usersRef = ref(database, 'users');
-        const usersSnap = await get(usersRef);
-        const users = usersSnap.val() as Record<string, EmployeeRecord> | null;
-        employeesData = {};
-        if (users) {
-          for (const [uid, userData] of Object.entries(users)) {
-            if (userData.role === 'admin') continue;
-            const profile = userData.profile || userData.employee;
-            if (profile?.name) {
-              employeesData[uid] = { name: profile.name, email: profile.email };
-            }
-          }
+  // Live idle from activity node
+  useEffect(() => {
+    const activityRef = ref(database, 'activity');
+    const unsubscribe = onValue(activityRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, ActivityData> | null;
+      if (!data) {
+        setLiveIdleUsers([]);
+        return;
+      }
+      const now = Date.now();
+      const live: IdleSummary[] = [];
+      for (const [uid, userData] of Object.entries(data)) {
+        if (userData.isIdle) {
+          const start = userData.idleStartTime || now;
+          live.push({
+            employeeId: uid,
+            employeeName: userData.employeeName || uid,
+            totalIdleMs: now - start,
+            isLive: true,
+            liveStartTime: start,
+          });
         }
       }
+      setLiveIdleUsers(live);
+    });
+    return () => off(activityRef);
+  }, []);
 
-      if (!employeesData || Object.keys(employeesData).length === 0) {
+  const fetchReport = async () => {
+    if (!user?.id) return;
+    setLoading(true);
+    try {
+      // Get all employees under the current admin (user.id is the admin ID)
+      const employeesRef = ref(database, `users/${user.id}/employees`);
+      const snapshot = await get(employeesRef);
+      const employees = snapshot.val() as Record<string, EmployeeData> | null;
+
+      if (!employees) {
         setSummaries([]);
         setLoading(false);
         return;
       }
 
-      // 2. For each employee, fetch total idle time for the selected date
-      const promises = Object.entries(employeesData).map(async ([empId, empData]) => {
-        const totalRef = ref(database, `idleLogs/${empId}/${selectedDate}/totalIdleMs`);
+      const results: IdleSummary[] = [];
+
+      for (const [empId, empData] of Object.entries(employees)) {
+       const totalRef = ref(
+  database,
+  `idleLogs/${empId}/${selectedDate}/totalIdleMs`
+);
         const totalSnap = await get(totalRef);
         const totalIdleMs = (totalSnap.val() as number) || 0;
-        return {
+
+        results.push({
           employeeId: empId,
           employeeName: empData.name || empId,
           totalIdleMs,
-        };
-      });
+        });
+      }
 
-      const results = await Promise.all(promises);
-      setSummaries(
-        results
-          .filter((s) => s.totalIdleMs > 0)
-          .sort((a, b) => b.totalIdleMs - a.totalIdleMs)
-      );
+      const completed = results.filter((r) => r.totalIdleMs > 0);
+      const today = new Date().toISOString().split('T')[0];
+      const merged: IdleSummary[] = [...completed];
+
+      if (selectedDate === today) {
+        for (const live of liveIdleUsers) {
+          const existing = merged.find((m) => m.employeeId === live.employeeId);
+          if (existing) {
+            existing.totalIdleMs += live.totalIdleMs;
+            existing.isLive = true;
+            existing.liveStartTime = live.liveStartTime;
+          } else {
+            merged.push(live);
+          }
+        }
+      }
+
+      merged.sort((a, b) => b.totalIdleMs - a.totalIdleMs);
+      setSummaries(merged);
     } catch (error) {
       console.error('Error fetching idle report:', error);
     } finally {
@@ -87,29 +120,24 @@ export const DailyIdleReport = () => {
 
   useEffect(() => {
     fetchReport();
-  }, [selectedDate]);
+  }, [selectedDate, liveIdleUsers]);
 
   const formatDuration = (ms: number) => {
     const hours = Math.floor(ms / 3600000);
     const minutes = Math.floor((ms % 3600000) / 60000);
-    if (hours > 0) return `${hours}h ${minutes}m`;
-    return `${minutes}m`;
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
   };
 
   const exportCSV = () => {
-    const rows = summaries.map((s) => ({
-      Employee: s.employeeName,
-      'Total Idle Time': formatDuration(s.totalIdleMs),
-      Minutes: Math.round(s.totalIdleMs / 60000),
-    }));
-
-    const csv = [
-      ['Employee', 'Total Idle Time', 'Minutes'],
-      ...rows.map((r) => [r.Employee, r['Total Idle Time'], r.Minutes]),
-    ]
+    const rows = summaries.map((s) => [
+      s.employeeName,
+      formatDuration(s.totalIdleMs),
+      Math.round(s.totalIdleMs / 60000),
+      s.isLive ? 'Currently Idle' : 'Completed',
+    ]);
+    const csv = [['Employee', 'Total Idle Time', 'Minutes', 'Status'], ...rows]
       .map((row) => row.join(','))
       .join('\n');
-
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -127,40 +155,47 @@ export const DailyIdleReport = () => {
           Daily Idle Time Report
         </CardTitle>
       </CardHeader>
-
       <CardContent>
-        <div className="flex gap-2 items-center mb-4">
+        <div className="flex gap-3 mb-6">
           <input
             type="date"
             value={selectedDate}
             onChange={(e) => setSelectedDate(e.target.value)}
-            className="border rounded px-2 py-1"
+            className="border px-3 py-2 rounded"
           />
-          <Button onClick={fetchReport} disabled={loading} variant="outline" size="sm">
-            <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
+          <Button onClick={fetchReport} variant="outline">
+            <RefreshCw className="h-4 w-4 mr-1" />
             Refresh
           </Button>
           {summaries.length > 0 && (
-            <Button onClick={exportCSV} variant="outline" size="sm">
-              <Download className="h-4 w-4 mr-2" />
-              Export CSV
+            <Button onClick={exportCSV} variant="outline">
+              <Download className="h-4 w-4 mr-1" />
+              Export
             </Button>
           )}
         </div>
 
         {loading && <p>Loading...</p>}
-
         {!loading && summaries.length === 0 && (
-          <p className="text-muted-foreground">
-            No idle time recorded on {new Date(selectedDate).toLocaleDateString()}.
-          </p>
+          <div className="text-center py-10 text-gray-500">
+            <Clock className="h-10 w-10 mx-auto mb-2 opacity-30" />
+            No idle time recorded
+          </div>
         )}
 
-        <div className="space-y-2">
+        <div className="space-y-3">
           {summaries.map((s) => (
-            <div key={s.employeeId} className="flex justify-between p-2 border-b">
-              <span>{s.employeeName}</span>
-              <span className="text-yellow-600">{formatDuration(s.totalIdleMs)}</span>
+            <div key={s.employeeId} className="flex justify-between border p-3 rounded">
+              <div>
+                <p className="font-medium">{s.employeeName}</p>
+                {s.isLive && (
+                  <p className="text-xs text-orange-500 flex items-center gap-1">
+                    <AlertCircle className="h-3 w-3" />
+                    Currently idle
+                  </p>
+                )}
+              </div>
+              <div className="font-semibold text-yellow-700">{formatDuration(s.totalIdleMs)}</div>
             </div>
           ))}
         </div>

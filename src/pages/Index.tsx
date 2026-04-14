@@ -3,8 +3,8 @@ import { Routes, Route, Navigate } from 'react-router-dom';
 import EnhancedLoginPage from '../components/auth/EnhancedLoginPage';
 import AdminDashboard from '../components/admin/AdminDashboard';
 import EmployeeDashboard from '../components/employee/EmployeeDashboard';
-import TeamManagerDashboard from '../components/team-manager/TeamManagerDashboard';
-import TeamLeaderDashboard from '../components/team-leader/TeamLeaderDashboard';
+import TeamManagerDashboard from '../components/manager/TeamManagerDashboard';
+import TeamLeaderDashboard from '../components/teamlead/TeamLeaderDashboard';
 import ClientDashboard from '../components/client/ClientDashboard';
 import { useAuth } from '../hooks/useAuth';
 

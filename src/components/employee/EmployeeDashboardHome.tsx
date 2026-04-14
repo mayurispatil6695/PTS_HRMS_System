@@ -31,9 +31,9 @@ import { database } from '../../firebase';
 import { ref, push, set, onValue, update, get, query, orderByChild, DataSnapshot, increment } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
-import { useIdleDetection } from '../../hooks/useIdleDetection';
 import SelfieCapture from '../attendance/SelfieCapture';
-import { useSimpleIdleTracker } from '../../hooks/useSimpleIdleTracker';
+import { useWorkSession } from '../../contexts/WorkSessionContext';
+import { useIdleDetection } from '../../hooks/useIdleDetection';
 
 
 // EmployeeDashboardHome.tsx
@@ -168,6 +168,8 @@ interface PunchOutUpdates {
 }
 const EmployeeDashboardHome = () => {
   const { user } = useAuth();
+  const { isPunchedIn, isOnBreak, punchIn, punchOut, startBreak, endBreak, loading: sessionLoading } = useWorkSession();
+const isActive = isPunchedIn && !isOnBreak;
   const [todayAttendance, setTodayAttendance] = useState<AttendanceRecord | null>(null);
   const [loading, setLoading] = useState(true);
   const [breakLoading, setBreakLoading] = useState(false);
@@ -189,7 +191,19 @@ const EmployeeDashboardHome = () => {
   const [isTeamLead, setIsTeamLead] = useState(false);
   const navigate = useNavigate();
   const lastNotifiedStatusRef = useRef<string | null>(null);
-  
+
+const [isManager, setIsManager] = useState(false);
+
+useEffect(() => {
+  if (!user?.adminUid || !user?.id) return;
+  const employeeRef = ref(database, `users/${user.adminUid}/employees/${user.id}`);
+  const unsubscribe = onValue(employeeRef, (snapshot) => {
+    const data = snapshot.val();
+    setIsTeamLead(data?.role === 'team_leader');
+    setIsManager(data?.role === 'team_manager');
+  });
+  return () => unsubscribe();
+}, [user]);
   useEffect(() => {
   if ('Notification' in window && Notification.permission !== 'denied') {
     Notification.requestPermission();
@@ -213,10 +227,52 @@ const EmployeeDashboardHome = () => {
   }, [user]);
 
  
- useSimpleIdleTracker({
+  useEffect(() => {
+  const checkDueTasks = async () => {
+    if (!user?.id) return;
+    const lastCheck = localStorage.getItem(`lastDueCheck_${user.id}`);
+    const today = new Date().toDateString();
+    if (lastCheck === today) return;
+
+    // Fetch all tasks assigned to this user from projects node
+    const projectsSnap = await get(ref(database, 'projects'));
+    const dueTasks: any[] = [];
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+
+    projectsSnap.forEach((projSnap) => {
+      const tasks = projSnap.child('tasks').val();
+      if (tasks) {
+        Object.entries(tasks).forEach(([taskId, task]: [string, any]) => {
+          if (task.assignedTo === user.id && task.dueDate?.startsWith(tomorrowStr) && task.status !== 'completed') {
+            dueTasks.push({ title: task.title, projectName: projSnap.child('name').val() });
+          }
+        });
+      }
+    });
+
+    if (dueTasks.length > 0) {
+      const notifRef = push(ref(database, `notifications/${user.id}`));
+      await set(notifRef, {
+        title: 'Tasks Due Tomorrow',
+        body: `You have ${dueTasks.length} task(s) due tomorrow: ${dueTasks.map(t => t.title).join(', ')}`,
+        type: 'task_due',
+        read: false,
+        createdAt: Date.now(),
+      });
+    }
+
+    localStorage.setItem(`lastDueCheck_${user.id}`, today);
+  };
+  checkDueTasks();
+}, [user]);
+ useIdleDetection({
+  idleTimeout: 300000,
   userId: user?.id,
-  idleThresholdMs: 10000,
-  checkIntervalMs: 60000,
+  adminId: user?.adminUid,
+  employeeName: user?.name,
+  isActive,
 });
   
 
@@ -861,7 +917,7 @@ useEffect(() => {
       const punchingRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching`);
       const newRecordRef = push(punchingRef);
       await set(newRecordRef, newRecord);
-      
+      await punchIn();
       toast.success("Punched in successfully with selfie verification!");
         } catch (error) {
       console.error("Punch-in error:", error);
@@ -933,7 +989,7 @@ useEffect(() => {
       
       const recordRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`);
       await update(recordRef, updates);
-      
+      await punchOut();
       if (newStatus === 'late') {
         toast.success("Punched out! Note: You were marked as late (after 9:40 AM)");
       } else if (newStatus === 'half-day') {
@@ -994,7 +1050,7 @@ useEffect(() => {
       
       const recordRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`);
       await update(recordRef, updates);
-      
+      await startBreak();
       setCurrentBreakId(breakId);
       toast.success("Break started successfully!");
     } catch (error) {
@@ -1041,7 +1097,7 @@ useEffect(() => {
       
       const recordRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`);
       await update(recordRef, updates);
-      
+      await endBreak();
       setCurrentBreakId(null);
       toast.success("Break ended successfully!");
     } catch (error) {

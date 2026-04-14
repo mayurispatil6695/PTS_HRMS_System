@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import { update } from 'firebase/database';
 import { motion } from 'framer-motion';
 import { CheckCircle, Clock, AlertCircle, Calendar, Bell, Eye, X } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
@@ -7,12 +6,13 @@ import { Button } from '../ui/button';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
-import { ref, onValue, off } from 'firebase/database';
+import { ref, onValue, off, update, get, push, set } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { Input } from '../ui/input';
+import { toast } from 'react-hot-toast';
 
 interface TaskComment {
   text: string;
@@ -20,36 +20,65 @@ interface TaskComment {
   createdBy: string;
 }
 
+interface StandaloneTaskData {
+  department?: string;
+  task?: string;
+  description?: string;
+  date?: string;
+  time?: string;
+  status?: 'pending' | 'in-progress' | 'completed';
+  createdAt?: string;
+  updatedAt?: string;
+  startedAt?: string;
+  completedAt?: string;
+  progressUpdates?: { text: string; createdAt: string }[];
+  comments?: TaskComment[];
+  assignedBy?: string;
+  assignedByName?: string;
+}
+
+interface ProjectTaskData {
+  assignedTo?: string;
+  employeeName?: string;
+  department?: string;
+  title?: string;
+  description?: string;
+  dueDate?: string;
+  status?: 'pending' | 'in-progress' | 'completed';
+  createdAt?: string;
+  updatedAt?: string;
+  createdBy?: string;
+  createdByName?: string;
+}
+
+interface FirebaseProjectData {
+  tasks?: Record<string, ProjectTaskData>;
+  department?: string;
+}
+
 interface DailyTask {
   id: string;
   employeeId: string;
   employeeName: string;
   department: string;
-
   task: string;
   description: string;
-
   date: string;
   time: string;
-
   status: 'pending' | 'in-progress' | 'completed';
-
   createdAt: string;
   updatedAt?: string;
-
-  // NEW 👇
   startedAt?: string;
   completedAt?: string;
   completionNote?: string;
-
-  progressUpdates?: {
-    text: string;
-    createdAt: string;
-  }[];
-
+  progressUpdates?: { text: string; createdAt: string }[];
   comments?: TaskComment[];
   assignedBy?: string;
+  assignedByName?: string;
+  projectId?: string;
+  adminId?: string;
 }
+
 const MyTasks: React.FC = () => {
   const { user } = useAuth();
   const [tasks, setTasks] = useState<DailyTask[]>([]);
@@ -62,76 +91,237 @@ const MyTasks: React.FC = () => {
   const [progressText, setProgressText] = useState('');
 
   useEffect(() => {
-    if (!user?.id || !user?.adminUid) {
-      console.error("User ID or Admin UID not available");
+    if (!user?.id) {
       setLoading(false);
       return;
     }
 
-    setLoading(true);
-    const tasksRef = ref(database, `users/${user.adminUid}/employees/${user.id}/dailyTasks`);
-
-    const fetchTasks = onValue(tasksRef, (snapshot) => {
+    const fetchAllTasks = async () => {
       try {
-        const tasksData: DailyTask[] = [];
+        const adminNamesMap: Record<string, string> = {};
 
-        snapshot.forEach((childSnapshot) => {
-          const taskId = childSnapshot.key;
-          const taskData = childSnapshot.val();
+        // 2. Fetch standalone tasks
+        let adminId = user.adminUid;
+        if (!adminId) {
+          const profileRef = ref(database, `users/${user.id}/profile`);
+          const profileSnap = await get(profileRef);
+          adminId = profileSnap.val()?.adminUid || '';
+        }
 
-          if (taskData) {
-            tasksData.push({
-              id: taskId || '',
-              ...taskData
-            });
+        const standaloneTasks: DailyTask[] = [];
+        if (adminId) {
+          const standaloneRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks`);
+          const snapshot = await get(standaloneRef);
+          const data = snapshot.val() as Record<string, StandaloneTaskData> | null;
+          if (data) {
+            for (const [id, taskData] of Object.entries(data)) {
+              let assignedByName = taskData.assignedByName;
+              if (!assignedByName && adminId && !adminNamesMap[adminId]) {
+                const adminRef = ref(database, `users/${adminId}`);
+                const adminSnap = await get(adminRef);
+                const adminData = adminSnap.val();
+                assignedByName = adminData?.name || adminData?.profile?.name || adminId.slice(0, 8);
+                adminNamesMap[adminId] = assignedByName;
+              } else if (adminId && adminNamesMap[adminId]) {
+                assignedByName = adminNamesMap[adminId];
+              }
+
+              standaloneTasks.push({
+                id,
+                employeeId: user.id,
+                employeeName: user.name || '',
+                department: taskData.department || '',
+                task: taskData.task || '',
+                description: taskData.description || '',
+                date: taskData.date || '',
+                time: taskData.time || '',
+                status: taskData.status || 'pending',
+                createdAt: taskData.createdAt || new Date().toISOString(),
+                updatedAt: taskData.updatedAt,
+                startedAt: taskData.startedAt,
+                completedAt: taskData.completedAt,
+                progressUpdates: taskData.progressUpdates,
+                comments: taskData.comments,
+                assignedBy: taskData.assignedBy,
+                assignedByName: assignedByName || taskData.assignedBy || 'Admin',
+                adminId: adminId,
+              });
+            }
           }
-        });
+        }
 
-        setTasks(tasksData.sort((a, b) =>
-          new Date(b.date).getTime() - new Date(a.date).getTime()
-        ));
-        setLoading(false);
+        // 3. Fetch project tasks
+        const projectsRef = ref(database, 'projects');
+        const projectsSnap = await get(projectsRef);
+        const projects = projectsSnap.val() as Record<string, FirebaseProjectData> | null;
+        const projectTasks: DailyTask[] = [];
+
+        if (projects) {
+          for (const [projId, proj] of Object.entries(projects)) {
+            if (proj.tasks) {
+              for (const [taskId, taskData] of Object.entries(proj.tasks)) {
+                if (taskData.assignedTo === user.id) {
+                  projectTasks.push({
+                    id: taskId,
+                    employeeId: user.id,
+                    employeeName: taskData.employeeName || user.name || '',
+                    department: taskData.department || proj.department || '',
+                    task: taskData.title || '',
+                    description: taskData.description || '',
+                    date: taskData.dueDate ? taskData.dueDate.split('T')[0] : '',
+                    time: '',
+                    status: taskData.status || 'pending',
+                    createdAt: taskData.createdAt || new Date().toISOString(),
+                    updatedAt: taskData.updatedAt,
+                    assignedBy: taskData.createdBy,
+                    assignedByName: taskData.createdByName || 'Admin',
+                    projectId: projId,
+                  });
+                }
+              }
+            }
+          }
+        }
+
+        // Combine and sort
+        const allTasks = [...standaloneTasks, ...projectTasks];
+        allTasks.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        setTasks(allTasks);
       } catch (err) {
-        console.error('Error processing task data:', err);
-        setError('Failed to process task data');
+        console.error(err);
+        setError('Failed to load tasks');
+      } finally {
         setLoading(false);
       }
-    }, (error) => {
-      console.error('Error fetching tasks:', error);
-      setError('Failed to load tasks');
-      setLoading(false);
-    });
-
-    return () => {
-      off(tasksRef);
     };
+
+    fetchAllTasks();
   }, [user]);
+
+  const handleStatusUpdate = async (task: DailyTask, newStatus: 'in-progress' | 'completed') => {
+    if (!user?.id) return;
+
+    try {
+      let taskRef;
+      const updates: Partial<DailyTask> = {
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+      };
+      if (newStatus === 'in-progress') updates.startedAt = new Date().toISOString();
+      if (newStatus === 'completed') updates.completedAt = new Date().toISOString();
+
+      if (task.projectId) {
+        // Project task
+        taskRef = ref(database, `projects/${task.projectId}/tasks/${task.id}`);
+        const snapshot = await get(taskRef);
+        if (!snapshot.exists()) {
+          toast.error('Task not found in project. It may have been deleted.');
+          return;
+        }
+        await update(taskRef, updates);
+        toast.success(`Task marked as ${newStatus}`);
+      } else {
+        // Standalone task
+        const adminId = task.adminId || user.adminUid;
+        if (!adminId) throw new Error('No admin ID');
+        taskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${task.id}`);
+        const snapshot = await get(taskRef);
+        if (!snapshot.exists()) {
+          toast.error('Task not found. It may have been deleted.');
+          return;
+        }
+        await update(taskRef, updates);
+        toast.success(`Task marked as ${newStatus}`);
+      }
+
+      // Notify all admins about task status change (for standalone tasks)
+      if (!task.projectId) {
+        const usersSnapshot = await get(ref(database, 'users'));
+        const adminNotifications: Promise<void>[] = [];
+        usersSnapshot.forEach((userSnap) => {
+          const userData = userSnap.val();
+          if (userData.role === 'admin') {
+            const notifRef = push(ref(database, `notifications/${userSnap.key}`));
+            adminNotifications.push(set(notifRef, {
+              title: 'Task Status Updated',
+              body: `${user?.name} changed status of "${task.task}" to ${newStatus}`,
+              type: 'task_update',
+              read: false,
+              createdAt: Date.now(),
+              taskId: task.id,
+            }));
+          }
+        });
+        await Promise.all(adminNotifications);
+      }
+
+      // Update local state
+      setTasks(prev =>
+        prev.map(t =>
+          t.id === task.id && t.projectId === task.projectId
+            ? { ...t, status: newStatus, updatedAt: new Date().toISOString() }
+            : t
+        )
+      );
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to update task');
+    }
+  };
+
+  const handleAddProgress = async () => {
+    if (!selectedTask || !user || !progressText.trim()) return;
+
+    try {
+      if (selectedTask.projectId) {
+        const taskRef = ref(database, `projects/${selectedTask.projectId}/tasks/${selectedTask.id}`);
+        const current = (await get(taskRef)).val() as { progressUpdates?: { text: string; createdAt: string }[] };
+        const updates = current?.progressUpdates || [];
+        await update(taskRef, {
+          progressUpdates: [...updates, { text: progressText, createdAt: new Date().toISOString() }],
+          updatedAt: new Date().toISOString(),
+        });
+      } else {
+        const adminId = selectedTask.adminId || user.adminUid;
+        if (!adminId) throw new Error('No admin ID');
+        const taskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${selectedTask.id}`);
+        const current = (await get(taskRef)).val() as { progressUpdates?: { text: string; createdAt: string }[] };
+        const updates = current?.progressUpdates || [];
+        await update(taskRef, {
+          progressUpdates: [...updates, { text: progressText, createdAt: new Date().toISOString() }],
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      toast.success('Progress added');
+      setProgressText('');
+      const updatedTask = { ...selectedTask, progressUpdates: [...(selectedTask.progressUpdates || []), { text: progressText, createdAt: new Date().toISOString() }] };
+      setSelectedTask(updatedTask);
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to add progress');
+    }
+  };
 
   const getStatusBadge = (status: string) => {
     switch (status) {
-      case 'completed':
-        return 'bg-green-100 text-green-700';
-      case 'in-progress':
-        return 'bg-yellow-100 text-yellow-700';
-      default:
-        return 'bg-gray-100 text-gray-700';
+      case 'completed': return 'bg-green-100 text-green-700';
+      case 'in-progress': return 'bg-yellow-100 text-yellow-700';
+      default: return 'bg-gray-100 text-gray-700';
     }
   };
 
   const formatDate = (dateString: string) => {
-    try {
-      return format(new Date(dateString), 'MMM dd, yyyy');
-    } catch {
-      return dateString;
-    }
+    if (!dateString) return 'Invalid date';
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return 'Invalid date';
+    return format(date, 'MMM dd, yyyy');
   };
 
   const formatDateTime = (dateString: string) => {
-    try {
-      return format(new Date(dateString), 'MMM dd, yyyy hh:mm a');
-    } catch {
-      return dateString;
-    }
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    if (isNaN(date.getTime())) return dateString;
+    return format(date, 'MMM dd, yyyy hh:mm a');
   };
 
   const filteredTasks = tasks.filter(task => {
@@ -139,79 +329,11 @@ const MyTasks: React.FC = () => {
     const dateMatch = !filterDate || task.date === filterDate;
     return statusMatch && dateMatch;
   });
-  const handleStatusUpdate = async (
-    task: DailyTask,
-    newStatus: 'in-progress' | 'completed'
-  ) => {
-    if (!user?.id || !user?.adminUid) return;
 
-    try {
-      // Update in employee node
-      const taskRef = ref(
-        database,
-        `users/${user.adminUid}/employees/${user.id}/dailyTasks/${task.id}`
-      );
+  const clearDateFilter = () => setFilterDate('');
 
-      const updates: Partial<DailyTask> = {
-  status: newStatus,
-  updatedAt: new Date().toISOString()
-};
-
-      if (newStatus === 'in-progress') {
-        updates.startedAt = new Date().toISOString();
-      }
-
-      if (newStatus === 'completed') {
-        updates.completedAt = new Date().toISOString();
-      }
-
-      await update(taskRef, updates);
-
-    } catch (err) {
-      console.error('Error updating task:', err);
-    }
-  };
-  const handleAddProgress = async () => {
-    if (!selectedTask || !user || !progressText.trim()) return;
-
-    const taskRef = ref(
-      database,
-      `users/${user.adminUid}/employees/${user.id}/dailyTasks/${selectedTask.id}`
-    );
-
-    const newUpdate = {
-      text: progressText,
-      createdAt: new Date().toISOString()
-    };
-
-    await update(taskRef, {
-      progressUpdates: [...(selectedTask.progressUpdates || []), newUpdate],
-      updatedAt: new Date().toISOString()
-    });
-
-    setProgressText('');
-  };
-
-  const clearDateFilter = () => {
-    setFilterDate('');
-  };
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center h-64">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 space-y-4 px-4">
-        <AlertCircle className="h-12 w-12 text-gray-400" />
-        <p className="text-lg text-gray-600 text-center">{error}</p>
-      </div>
-    );
-  }
+  if (loading) return <div className="flex justify-center items-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div></div>;
+  if (error) return <div className="text-center py-8 text-red-500">{error}</div>;
 
   return (
     <div className="space-y-6 px-4 sm:px-6">
@@ -225,13 +347,8 @@ const MyTasks: React.FC = () => {
           <p className="text-sm sm:text-base text-gray-600">View your assigned tasks</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Select
-            value={filterStatus}
-            onValueChange={setFilterStatus}
-          >
-            <SelectTrigger className="w-full sm:w-[180px]">
-              <SelectValue placeholder="Filter by status" />
-            </SelectTrigger>
+          <Select value={filterStatus} onValueChange={setFilterStatus}>
+            <SelectTrigger className="w-full sm:w-[180px]"><SelectValue placeholder="Filter by status" /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All Tasks</SelectItem>
               <SelectItem value="pending">Pending</SelectItem>
@@ -263,8 +380,7 @@ const MyTasks: React.FC = () => {
               onClick={() => setViewMode('table')}
               className="flex-1 sm:w-auto"
             >
-              <span className="hidden sm:inline">Table</span>
-              <span className="sm:hidden">Table View</span>
+              Table
             </Button>
             <Button
               variant={viewMode === 'card' ? 'default' : 'outline'}
@@ -272,8 +388,7 @@ const MyTasks: React.FC = () => {
               onClick={() => setViewMode('card')}
               className="flex-1 sm:w-auto"
             >
-              <span className="hidden sm:inline">Card</span>
-              <span className="sm:hidden">Card View</span>
+              Card
             </Button>
           </div>
         </div>
@@ -296,20 +411,19 @@ const MyTasks: React.FC = () => {
           </CardHeader>
           <CardContent className="overflow-x-auto">
             <Table className="min-w-full">
-              <TableCaption>A list of your assigned daily tasks</TableCaption>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="whitespace-nowrap">Date</TableHead>
-                  <TableHead className="whitespace-nowrap">Task</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Task</TableHead>
                   <TableHead className="hidden sm:table-cell">Description</TableHead>
-                  <TableHead className="whitespace-nowrap">Status</TableHead>
+                  <TableHead>Status</TableHead>
                   <TableHead className="hidden sm:table-cell">Assigned By</TableHead>
-                  <TableHead className="whitespace-nowrap">Actions</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {filteredTasks.map((task) => (
-                  <TableRow key={task.id}>
+                  <TableRow key={`${task.projectId || 'standalone'}_${task.id}`}>
                     <TableCell className="font-medium">
                       <div className="flex flex-col">
                         <span>{formatDate(task.date)}</span>
@@ -319,37 +433,21 @@ const MyTasks: React.FC = () => {
                     <TableCell className="max-w-[150px] truncate">{task.task}</TableCell>
                     <TableCell className="hidden sm:table-cell max-w-[200px] truncate">{task.description}</TableCell>
                     <TableCell>
-                      <Badge className={getStatusBadge(task.status)}>
-                        {task.status}
-                      </Badge>
+                      <Badge className={getStatusBadge(task.status)}>{task.status}</Badge>
                     </TableCell>
-                    <TableCell className="hidden sm:table-cell">
-                      {task.assignedBy || 'Admin'}
-                    </TableCell>
+                    <TableCell className="hidden sm:table-cell">{task.assignedByName || task.assignedBy || 'Admin'}</TableCell>
                     <TableCell className="flex gap-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => setSelectedTask(task)}
-                      >
+                      <Button variant="outline" size="sm" onClick={() => setSelectedTask(task)}>
                         <Eye className="h-4 w-4 sm:mr-2" />
                         <span className="hidden sm:inline">View</span>
                       </Button>
-
                       {task.status === 'pending' && (
-                        <Button
-                          size="sm"
-                          onClick={() => handleStatusUpdate(task, 'in-progress')}
-                        >
+                        <Button size="sm" onClick={() => handleStatusUpdate(task, 'in-progress')}>
                           Start
                         </Button>
                       )}
-
                       {task.status === 'in-progress' && (
-                        <Button
-                          size="sm"
-                          onClick={() => handleStatusUpdate(task, 'completed')}
-                        >
+                        <Button size="sm" onClick={() => handleStatusUpdate(task, 'completed')}>
                           Complete
                         </Button>
                       )}
@@ -364,11 +462,10 @@ const MyTasks: React.FC = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {filteredTasks.map((task) => (
             <motion.div
-              key={task.id}
+              key={`${task.projectId || 'standalone'}_${task.id}`}
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               whileHover={{ scale: 1.02 }}
-              transition={{ duration: 0.2 }}
               className="w-full"
             >
               <Card className="h-full">
@@ -380,7 +477,7 @@ const MyTasks: React.FC = () => {
                     </Badge>
                   </div>
                   <div className="text-xs sm:text-sm text-gray-500">
-                    Assigned on {formatDate(task.createdAt)} by {task.assignedBy || 'Admin'}
+                    Assigned on {formatDate(task.createdAt)} by {task.assignedByName || task.assignedBy || 'Admin'}
                   </div>
                 </CardHeader>
                 <CardContent>
@@ -406,11 +503,11 @@ const MyTasks: React.FC = () => {
                       <div>
                         <Label>Comments ({task.comments.length})</Label>
                         <div className="space-y-2 mt-2 max-h-20 overflow-y-auto">
-                          {task.comments.slice(0, 2).map((comment, index) => (
-                            <div key={index} className="border-l-2 pl-2 border-gray-200">
-                              <p className="text-sm line-clamp-2">{comment.text}</p>
+                          {task.comments.slice(0, 2).map((c, i) => (
+                            <div key={i} className="border-l-2 pl-2 border-gray-200">
+                              <p className="text-sm line-clamp-2">{c.text}</p>
                               <p className="text-xs text-gray-500">
-                                {formatDate(comment.createdAt)} by {comment.createdBy}
+                                {formatDate(c.createdAt)} by {c.createdBy}
                               </p>
                             </div>
                           ))}
@@ -422,29 +519,16 @@ const MyTasks: React.FC = () => {
                     )}
                   </div>
                   <div className="mt-4 flex flex-wrap gap-2 justify-end">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setSelectedTask(task)}
-                    >
-                      <Eye className="h-4 w-4 sm:mr-2" />
-                      Details
+                    <Button variant="outline" size="sm" onClick={() => setSelectedTask(task)}>
+                      <Eye className="h-4 w-4 sm:mr-2" /> Details
                     </Button>
-
                     {task.status === 'pending' && (
-                      <Button
-                        size="sm"
-                        onClick={() => handleStatusUpdate(task, 'in-progress')}
-                      >
+                      <Button size="sm" onClick={() => handleStatusUpdate(task, 'in-progress')}>
                         Start
                       </Button>
                     )}
-
                     {task.status === 'in-progress' && (
-                      <Button
-                        size="sm"
-                        onClick={() => handleStatusUpdate(task, 'completed')}
-                      >
+                      <Button size="sm" onClick={() => handleStatusUpdate(task, 'completed')}>
                         Complete
                       </Button>
                     )}
@@ -477,9 +561,7 @@ const MyTasks: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <Label className="text-gray-500">Status</Label>
-                  <Badge className={getStatusBadge(selectedTask.status)}>
-                    {selectedTask.status}
-                  </Badge>
+                  <Badge className={getStatusBadge(selectedTask.status)}>{selectedTask.status}</Badge>
                 </div>
                 <div className="space-y-2">
                   <Label className="text-gray-500">Assigned Date</Label>
@@ -487,7 +569,7 @@ const MyTasks: React.FC = () => {
                 </div>
                 <div className="space-y-2">
                   <Label className="text-gray-500">Assigned By</Label>
-                  <p>{selectedTask.assignedBy || 'Admin'}</p>
+                  <p>{selectedTask.assignedByName || selectedTask.assignedBy || 'Admin'}</p>
                 </div>
                 <div className="space-y-2">
                   <Label className="text-gray-500">Department</Label>
@@ -511,6 +593,7 @@ const MyTasks: React.FC = () => {
                   <p className="whitespace-pre-line text-gray-700">{selectedTask.description}</p>
                 </div>
               </div>
+
               <div className="space-y-2">
                 <Label>Add Work Update</Label>
                 <Input
@@ -518,34 +601,30 @@ const MyTasks: React.FC = () => {
                   onChange={(e) => setProgressText(e.target.value)}
                   placeholder="What did you work on?"
                 />
-
-                <Button onClick={handleAddProgress}>
-                  Add Update
-                </Button>
+                <Button onClick={handleAddProgress}>Add Update</Button>
               </div>
 
-              {selectedTask.progressUpdates?.length > 0 && (
+              {selectedTask.progressUpdates && selectedTask.progressUpdates.length > 0 && (
                 <div className="space-y-2">
                   <Label>Work Updates</Label>
-                  {selectedTask.progressUpdates.map((update, index) => (
-                    <div key={index} className="p-2 bg-gray-100 rounded">
-                      <p>{update.text}</p>
-                      <p className="text-xs text-gray-500">
-                        {formatDateTime(update.createdAt)}
-                      </p>
+                  {selectedTask.progressUpdates.map((u, i) => (
+                    <div key={i} className="p-2 bg-gray-100 rounded">
+                      <p>{u.text}</p>
+                      <p className="text-xs text-gray-500">{formatDateTime(u.createdAt)}</p>
                     </div>
                   ))}
                 </div>
               )}
+
               {selectedTask.comments && selectedTask.comments.length > 0 && (
                 <div className="space-y-4">
                   <Label className="text-gray-500">Comments ({selectedTask.comments.length})</Label>
                   <div className="space-y-3 max-h-60 overflow-y-auto">
-                    {selectedTask.comments.map((comment, index) => (
-                      <div key={index} className="p-3 bg-gray-50 rounded-md border-l-4 border-gray-300">
-                        <p className="text-sm text-gray-700">{comment.text}</p>
+                    {selectedTask.comments.map((c, i) => (
+                      <div key={i} className="p-3 bg-gray-50 rounded-md border-l-4 border-gray-300">
+                        <p className="text-sm text-gray-700">{c.text}</p>
                         <p className="text-xs text-gray-500 mt-1">
-                          {formatDateTime(comment.createdAt)} by {comment.createdBy}
+                          {formatDateTime(c.createdAt)} by {c.createdBy}
                         </p>
                       </div>
                     ))}
@@ -554,10 +633,7 @@ const MyTasks: React.FC = () => {
               )}
 
               <div className="flex justify-end pt-4">
-                <Button
-                  onClick={() => setSelectedTask(null)}
-                  className="w-full sm:w-auto"
-                >
+                <Button onClick={() => setSelectedTask(null)} className="w-full sm:w-auto">
                   Close
                 </Button>
               </div>

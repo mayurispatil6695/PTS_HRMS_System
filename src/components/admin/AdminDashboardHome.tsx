@@ -7,7 +7,7 @@ import LeavePopup from './popups/LeavePopup';
 import EmployeesPopup from './popups/EmployeesPopup';
 import ProjectsPopup from './popups/ProjectsPopup';
 import MarketingPostsPopup from './popups/MarketingPostsPopup';
-import { ref, onValue, off, query, orderByChild, DataSnapshot } from 'firebase/database';
+import { ref, onValue, off, query, orderByChild, DataSnapshot,update } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
@@ -378,6 +378,29 @@ useEffect(() => {
   });
   return () => off(projectsRef);
 }, [user]);
+
+// Auto-complete projects when all tasks are done
+useEffect(() => {
+  if (!user || projects.length === 0) return;
+
+  projects.forEach(project => {
+    // Compute progress from tasks
+    const tasks = project.tasks || [];
+    const total = tasks.length;
+    if (total === 0) return; // no tasks → skip
+
+    const completed = tasks.filter(t => t.status === 'completed').length;
+    const progress = (completed / total) * 100;
+
+    // If 100% but status is not 'completed', update Firebase
+    if (progress === 100 && project.status !== 'completed') {
+      const projectRef = ref(database, `projects/${project.id}`);
+      update(projectRef, { status: 'completed' })
+        .then(() => console.log(`✅ Project "${project.name}" auto-completed`))
+        .catch(err => console.error('Auto-complete failed:', err));
+    }
+  });
+}, [projects, user]); // runs whenever projects change
   // Fetch ALL leave requests from all employees across all admins
   useEffect(() => {
     if (!user || employees.length === 0) return;
@@ -594,10 +617,9 @@ useEffect(() => {
         request.status === 'pending'
       ).length;
 
-      const activeProjects = projects.filter(project => 
-        project.status === 'in_progress'
-      ).length;
-
+    const activeProjects = projects.filter(project => 
+  project.status === 'in_progress' || project.status === 'active'
+).length;
       const completedProjects = projects.filter(project => 
         project.status === 'completed'
       ).length;
