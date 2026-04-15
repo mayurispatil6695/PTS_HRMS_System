@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Calendar, Clock, Download, Filter, Search, Users, AlertTriangle, Trash2, Sun, Bell } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, query, orderByChild, update, remove, off, limitToLast } from 'firebase/database';
+import { ref, onValue, query, orderByChild, update, remove, off } from 'firebase/database';
 import { AttendanceRecord } from '@/types/attendance';
 
 interface Employee {
@@ -29,7 +29,6 @@ interface BreakRecord {
   timestamp: number;
 }
 
-// Extend AttendanceRecord to include selfie fields and breaks
 interface AttendanceRecordWithAdmin extends AttendanceRecord {
   adminId?: string;
   selfie?: string;
@@ -50,7 +49,6 @@ interface Notification {
   adminId?: string;
 }
 
-// Types for Firebase raw data
 interface FirebaseEmployeeRaw {
   name?: string;
   email?: string;
@@ -73,7 +71,6 @@ interface FirebaseAttendanceRaw {
   markedLateAt?: string;
   markedHalfDayBy?: string;
   markedHalfDayAt?: string;
-  // ✅ Add location fields
   location?: { lat: number; lng: number; name: string };
   locationOut?: { lat: number; lng: number; name: string };
   [key: string]: unknown;
@@ -95,6 +92,11 @@ const AttendanceManagement = () => {
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   const [imageModal, setImageModal] = useState<{ src: string; title: string } | null>(null);
 
+  // Persistent storage for attendance data and listeners
+  const masterMapRef = useRef<Map<string, AttendanceRecordWithAdmin>>(new Map());
+  const activeListenersRef = useRef<Set<string>>(new Set());
+  const unsubscribesMapRef = useRef<Map<string, () => void>>(new Map());
+
   // Request notification permission
   useEffect(() => {
     if ('Notification' in window) {
@@ -104,7 +106,7 @@ const AttendanceManagement = () => {
     }
   }, []);
 
-  // Fetch ALL employees from all admins
+  // Fetch ALL employees from all admins (unchanged, works)
   useEffect(() => {
     if (!user) return;
 
@@ -151,77 +153,85 @@ const AttendanceManagement = () => {
     };
   }, [user]);
 
-  // Setup real-time listeners for attendance changes across all admins
-// Setup real-time listeners for attendance changes across all admins
-useEffect(() => {
-  if (!user || employees.length === 0) {
-    setLoading(false);
-    return;
-  }
+  // 🔥 CRITICAL FIX: Stable attendance listener that adds/removes employees incrementally
+  useEffect(() => {
+    if (!user) return;
 
-  // Use a Map to store records by employee ID + record ID to avoid duplicates
-  const recordsMap = new Map<string, AttendanceRecordWithAdmin>();
-  const unsubscribeFunctions: (() => void)[] = [];
+    const currentEmployeeIds = new Set(employees.map(e => e.id));
 
-  const employeesByAdmin = employees.reduce((acc, emp) => {
-    if (emp.adminId) {
-      if (!acc[emp.adminId]) acc[emp.adminId] = [];
-      acc[emp.adminId].push(emp);
+    // 1. Remove listeners for employees no longer in the list
+    for (const empId of activeListenersRef.current) {
+      if (!currentEmployeeIds.has(empId)) {
+        const unsub = unsubscribesMapRef.current.get(empId);
+        if (unsub) {
+          unsub();
+          unsubscribesMapRef.current.delete(empId);
+        }
+        activeListenersRef.current.delete(empId);
+      }
     }
-    return acc;
-  }, {} as Record<string, Employee[]>);
 
-  Object.entries(employeesByAdmin).forEach(([adminId, adminEmployees]) => {
-    adminEmployees.forEach(employee => {
-      const attendanceRef = ref(database, `users/${adminId}/employees/${employee.id}/punching`);
-      const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
-      
-      const unsubscribe = onValue(attendanceQuery, (snapshot) => {
-        try {
-          const data = snapshot.val() as Record<string, FirebaseAttendanceRaw> | null;
-          if (data && typeof data === 'object') {
-            // Add/update records for this employee
-            Object.entries(data).forEach(([key, value]) => {
-              const recordId = `${employee.id}-${key}`;
-              recordsMap.set(recordId, {
-                id: key,
-                employeeId: employee.id,
-                employeeName: employee.name,
-                adminId: adminId,
-                ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>),
-                selfie: value.selfie,
-                selfieOut: value.selfieOut,
-                breaks: value.breaks || {}
-              });
-            });
-          } else {
-            // Remove all records for this employee if data is null
+    // 2. Add listeners for new employees
+    for (const employee of employees) {
+      if (!activeListenersRef.current.has(employee.id) && employee.adminId) {
+        activeListenersRef.current.add(employee.id);
+
+        const attendanceRef = ref(database, `users/${employee.adminId}/employees/${employee.id}/punching`);
+        const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
+
+        const unsubscribe = onValue(attendanceQuery, (snapshot) => {
+          try {
+            const data = snapshot.val() as Record<string, FirebaseAttendanceRaw> | null;
+            const map = masterMapRef.current;
+
+            // Remove stale records for this employee
             const keysToDelete: string[] = [];
-            recordsMap.forEach((_, key) => {
+            map.forEach((_, key) => {
               if (key.startsWith(`${employee.id}-`)) keysToDelete.push(key);
             });
-            keysToDelete.forEach(key => recordsMap.delete(key));
+            keysToDelete.forEach(key => map.delete(key));
+
+            if (data && typeof data === 'object') {
+              Object.entries(data).forEach(([key, value]) => {
+                const recordId = `${employee.id}-${key}`;
+                map.set(recordId, {
+                  id: key,
+                  employeeId: employee.id,
+                  employeeName: employee.name,
+                  adminId: employee.adminId,
+                  ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>),
+                  selfie: value.selfie,
+                  selfieOut: value.selfieOut,
+                  breaks: value.breaks || {}
+                });
+              });
+            }
+
+            const allRecords = Array.from(map.values()).sort((a, b) => b.timestamp - a.timestamp);
+            setAttendanceRecords(allRecords);
+          } catch (error) {
+            console.error(`Error for employee ${employee.id}:`, error);
           }
-          
-          // Convert map to array and sort
-          const allRecords = Array.from(recordsMap.values()).sort((a, b) => b.timestamp - a.timestamp);
-          setAttendanceRecords(allRecords);
-        } catch (error) {
-          console.error(`Error fetching attendance for employee ${employee.id}:`, error);
-        }
-      });
+        });
 
-      unsubscribeFunctions.push(unsubscribe);
-    });
-  });
+        unsubscribesMapRef.current.set(employee.id, unsubscribe);
+      }
+    }
 
-  setLoading(false);
-  
-  return () => {
-    unsubscribeFunctions.forEach(unsubscribe => unsubscribe());
-  };
-}, [user, employees]);
+    setLoading(false);
 
+    // Cleanup on unmount
+    return () => {
+      for (const unsub of unsubscribesMapRef.current.values()) {
+        unsub();
+      }
+      unsubscribesMapRef.current.clear();
+      activeListenersRef.current.clear();
+      masterMapRef.current.clear();
+    };
+  }, [user, employees]);
+
+  // Show system notification (unchanged)
   const showSystemNotification = (notification: Omit<Notification, 'id' | 'read'>) => {
     const newNotification: Notification = {
       ...notification,
@@ -255,7 +265,7 @@ useEffect(() => {
     return () => clearTimeout(timeoutId);
   };
 
-  // Apply filters
+  // Apply filters (fixed date comparison)
   useEffect(() => {
     let filtered = [...attendanceRecords];
 
@@ -268,14 +278,9 @@ useEffect(() => {
     }
 
     if (filterDate) {
-      const filterDateObj = new Date(filterDate);
       filtered = filtered.filter(record => {
-        const recordDate = new Date(record.date);
-        return (
-          recordDate.getFullYear() === filterDateObj.getFullYear() &&
-          recordDate.getMonth() === filterDateObj.getMonth() &&
-          recordDate.getDate() === filterDateObj.getDate()
-        );
+        const recordDateStr = record.date?.split('T')[0];
+        return recordDateStr === filterDate;
       });
     }
 
@@ -286,6 +291,7 @@ useEffect(() => {
     setFilteredRecords(filtered);
   }, [searchTerm, filterDate, filterStatus, attendanceRecords]);
 
+  // Mark as late (unchanged)
   const markAsLate = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({
@@ -321,6 +327,7 @@ useEffect(() => {
     }
   };
 
+  // Mark as half-day (unchanged)
   const markAsHalfDay = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({
@@ -356,6 +363,7 @@ useEffect(() => {
     }
   };
 
+  // Reset status (unchanged)
   const resetStatus = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({
@@ -391,6 +399,7 @@ useEffect(() => {
     }
   };
 
+  // Delete record (unchanged)
   const deleteAttendanceRecord = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!window.confirm('Are you sure you want to delete this attendance record?')) return;
 
@@ -422,6 +431,7 @@ useEffect(() => {
     }
   };
 
+  // Helper: status badge color
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'present': return 'bg-green-100 text-green-700';
@@ -432,72 +442,70 @@ useEffect(() => {
     }
   };
 
-const calculateTimeDuration = (startTime: string, endTime: string | null) => {
-  if (!endTime) return 'N/A';
+  // Robust time duration calculator (case‑insensitive, supports 24h)
+  const calculateTimeDuration = (startTime: string, endTime: string | null) => {
+    if (!endTime) return 'N/A';
 
-  const parseTime = (timeStr: string): number => {
-    let hours = 0, minutes = 0;
-    const trimmed = timeStr.trim().toUpperCase();
-    // Check for 24-hour format (no AM/PM)
-    if (!trimmed.includes('AM') && !trimmed.includes('PM')) {
-      const parts = trimmed.split(':');
-      hours = parseInt(parts[0], 10);
-      minutes = parseInt(parts[1], 10);
-    } else {
-      // Handle AM/PM (case-insensitive)
-      const [time, period] = trimmed.split(' ');
-      const [h, m] = time.split(':').map(Number);
-      hours = h;
-      minutes = m;
-      if (period === 'PM' && hours < 12) hours += 12;
-      if (period === 'AM' && hours === 12) hours = 0;
+    const parseTime = (timeStr: string): number => {
+      let hours = 0, minutes = 0;
+      const trimmed = timeStr.trim().toUpperCase();
+      if (!trimmed.includes('AM') && !trimmed.includes('PM')) {
+        const parts = trimmed.split(':');
+        hours = parseInt(parts[0], 10);
+        minutes = parseInt(parts[1], 10);
+      } else {
+        const [time, period] = trimmed.split(' ');
+        const [h, m] = time.split(':').map(Number);
+        hours = h;
+        minutes = m;
+        if (period === 'PM' && hours < 12) hours += 12;
+        if (period === 'AM' && hours === 12) hours = 0;
+      }
+      return hours * 60 + minutes;
+    };
+
+    try {
+      const startMinutes = parseTime(startTime);
+      const endMinutes = parseTime(endTime);
+      let durationMinutes = endMinutes - startMinutes;
+      if (durationMinutes < 0) durationMinutes += 24 * 60;
+      if (durationMinutes > 12 * 60) durationMinutes -= 24 * 60;
+      const hours = Math.floor(durationMinutes / 60);
+      const minutes = durationMinutes % 60;
+      return `${hours}h ${minutes}m`;
+    } catch (error) {
+      console.error('Error calculating time duration:', error);
+      return 'N/A';
     }
-    return hours * 60 + minutes;
   };
 
-  try {
-    const startMinutes = parseTime(startTime);
-    const endMinutes = parseTime(endTime);
-    let durationMinutes = endMinutes - startMinutes;
-    if (durationMinutes < 0) durationMinutes += 24 * 60;
-    // Cap at 12 hours (avoid impossible values)
-    if (durationMinutes > 12 * 60) durationMinutes -= 24 * 60;
-
-    const hours = Math.floor(durationMinutes / 60);
-    const minutes = durationMinutes % 60;
-    return `${hours}h ${minutes}m`;
-  } catch (error) {
-    console.error('Error calculating time duration:', error);
-    return 'N/A';
-  }
-};
-
+  // Robust break time calculator (handles HH:MM and malformed strings)
   const calculateTotalBreakTime = (breaks: Record<string, BreakRecord> | undefined) => {
-  if (!breaks) return 'N/A';
+    if (!breaks) return 'N/A';
 
-  let totalBreakMinutes = 0;
+    let totalBreakMinutes = 0;
 
-  Object.values(breaks).forEach(breakRecord => {
-    if (breakRecord.breakOut && breakRecord.duration) {
-      const durationStr = breakRecord.duration;
-      // Try to parse "HH:MM" format first
-      const colonMatch = durationStr.match(/^(\d+):(\d+)$/);
-      if (colonMatch) {
-        totalBreakMinutes += parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
-      } else {
-        // Fallback for weird formats like "1.8h.3m"
-        const hoursMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*h/i);
-        const minutesMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*m/i);
-        if (hoursMatch) totalBreakMinutes += parseFloat(hoursMatch[1]) * 60;
-        if (minutesMatch) totalBreakMinutes += parseFloat(minutesMatch[1]);
+    Object.values(breaks).forEach(breakRecord => {
+      if (breakRecord.breakOut && breakRecord.duration) {
+        const durationStr = breakRecord.duration;
+        const colonMatch = durationStr.match(/^(\d+):(\d+)$/);
+        if (colonMatch) {
+          totalBreakMinutes += parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
+        } else {
+          const hoursMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*h/i);
+          const minutesMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*m/i);
+          if (hoursMatch) totalBreakMinutes += parseFloat(hoursMatch[1]) * 60;
+          if (minutesMatch) totalBreakMinutes += parseFloat(minutesMatch[1]);
+        }
       }
-    }
-  });
+    });
 
-  const hours = Math.floor(totalBreakMinutes / 60);
-  const minutes = totalBreakMinutes % 60;
-  return `${hours}h ${minutes}m`;
-};
+    const hours = Math.floor(totalBreakMinutes / 60);
+    const minutes = totalBreakMinutes % 60;
+    return `${hours}h ${minutes}m`;
+  };
+
+  // Export to CSV (unchanged)
   const exportAttendance = async () => {
     if (filteredRecords.length === 0) {
       toast({
@@ -511,21 +519,10 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
     setExportLoading(true);
     try {
       const headers = [
-        'Employee Name',
-        'Employee ID',
-        'Date',
-        'Punch In',
-        'Punch Out',
-        'Total Hours',
-        'Total Break Time',
-        'Status',
-        'Work Mode',
-        'Marked Late By',
-        'Marked Late At',
-        'Marked Half Day By',
-        'Marked Half Day At',
-        'Admin ID',
-        'Breaks'
+        'Employee Name', 'Employee ID', 'Date', 'Punch In', 'Punch Out',
+        'Total Hours', 'Total Break Time', 'Status', 'Work Mode',
+        'Marked Late By', 'Marked Late At', 'Marked Half Day By', 'Marked Half Day At',
+        'Admin ID', 'Breaks'
       ];
 
       const rows = filteredRecords.map(record => [
@@ -613,16 +610,11 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
 
   const getNotificationDetails = (type: string) => {
     switch (type) {
-      case 'punch-in':
-        return { title: 'Punched In', color: 'bg-green-100 text-green-800' };
-      case 'punch-out':
-        return { title: 'Punched Out', color: 'bg-blue-100 text-blue-800' };
-      case 'break-in':
-        return { title: 'Break Started', color: 'bg-yellow-100 text-yellow-800' };
-      case 'break-out':
-        return { title: 'Break Ended', color: 'bg-purple-100 text-purple-800' };
-      default:
-        return { title: 'Notification', color: 'bg-gray-100 text-gray-800' };
+      case 'punch-in': return { title: 'Punched In', color: 'bg-green-100 text-green-800' };
+      case 'punch-out': return { title: 'Punched Out', color: 'bg-blue-100 text-blue-800' };
+      case 'break-in': return { title: 'Break Started', color: 'bg-yellow-100 text-yellow-800' };
+      case 'break-out': return { title: 'Break Ended', color: 'bg-purple-100 text-purple-800' };
+      default: return { title: 'Notification', color: 'bg-gray-100 text-gray-800' };
     }
   };
 
@@ -781,18 +773,18 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
                   <table className="min-w-full divide-y divide-gray-200">
                     <thead className="bg-gray-50">
                       <tr>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Hours</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Break Time</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Work Mode</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In Selfie</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out Selfie</th>
-                        <th scope="col" className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Employee</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Hours</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Break Time</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Work Mode</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In Selfie</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out Selfie</th>
+                        <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
@@ -841,14 +833,10 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
                               {record.status}
                             </Badge>
                             {record.markedLateBy && (
-                              <p className="text-xs text-gray-500 mt-1">
-                                Marked late by {record.markedLateBy}
-                              </p>
+                              <p className="text-xs text-gray-500 mt-1">Marked late by {record.markedLateBy}</p>
                             )}
                             {record.markedHalfDayBy && (
-                              <p className="text-xs text-gray-500 mt-1">
-                                Marked half day by {record.markedHalfDayBy}
-                              </p>
+                              <p className="text-xs text-gray-500 mt-1">Marked half day by {record.markedHalfDayBy}</p>
                             )}
                           </td>
                           <td className="px-4 py-3 whitespace-nowrap">
@@ -857,16 +845,15 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
                             </Badge>
                           </td>
                           <td className="px-4 py-3 text-sm text-gray-600">
-  {record.location || record.locationOut ? (
-    <div className="text-xs space-y-1">
-      {record.location && <div>📍 In: {record.location.name?.slice(0, 40) || `${record.location.lat}, ${record.location.lng}`}</div>}
-      {record.locationOut && <div>📍 Out: {record.locationOut.name?.slice(0, 40) || `${record.locationOut.lat}, ${record.locationOut.lng}`}</div>}
-    </div>
-  ) : (
-    <span className="text-gray-400">—</span>
-  )}
-</td>
-                          {/* Punch In Selfie */}
+                            {record.location || record.locationOut ? (
+                              <div className="text-xs space-y-1">
+                                {record.location && <div>📍 In: {record.location.name?.slice(0, 40) || `${record.location.lat}, ${record.location.lng}`}</div>}
+                                {record.locationOut && <div>📍 Out: {record.locationOut.name?.slice(0, 40) || `${record.locationOut.lat}, ${record.locationOut.lng}`}</div>}
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">—</span>
+                            )}
+                          </td>
                           <td className="px-4 py-3 whitespace-nowrap">
                             {record.selfie ? (
                               <img
@@ -879,7 +866,6 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
                               <span className="text-gray-400 text-sm">—</span>
                             )}
                           </td>
-                          {/* Punch Out Selfie */}
                           <td className="px-4 py-3 whitespace-nowrap">
                             {record.selfieOut ? (
                               <img
@@ -896,72 +882,33 @@ const calculateTimeDuration = (startTime: string, endTime: string | null) => {
                             <div className="flex gap-1">
                               {record.status === 'late' ? (
                                 <>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => markAsHalfDay(record.id, record.employeeId, record.adminId)}
-                                    className="text-purple-600 hover:text-purple-700 h-8 px-2 text-xs"
-                                  >
-                                    <Sun className="h-3 w-3 mr-1" />
-                                    Half Day
+                                  <Button size="sm" variant="outline" onClick={() => markAsHalfDay(record.id, record.employeeId, record.adminId)} className="text-purple-600 hover:text-purple-700 h-8 px-2 text-xs">
+                                    <Sun className="h-3 w-3 mr-1" /> Half Day
                                   </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => resetStatus(record.id, record.employeeId, record.adminId)}
-                                    className="text-green-600 hover:text-green-700 h-8 px-2 text-xs"
-                                  >
+                                  <Button size="sm" variant="outline" onClick={() => resetStatus(record.id, record.employeeId, record.adminId)} className="text-green-600 hover:text-green-700 h-8 px-2 text-xs">
                                     Reset
                                   </Button>
                                 </>
                               ) : record.status === 'half-day' ? (
                                 <>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => markAsLate(record.id, record.employeeId, record.adminId)}
-                                    className="text-yellow-600 hover:text-yellow-700 h-8 px-2 text-xs"
-                                  >
-                                    <AlertTriangle className="h-3 w-3 mr-1" />
-                                    Late
+                                  <Button size="sm" variant="outline" onClick={() => markAsLate(record.id, record.employeeId, record.adminId)} className="text-yellow-600 hover:text-yellow-700 h-8 px-2 text-xs">
+                                    <AlertTriangle className="h-3 w-3 mr-1" /> Late
                                   </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => resetStatus(record.id, record.employeeId, record.adminId)}
-                                    className="text-green-600 hover:text-green-700 h-8 px-2 text-xs"
-                                  >
+                                  <Button size="sm" variant="outline" onClick={() => resetStatus(record.id, record.employeeId, record.adminId)} className="text-green-600 hover:text-green-700 h-8 px-2 text-xs">
                                     Reset
                                   </Button>
                                 </>
                               ) : record.status === 'present' ? (
                                 <>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => markAsLate(record.id, record.employeeId, record.adminId)}
-                                    className="text-yellow-600 hover:text-yellow-700 h-8 px-2 text-xs"
-                                  >
-                                    <AlertTriangle className="h-3 w-3 mr-1" />
-                                    Late
+                                  <Button size="sm" variant="outline" onClick={() => markAsLate(record.id, record.employeeId, record.adminId)} className="text-yellow-600 hover:text-yellow-700 h-8 px-2 text-xs">
+                                    <AlertTriangle className="h-3 w-3 mr-1" /> Late
                                   </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => markAsHalfDay(record.id, record.employeeId, record.adminId)}
-                                    className="text-purple-600 hover:text-purple-700 h-8 px-2 text-xs"
-                                  >
-                                    <Sun className="h-3 w-3 mr-1" />
-                                    Half Day
+                                  <Button size="sm" variant="outline" onClick={() => markAsHalfDay(record.id, record.employeeId, record.adminId)} className="text-purple-600 hover:text-purple-700 h-8 px-2 text-xs">
+                                    <Sun className="h-3 w-3 mr-1" /> Half Day
                                   </Button>
                                 </>
                               ) : null}
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => deleteAttendanceRecord(record.id, record.employeeId, record.adminId)}
-                                className="text-red-600 hover:text-red-700 h-8 px-2"
-                              >
+                              <Button size="sm" variant="outline" onClick={() => deleteAttendanceRecord(record.id, record.employeeId, record.adminId)} className="text-red-600 hover:text-red-700 h-8 px-2">
                                 <Trash2 className="h-3 w-3" />
                               </Button>
                             </div>
