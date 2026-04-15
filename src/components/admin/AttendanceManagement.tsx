@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, query, orderByChild, update, remove, off } from 'firebase/database';
+import { ref, onValue, query, orderByChild, update, remove, off, get } from 'firebase/database';
 import { AttendanceRecord } from '@/types/attendance';
 
 interface Employee {
@@ -76,6 +76,54 @@ interface FirebaseAttendanceRaw {
   [key: string]: unknown;
 }
 
+// Types for the full report
+interface EmployeeDataForReport {
+  name: string;
+  department?: string;
+}
+
+interface AttendanceRecordForReport {
+  punchIn?: string;
+  punchOut?: string;
+  status?: string;
+  workMode?: string;
+  date?: string;
+}
+
+interface PresentEmployee {
+  name: string;
+  department: string;
+  punchIn: string;
+  punchOut: string;
+  totalHours: string;
+  workMode: string;
+  status: string;
+}
+
+interface AbsentEmployee {
+  name: string;
+  department: string;
+  status: string;
+}
+
+// Firebase data structures for the report
+interface FirebaseEmployeeData {
+  name?: string;
+  department?: string;
+  email?: string;
+  designation?: string;
+  status?: string;
+  [key: string]: unknown; // for any extra fields
+}
+
+interface FirebaseAttendanceData {
+  punchIn?: string;
+  punchOut?: string;
+  date?: string;
+  status?: string;
+  workMode?: string;
+  [key: string]: unknown;
+}
 const AttendanceManagement = () => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -97,6 +145,13 @@ const AttendanceManagement = () => {
   const activeListenersRef = useRef<Set<string>>(new Set());
   const unsubscribesMapRef = useRef<Map<string, () => void>>(new Map());
 
+  const getAdminId = () => {
+    // For admin users, their own ID is the adminUid
+    if (user?.role === 'admin') return user.id;
+    // For other roles, use adminUid if available
+    return user?.adminUid;
+  };
+
   // Request notification permission
   useEffect(() => {
     if ('Notification' in window) {
@@ -106,7 +161,7 @@ const AttendanceManagement = () => {
     }
   }, []);
 
-  // Fetch ALL employees from all admins (unchanged, works)
+  // Fetch ALL employees from all admins
   useEffect(() => {
     if (!user) return;
 
@@ -153,13 +208,13 @@ const AttendanceManagement = () => {
     };
   }, [user]);
 
-  // 🔥 CRITICAL FIX: Stable attendance listener that adds/removes employees incrementally
+  // Stable attendance listener
   useEffect(() => {
     if (!user) return;
 
     const currentEmployeeIds = new Set(employees.map(e => e.id));
 
-    // 1. Remove listeners for employees no longer in the list
+    // Remove listeners for employees no longer in the list
     for (const empId of activeListenersRef.current) {
       if (!currentEmployeeIds.has(empId)) {
         const unsub = unsubscribesMapRef.current.get(empId);
@@ -171,7 +226,7 @@ const AttendanceManagement = () => {
       }
     }
 
-    // 2. Add listeners for new employees
+    // Add listeners for new employees
     for (const employee of employees) {
       if (!activeListenersRef.current.has(employee.id) && employee.adminId) {
         activeListenersRef.current.add(employee.id);
@@ -220,7 +275,6 @@ const AttendanceManagement = () => {
 
     setLoading(false);
 
-    // Cleanup on unmount
     return () => {
       for (const unsub of unsubscribesMapRef.current.values()) {
         unsub();
@@ -231,7 +285,6 @@ const AttendanceManagement = () => {
     };
   }, [user, employees]);
 
-  // Show system notification (unchanged)
   const showSystemNotification = (notification: Omit<Notification, 'id' | 'read'>) => {
     const newNotification: Notification = {
       ...notification,
@@ -265,7 +318,7 @@ const AttendanceManagement = () => {
     return () => clearTimeout(timeoutId);
   };
 
-  // Apply filters (fixed date comparison)
+  // Apply filters
   useEffect(() => {
     let filtered = [...attendanceRecords];
 
@@ -291,7 +344,9 @@ const AttendanceManagement = () => {
     setFilteredRecords(filtered);
   }, [searchTerm, filterDate, filterStatus, attendanceRecords]);
 
-  // Mark as late (unchanged)
+  // Helper functions (markAsLate, markAsHalfDay, resetStatus, deleteAttendanceRecord, etc.) remain unchanged
+  // ... (keep all existing helper functions exactly as they were, they don't contain any)
+
   const markAsLate = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({
@@ -327,7 +382,6 @@ const AttendanceManagement = () => {
     }
   };
 
-  // Mark as half-day (unchanged)
   const markAsHalfDay = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({
@@ -363,7 +417,6 @@ const AttendanceManagement = () => {
     }
   };
 
-  // Reset status (unchanged)
   const resetStatus = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({
@@ -399,7 +452,6 @@ const AttendanceManagement = () => {
     }
   };
 
-  // Delete record (unchanged)
   const deleteAttendanceRecord = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!window.confirm('Are you sure you want to delete this attendance record?')) return;
 
@@ -431,7 +483,6 @@ const AttendanceManagement = () => {
     }
   };
 
-  // Helper: status badge color
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'present': return 'bg-green-100 text-green-700';
@@ -442,7 +493,6 @@ const AttendanceManagement = () => {
     }
   };
 
-  // Robust time duration calculator (case‑insensitive, supports 24h)
   const calculateTimeDuration = (startTime: string, endTime: string | null) => {
     if (!endTime) return 'N/A';
 
@@ -479,7 +529,6 @@ const AttendanceManagement = () => {
     }
   };
 
-  // Robust break time calculator (handles HH:MM and malformed strings)
   const calculateTotalBreakTime = (breaks: Record<string, BreakRecord> | undefined) => {
     if (!breaks) return 'N/A';
 
@@ -505,7 +554,6 @@ const AttendanceManagement = () => {
     return `${hours}h ${minutes}m`;
   };
 
-  // Export to CSV (unchanged)
   const exportAttendance = async () => {
     if (filteredRecords.length === 0) {
       toast({
@@ -575,7 +623,113 @@ const AttendanceManagement = () => {
     }
   };
 
-  const clearFilters = () => {
+ const generateFullDailyReport = async () => {
+  if (!filterDate) {
+    toast({ title: "No Date Selected", description: "Please select a date in the filter above.", variant: "destructive" });
+    return;
+  }
+
+  setExportLoading(true);
+  try {
+    const adminId = user?.id;
+    if (!adminId) {
+      toast({ title: "Error", description: "Admin ID not found", variant: "destructive" });
+      return;
+    }
+
+    // 1. Fetch all employees under this admin
+    const employeesRef = ref(database, `users/${adminId}/employees`);
+    const employeesSnap = await get(employeesRef);
+    const employeesData = employeesSnap.val() as Record<string, FirebaseEmployeeData> | null;
+
+    if (!employeesData) {
+      toast({ title: "No Employees", description: "No employees found for this admin", variant: "destructive" });
+      return;
+    }
+
+    const presentList: PresentEmployee[] = [];
+    const absentList: AbsentEmployee[] = [];
+
+    // 2. For each employee, fetch attendance records for the selected date
+    for (const [empId, empData] of Object.entries(employeesData)) {
+      const employeeName = empData.name || 'Unknown';
+      const employeeDepartment = empData.department || 'No Department';
+
+      // Fetch attendance records for this employee
+      const attendanceRef = ref(database, `users/${adminId}/employees/${empId}/punching`);
+      const attendanceSnap = await get(attendanceRef);
+      const records = attendanceSnap.val() as Record<string, FirebaseAttendanceData> | null;
+
+      let foundRecord: FirebaseAttendanceData | null = null;
+      if (records) {
+        for (const rec of Object.values(records)) {
+          const recordDate = rec.date ? new Date(rec.date).toISOString().split('T')[0] : '';
+          if (recordDate === filterDate) {
+            foundRecord = rec;
+            break;
+          }
+        }
+      }
+
+      if (foundRecord) {
+        const punchIn = foundRecord.punchIn || '—';
+        const punchOut = foundRecord.punchOut || '—';
+        const totalHours = (foundRecord.punchOut && foundRecord.punchOut !== '—')
+          ? calculateTimeDuration(punchIn, punchOut)
+          : '—';
+        const workMode = foundRecord.workMode || 'office';
+        const status = foundRecord.status || 'present';
+        presentList.push({
+          name: employeeName,
+          department: employeeDepartment,
+          punchIn,
+          punchOut,
+          totalHours,
+          workMode,
+          status,
+        });
+      } else {
+        absentList.push({
+          name: employeeName,
+          department: employeeDepartment,
+          status: 'Absent',
+        });
+      }
+    }
+
+    // 3. Build CSV content
+    const csvRows: string[] = [];
+    csvRows.push('"===== PRESENT EMPLOYEES ====="');
+    csvRows.push('"Employee Name","Department","Punch In","Punch Out","Total Hours","Work Mode","Status"');
+    for (const emp of presentList) {
+      csvRows.push(`"${emp.name}","${emp.department}","${emp.punchIn}","${emp.punchOut}","${emp.totalHours}","${emp.workMode}","${emp.status}"`);
+    }
+    csvRows.push('');
+    csvRows.push('"===== ABSENT EMPLOYEES ====="');
+    csvRows.push('"Employee Name","Department","Status"');
+    for (const emp of absentList) {
+      csvRows.push(`"${emp.name}","${emp.department}","${emp.status}"`);
+    }
+
+    const csvContent = csvRows.join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `daily_attendance_report_${filterDate}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+
+    toast({ title: "Report Generated", description: `Present: ${presentList.length}, Absent: ${absentList.length}`, variant: "default" });
+  } catch (error) {
+    console.error("Error generating full report:", error);
+    toast({ title: "Error", description: "Failed to generate report", variant: "destructive" });
+  } finally {
+    setExportLoading(false);
+  }
+};
+ const clearFilters = () => {
     setSearchTerm('');
     setFilterDate('');
     setFilterStatus('all');
@@ -707,7 +861,8 @@ const AttendanceManagement = () => {
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {/* Fixed grid: 5 columns for all buttons */}
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
                   <div className="relative">
                     <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
                     <Input
@@ -750,6 +905,19 @@ const AttendanceManagement = () => {
                         Export ({filteredRecords.length})
                       </>
                     )}
+                  </Button>
+                  <Button 
+                    onClick={generateFullDailyReport} 
+                    disabled={exportLoading || !filterDate}
+                    variant="outline"
+                    className="w-full"
+                  >
+                    {exportLoading ? (
+                      <Clock className="h-4 w-4 mr-2 animate-spin" />
+                    ) : (
+                      <Download className="h-4 w-4 mr-2" />
+                    )}
+                    Full Report
                   </Button>
                 </div>
               </CardContent>
