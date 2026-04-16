@@ -16,7 +16,8 @@ import {
   X,
   MessageCircle,
   Table,
-  Workflow
+  Workflow,
+  TrendingUp
 } from 'lucide-react';
 import { Button } from '../ui/button';
 
@@ -43,6 +44,9 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
     { icon: Settings, label: 'Settings', path: '/admin/settings' },
     // Add this menu item
 { icon: Users, label: 'Clients', path: '/admin/clients' },
+{ icon: TrendingUp, label: 'Workload Heatmap', path: '/admin/workload' },
+// Add this to your menuItems array
+{ icon: Clock, label: 'Idle Detection', path: '/admin/idle-detection' }
   ];
 
   const isActive = (path: string) => {

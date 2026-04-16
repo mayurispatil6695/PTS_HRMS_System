@@ -1,3 +1,4 @@
+// MyTasks.tsx – without work updates (comments only)
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircle, Clock, AlertCircle, Calendar, Bell, Eye, X } from 'lucide-react';
@@ -5,7 +6,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
-import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { ref, onValue, off, update, get, push, set } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
@@ -31,10 +32,10 @@ interface StandaloneTaskData {
   updatedAt?: string;
   startedAt?: string;
   completedAt?: string;
-  progressUpdates?: { text: string; createdAt: string }[];
   comments?: TaskComment[];
   assignedBy?: string;
   assignedByName?: string;
+  dependsOn?: string[];
 }
 
 interface ProjectTaskData {
@@ -49,6 +50,7 @@ interface ProjectTaskData {
   updatedAt?: string;
   createdBy?: string;
   createdByName?: string;
+  dependsOn?: string[];
 }
 
 interface FirebaseProjectData {
@@ -70,13 +72,12 @@ interface DailyTask {
   updatedAt?: string;
   startedAt?: string;
   completedAt?: string;
-  completionNote?: string;
-  progressUpdates?: { text: string; createdAt: string }[];
   comments?: TaskComment[];
   assignedBy?: string;
   assignedByName?: string;
   projectId?: string;
   adminId?: string;
+  dependsOn?: string[];
 }
 
 const MyTasks: React.FC = () => {
@@ -88,7 +89,7 @@ const MyTasks: React.FC = () => {
   const [viewMode, setViewMode] = useState<'table' | 'card'>('table');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterDate, setFilterDate] = useState<string>('');
-  const [progressText, setProgressText] = useState('');
+  const [commentText, setCommentText] = useState(''); // for adding new comments
 
   useEffect(() => {
     if (!user?.id) {
@@ -100,7 +101,7 @@ const MyTasks: React.FC = () => {
       try {
         const adminNamesMap: Record<string, string> = {};
 
-        // 2. Fetch standalone tasks
+        // Fetch standalone tasks
         let adminId = user.adminUid;
         if (!adminId) {
           const profileRef = ref(database, `users/${user.id}/profile`);
@@ -140,17 +141,17 @@ const MyTasks: React.FC = () => {
                 updatedAt: taskData.updatedAt,
                 startedAt: taskData.startedAt,
                 completedAt: taskData.completedAt,
-                progressUpdates: taskData.progressUpdates,
-                comments: taskData.comments,
+                comments: taskData.comments || [],
                 assignedBy: taskData.assignedBy,
                 assignedByName: assignedByName || taskData.assignedBy || 'Admin',
                 adminId: adminId,
+                dependsOn: taskData.dependsOn || [],
               });
             }
           }
         }
 
-        // 3. Fetch project tasks
+        // Fetch project tasks
         const projectsRef = ref(database, 'projects');
         const projectsSnap = await get(projectsRef);
         const projects = projectsSnap.val() as Record<string, FirebaseProjectData> | null;
@@ -176,6 +177,7 @@ const MyTasks: React.FC = () => {
                     assignedBy: taskData.createdBy,
                     assignedByName: taskData.createdByName || 'Admin',
                     projectId: projId,
+                    dependsOn: taskData.dependsOn || [],
                   });
                 }
               }
@@ -203,25 +205,17 @@ const MyTasks: React.FC = () => {
 
     try {
       let taskRef;
-      const updates: Partial<DailyTask> = {
-        status: newStatus,
-        updatedAt: new Date().toISOString(),
-      };
-      if (newStatus === 'in-progress') updates.startedAt = new Date().toISOString();
-      if (newStatus === 'completed') updates.completedAt = new Date().toISOString();
+      let currentTask: any;
 
       if (task.projectId) {
-        // Project task
         taskRef = ref(database, `projects/${task.projectId}/tasks/${task.id}`);
         const snapshot = await get(taskRef);
         if (!snapshot.exists()) {
           toast.error('Task not found in project. It may have been deleted.');
           return;
         }
-        await update(taskRef, updates);
-        toast.success(`Task marked as ${newStatus}`);
+        currentTask = snapshot.val();
       } else {
-        // Standalone task
         const adminId = task.adminId || user.adminUid;
         if (!adminId) throw new Error('No admin ID');
         taskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${task.id}`);
@@ -230,11 +224,54 @@ const MyTasks: React.FC = () => {
           toast.error('Task not found. It may have been deleted.');
           return;
         }
-        await update(taskRef, updates);
-        toast.success(`Task marked as ${newStatus}`);
+        currentTask = snapshot.val();
       }
 
-      // Notify all admins about task status change (for standalone tasks)
+      // Check dependencies
+      if (currentTask.dependsOn && currentTask.dependsOn.length > 0) {
+        const dependencies = currentTask.dependsOn;
+        const incompleteDeps: string[] = [];
+
+        for (const depId of dependencies) {
+          let depTaskRef;
+          let depTask;
+          if (task.projectId) {
+            depTaskRef = ref(database, `projects/${task.projectId}/tasks/${depId}`);
+            const depSnap = await get(depTaskRef);
+            depTask = depSnap.val();
+          } else {
+            const adminId = task.adminId || user.adminUid;
+            depTaskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${depId}`);
+            const depSnap = await get(depTaskRef);
+            depTask = depSnap.val();
+          }
+          if (depTask && depTask.status !== 'completed') {
+            incompleteDeps.push(depTask.title || depId);
+          }
+        }
+
+        if (incompleteDeps.length > 0) {
+          toast.error(`Cannot update status. The following tasks must be completed first:\n${incompleteDeps.join(', ')}`);
+          return;
+        }
+      }
+
+      if (currentTask.status === newStatus) {
+        toast('Status is already set to this value');
+        return;
+      }
+
+      const updates: Partial<DailyTask> = {
+        status: newStatus,
+        updatedAt: new Date().toISOString(),
+      };
+      if (newStatus === 'in-progress') updates.startedAt = new Date().toISOString();
+      if (newStatus === 'completed') updates.completedAt = new Date().toISOString();
+
+      await update(taskRef, updates);
+      toast.success(`Task marked as ${newStatus}`);
+
+      // Notify admins for standalone tasks
       if (!task.projectId) {
         const usersSnapshot = await get(ref(database, 'users'));
         const adminNotifications: Promise<void>[] = [];
@@ -255,7 +292,6 @@ const MyTasks: React.FC = () => {
         await Promise.all(adminNotifications);
       }
 
-      // Update local state
       setTasks(prev =>
         prev.map(t =>
           t.id === task.id && t.projectId === task.projectId
@@ -269,36 +305,46 @@ const MyTasks: React.FC = () => {
     }
   };
 
-  const handleAddProgress = async () => {
-    if (!selectedTask || !user || !progressText.trim()) return;
+  const addComment = async () => {
+    if (!selectedTask || !user || !commentText.trim()) return;
 
     try {
+      const timestamp = Date.now().toString();
+      const commentId = timestamp;
+      const commentData: TaskComment = {
+        text: commentText,
+        createdAt: new Date().toISOString(),
+        createdBy: user.name || 'Employee',
+      };
+
       if (selectedTask.projectId) {
-        const taskRef = ref(database, `projects/${selectedTask.projectId}/tasks/${selectedTask.id}`);
-        const current = (await get(taskRef)).val() as { progressUpdates?: { text: string; createdAt: string }[] };
-        const updates = current?.progressUpdates || [];
-        await update(taskRef, {
-          progressUpdates: [...updates, { text: progressText, createdAt: new Date().toISOString() }],
-          updatedAt: new Date().toISOString(),
-        });
+        const commentRef = ref(database, `projects/${selectedTask.projectId}/tasks/${selectedTask.id}/comments/${commentId}`);
+        await set(commentRef, commentData);
       } else {
         const adminId = selectedTask.adminId || user.adminUid;
         if (!adminId) throw new Error('No admin ID');
-        const taskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${selectedTask.id}`);
-        const current = (await get(taskRef)).val() as { progressUpdates?: { text: string; createdAt: string }[] };
-        const updates = current?.progressUpdates || [];
-        await update(taskRef, {
-          progressUpdates: [...updates, { text: progressText, createdAt: new Date().toISOString() }],
-          updatedAt: new Date().toISOString(),
-        });
+        const commentRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${selectedTask.id}/comments/${commentId}`);
+        await set(commentRef, commentData);
       }
-      toast.success('Progress added');
-      setProgressText('');
-      const updatedTask = { ...selectedTask, progressUpdates: [...(selectedTask.progressUpdates || []), { text: progressText, createdAt: new Date().toISOString() }] };
+
+      toast.success('Comment added');
+      setCommentText('');
+      // Update local state
+      const updatedTask = {
+        ...selectedTask,
+        comments: [...(selectedTask.comments || []), commentData],
+      };
       setSelectedTask(updatedTask);
+      setTasks(prev =>
+        prev.map(t =>
+          t.id === selectedTask.id && t.projectId === selectedTask.projectId
+            ? updatedTask
+            : t
+        )
+      );
     } catch (err) {
       console.error(err);
-      toast.error('Failed to add progress');
+      toast.error('Failed to add comment');
     }
   };
 
@@ -594,27 +640,16 @@ const MyTasks: React.FC = () => {
                 </div>
               </div>
 
+              {/* Comments section */}
               <div className="space-y-2">
-                <Label>Add Work Update</Label>
+                <Label>Add Comment</Label>
                 <Input
-                  value={progressText}
-                  onChange={(e) => setProgressText(e.target.value)}
-                  placeholder="What did you work on?"
+                  value={commentText}
+                  onChange={(e) => setCommentText(e.target.value)}
+                  placeholder="Add a comment..."
                 />
-                <Button onClick={handleAddProgress}>Add Update</Button>
+                <Button onClick={addComment}>Add Comment</Button>
               </div>
-
-              {selectedTask.progressUpdates && selectedTask.progressUpdates.length > 0 && (
-                <div className="space-y-2">
-                  <Label>Work Updates</Label>
-                  {selectedTask.progressUpdates.map((u, i) => (
-                    <div key={i} className="p-2 bg-gray-100 rounded">
-                      <p>{u.text}</p>
-                      <p className="text-xs text-gray-500">{formatDateTime(u.createdAt)}</p>
-                    </div>
-                  ))}
-                </div>
-              )}
 
               {selectedTask.comments && selectedTask.comments.length > 0 && (
                 <div className="space-y-4">

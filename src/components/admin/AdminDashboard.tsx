@@ -21,6 +21,13 @@ import { Menu, X } from 'lucide-react';
 import ClientManagement from './ClientManagement';
 import DailyTaskEmployee from './DailyTaskEmployee';
 import NotificationSystem from '../ui/NotificationSystem';
+import IdleDetectionPage from './IdleDetectionPage';
+import WorkloadHeatmap from './WorkloadHeatmap';
+
+
+
+
+
 const AdminDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -95,7 +102,10 @@ const AdminDashboard = () => {
               <Route path="/expenses" element={<ExpenseManagement />} />
               <Route path="/settings" element={<SettingsManagement />} />
               
-              <Route path='/employeetask'element={<DailyTaskEmployee />}/>
+              <Route path="/employeetask" element={<DailyTaskEmployee />}/>
+              <Route path="/idle-detection" element={<IdleDetectionPage />} />
+             
+              <Route path="/workload" element={<WorkloadHeatmap />} />
             </Routes>
           </div>
         </main>

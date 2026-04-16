@@ -1,5 +1,4 @@
-// This is the complete file with fixes. Replace your existing EmployeeProjects.tsx.
-
+// EmployeeProjects.tsx – with task dependencies and fixed toast
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
@@ -69,6 +68,7 @@ interface Task {
   updatedAt?: string;
   totalTimeSpentMs?: number;
   timeLogs?: Record<string, any>;
+  dependsOn?: string[];
 }
 
 interface Project {
@@ -425,15 +425,50 @@ const EmployeeProjects = () => {
     return () => unsubscribe();
   }, [user, isTeamLead, employees]);
 
-  // FIXED: updateTaskStatus – no new task created, only updates existing task
+  // FIXED: updateTaskStatus with dependency check and fixed toast
   const updateTaskStatus = async (projectId: string, taskId: string) => {
     if (!user?.id || !newTaskStatus) return;
+
     try {
+      const project = projects.find(p => p.id === projectId);
+      const task = project?.tasks[taskId];
+      if (!task) {
+        toast.error('Task not found');
+        return;
+      }
+
+      // Check dependencies
+      if (task.dependsOn && task.dependsOn.length > 0) {
+        const dependencies = task.dependsOn;
+        const incompleteDeps: string[] = [];
+
+        for (const depId of dependencies) {
+          const depTask = project.tasks[depId];
+          if (depTask && depTask.status !== 'completed') {
+            incompleteDeps.push(depTask.title || depId);
+          }
+        }
+
+        if (incompleteDeps.length > 0) {
+          toast.error(`Cannot update status. The following tasks must be completed first:\n${incompleteDeps.join(', ')}`);
+          return;
+        }
+      }
+
+      // If the current status is already the same, do nothing
+      if (task.status === newTaskStatus) {
+        toast('Status is already set to this value');
+        setEditingTaskId(null);
+        setNewTaskStatus('');
+        return;
+      }
+
+      // Proceed with update
       const timestamp = Date.now().toString();
       const isoTime = new Date().toISOString();
       const changes = [{
         field: 'status',
-        oldValue: projects.find(p => p.id === projectId)?.tasks[taskId]?.status || '',
+        oldValue: task.status,
         newValue: newTaskStatus,
       }];
       const updateData: TaskUpdate = {
@@ -444,18 +479,16 @@ const EmployeeProjects = () => {
         changes,
         note: `Status updated by ${isTeamLead ? 'Team Lead' : 'Employee'}`,
       };
+
       await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
         status: newTaskStatus,
         updatedAt: new Date().toISOString(),
         [`updates/${timestamp}`]: updateData,
       });
 
-      // ✅ Notify admin and team lead about task status change
-      const project = projects.find(p => p.id === projectId);
-      const taskTitle = project?.tasks[taskId]?.title || 'a task';
+      // Notify admins and team lead (as before)
+      const taskTitle = task.title || 'a task';
       const adminNotifications: Promise<void>[] = [];
-
-      // Notify all admins
       const usersSnapshot = await get(ref(database, 'users'));
       usersSnapshot.forEach((userSnap) => {
         const userData = userSnap.val();
@@ -472,7 +505,6 @@ const EmployeeProjects = () => {
           }));
         }
       });
-      // Notify team lead if not the same user
       if (project?.assignedTeamLeader && project.assignedTeamLeader !== user?.id) {
         const notifRef = push(ref(database, `notifications/${project.assignedTeamLeader}`));
         adminNotifications.push(set(notifRef, {
@@ -503,6 +535,7 @@ const EmployeeProjects = () => {
           return { ...p, tasks: updatedTasks };
         })
       );
+
       toast.success('Task status updated');
       setEditingTaskId(null);
       setNewTaskStatus('');
@@ -677,6 +710,7 @@ const EmployeeProjects = () => {
               return (
                 <Card key={project.id}>
                   <CardContent className="p-6 space-y-4">
+                    {/* Project header, description, team members, progress bar */}
                     <div className="flex justify-between items-start">
                       <div>
                         <h3 className="text-lg font-bold">{project.name}</h3>
