@@ -14,7 +14,8 @@ import {
   X,
   Building2,
   MessageCircle,
-  Workflow
+  Workflow,
+  Video
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useAuth } from '../../hooks/useAuth';
@@ -44,6 +45,12 @@ const EmployeeSidebar: React.FC<EmployeeSidebarProps> = ({ onClose, isMobile = f
     { icon: FileText, label: 'Reports', path: '/employee/reports' },
   ];
 
+  const joinVirtualOffice = () => {
+    const dept = (user?.department || 'general').toLowerCase().replace(/[^a-z0-9]/g, '-');
+    const roomName = `hrms-virtual-office-${dept}`;
+    window.open(`https://meet.jit.si/${roomName}`, '_blank');
+  };
+
   const isActive = (path: string) => {
     if (path === '/employee/') {
       return location.pathname === '/employee' || location.pathname === '/employee/';
@@ -65,11 +72,7 @@ const EmployeeSidebar: React.FC<EmployeeSidebarProps> = ({ onClose, isMobile = f
           </div>
         </div>
         {isMobile && (
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={onClose}
-          >
+          <Button variant="ghost" size="icon" onClick={onClose}>
             <X className="h-4 w-4" />
           </Button>
         )}
@@ -113,6 +116,20 @@ const EmployeeSidebar: React.FC<EmployeeSidebarProps> = ({ onClose, isMobile = f
               </NavLink>
             </motion.li>
           ))}
+          {/* Virtual Office button - opens in new tab directly */}
+          <motion.li
+            initial={{ opacity: 0, x: -20 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: menuItems.length * 0.1 }}
+          >
+            <button
+              onClick={joinVirtualOffice}
+              className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg transition-all duration-200 text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+            >
+              <Video className="w-5 h-5 flex-shrink-0" />
+              <span className="font-medium truncate">Virtual Office</span>
+            </button>
+          </motion.li>
         </ul>
       </nav>
 

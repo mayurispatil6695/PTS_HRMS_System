@@ -1,296 +1,515 @@
-// ChatInterface.tsx - Fixed TypeScript errors
-import React, { useState, useEffect, useRef } from 'react';
-import { motion } from 'framer-motion';
-import { getDatabase, ref, set } from 'firebase/database';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { ref, push, set, onValue, off, update, query, orderByChild, limitToLast, get,remove } from 'firebase/database';
+import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
-import { useToast } from '../../hooks/use-toast';
-import { useChatStore, Message } from '../../store/chatStore';
-import UserList from './UserList';
-import ChatWindow from './ChatWindow';
-import { get } from 'firebase/database';
+import { Avatar, AvatarFallback } from '../ui/avatar';
+import { Button } from '../ui/button';
+import { Input } from '../ui/input';
+import { ScrollArea } from '../ui/scroll-area';
+import { Badge } from '../ui/badge';
+import { Send, Paperclip, Users, Clock, CheckCheck, Search, X, FileText } from 'lucide-react';
+import { toast } from 'react-hot-toast';
+import { formatDistanceToNow } from 'date-fns';
 
-const db = getDatabase();
+// Cloudinary upload
+const uploadToCloudinary = async (file: File): Promise<string> => {
+  const cloudName = import.meta.env.VITE_CLOUDINARY_CLOUD_NAME;
+  const uploadPreset = import.meta.env.VITE_CLOUDINARY_UPLOAD_PRESET;
+  if (!cloudName || !uploadPreset) {
+    throw new Error('Cloudinary credentials missing. Check your .env file.');
+  }
+  const formData = new FormData();
+  formData.append('file', file);
+  formData.append('upload_preset', uploadPreset);
+  const response = await fetch(
+    `https://api.cloudinary.com/v1_1/${cloudName}/upload`,
+    { method: 'POST', body: formData }
+  );
+  if (!response.ok) throw new Error('Upload failed');
+  const data = await response.json();
+  return data.secure_url;
+};
 
-interface ChatUser {
+interface Message {
+  id: string;
+  text: string;
+  senderId: string;
+  senderName: string;
+  timestamp: number;
+  readBy: Record<string, boolean>;
+  fileUrl?: string;
+  fileName?: string;
+  fileType?: string;
+}
+
+interface Contact {
   id: string;
   name: string;
   email: string;
-  role?: 'admin' | 'employee';
-  designation?: string;
   department?: string;
-  profileImage?: string;
-  status?: string;
-  isActive?: boolean;
+  role?: string;
 }
 
 const ChatInterface = () => {
-  const { user: authUser } = useAuth();
-  const { toast } = useToast();
-  const [selectedUser, setSelectedUser] = useState<ChatUser | null>(null);
+  const { user } = useAuth();
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [activeContactId, setActiveContactId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [inputText, setInputText] = useState('');
+  const [typingUsers, setTypingUsers] = useState<Record<string, boolean>>({});
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+  const [uploading, setUploading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [showUserList, setShowUserList] = useState(true);
-
-  const {
-    messages,
-    onlineUsers,
-    typingUsers,
-    currentChat,
-    addMessage,
-    editMessage,
-    deleteMessage,
-    setOnlineUsers,
-    setTypingUser,
-    setCurrentChat,
-    getChatId,
-    playNotificationSound
-  } = useChatStore();
-
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Convert auth user to chat user
-  const currentUser = authUser ? {
-    id: authUser.id,
-    name: authUser.name,
-    email: authUser.email,
-    role: authUser.role,
-    designation: authUser.designation,
-    department: authUser.department,
-    profileImage: authUser.profileImage,
-    status: authUser.status,
-    isActive: authUser.status === 'active'
-  } : null;
+  const currentUserId = user?.id;
+  const currentUserName = user?.name || 'Employee';
+  const isAdmin = user?.role === 'admin';
 
+  const getDmChatId = (uid1: string, uid2: string) => {
+    const sorted = [uid1, uid2].sort();
+    return `dm_${sorted[0]}_${sorted[1]}`;
+  };
+
+  // Fetch contacts (admins + employees)
   useEffect(() => {
-    const allUsers = JSON.parse(localStorage.getItem('hrms_users') || '[]');
-    const otherUsers = allUsers.filter((u: ChatUser) => u.id !== currentUser?.id);
-
-    const initialOnlineUsers = otherUsers
-      .slice(0, Math.floor(Math.random() * otherUsers.length / 2) + 1)
-      .map((u: ChatUser) => u.id);
-
-    setOnlineUsers(initialOnlineUsers);
-
-    const presenceInterval = setInterval(() => {
-      const onlineCount = Math.floor(Math.random() * otherUsers.length / 2) + 1;
-      const shuffled = [...otherUsers].sort(() => 0.5 - Math.random());
-      setOnlineUsers(shuffled.slice(0, onlineCount).map((u: ChatUser) => u.id));
-    }, 30000);
-
-    return () => clearInterval(presenceInterval);
-  }, [currentUser?.id, setOnlineUsers]);
-
-  useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
-  }, [messages, currentChat]);
-
-  const handleUserSelect = (user: ChatUser) => {
-    setSelectedUser(user);
-    if (currentUser) {
-      const chatId = getChatId(currentUser.id, user.id);
-      setCurrentChat(chatId);
-    }
-    if (window.innerWidth < 768) {
-      setShowUserList(false);
-    }
-  };
-
-  const generateChatId = (uid1: string, uid2: string) => {
-    return [uid1, uid2].sort().join('_');
-  };
-
-  const getChatPath = (
-    uid: string,
-    otherUser: ChatUser,
-    isSender: boolean
-  ): string => {
-    if (otherUser.role === 'employee') {
-      return `users/${uid}/employees/${otherUser.id}/chat`;
-    }
-    return `users/${uid}/chat`;
-  };
-
-  const sendMessage = async (
-    content: string,
-    type: 'text' | 'image' | 'video' | 'document' | 'link' = 'text'
-  ) => {
-    if (!selectedUser || !currentUser || !content.trim()) return;
-
-    const chatId = generateChatId(currentUser.id, selectedUser.id);
-    const timestamp = Date.now();
-    const messageId = timestamp.toString();
-
-    const newMessage: Message = {
-      id: messageId,
-      senderId: currentUser.id,
-      senderName: currentUser.name,
-      receiverId: selectedUser.id,
-      receiverName: selectedUser.name,
-      content,
-      type: type as 'text' | 'image' | 'video' | 'link' | 'document',
-      timestamp,
-      status: 'sent',
-      ...(type !== 'text' && { mediaUrl: content }),
-    };
-
-    addMessage(chatId, newMessage);
-
-    const senderPath = `${getChatPath(currentUser.id, selectedUser, true)}/${chatId}/${messageId}`;
-    const receiverPath = `${getChatPath(selectedUser.id, currentUser, false)}/${chatId}/${messageId}`;
-
-    try {
-      await set(ref(db, senderPath), newMessage);
-      await set(ref(db, receiverPath), newMessage);
-    } catch (error) {
-      console.error('Error sending message:', error);
-      toast({
-        title: 'Send Failed',
-        description: 'Could not send message.',
-        variant: 'destructive',
+    const fetchContacts = async () => {
+      const contactMap = new Map<string, Contact>();
+      const rootUsersSnap = await get(ref(database, 'users'));
+      rootUsersSnap.forEach((child) => {
+        const uid = child.key;
+        if (uid === currentUserId) return;
+        const userData = child.val();
+        const profile = userData.profile || userData;
+        if (profile?.name) {
+          contactMap.set(uid, {
+            id: uid,
+            name: profile.name,
+            email: profile.email || '',
+            department: profile.department,
+            role: userData.role === 'admin' ? 'admin' : 'employee',
+          });
+        }
       });
-      return;
-    }
 
-    setTimeout(async () => {
-      const deliveredMessage = { ...newMessage, status: 'delivered' as const };
-      editMessage(chatId, messageId, deliveredMessage.content);
-      await set(ref(db, senderPath), deliveredMessage);
-      await set(ref(db, receiverPath), deliveredMessage);
+      if (!isAdmin && user?.adminUid) {
+        const employeesRef = ref(database, `users/${user.adminUid}/employees`);
+        const employeesSnap = await get(employeesRef);
+        employeesSnap.forEach((child) => {
+          const empId = child.key;
+          if (empId === currentUserId) return;
+          const empData = child.val();
+          if (empData?.name && !contactMap.has(empId)) {
+            contactMap.set(empId, {
+              id: empId,
+              name: empData.name,
+              email: empData.email || '',
+              department: empData.department,
+              role: 'employee',
+            });
+          }
+        });
+      }
 
-      setTimeout(async () => {
-        const readMessage = { ...deliveredMessage, status: 'read' as const };
-        editMessage(chatId, messageId, readMessage.content);
-        await set(ref(db, senderPath), readMessage);
-        await set(ref(db, receiverPath), readMessage);
-      }, Math.random() * 3000 + 1000);
-    }, Math.random() * 1000 + 500);
-  };
+      setContacts(Array.from(contactMap.values()));
+    };
+    fetchContacts();
+  }, [currentUserId, isAdmin, user?.adminUid]);
 
-  const handleTyping = (isTyping: boolean) => {
-    if (!selectedUser || !currentUser) return;
-    const chatId = generateChatId(currentUser.id, selectedUser.id);
-    setTypingUser(chatId, currentUser.id, isTyping);
-
-    if (isTyping) {
-      if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-      typingTimeoutRef.current = setTimeout(() => {
-        setTypingUser(chatId, currentUser.id, false);
-      }, 3000);
-    }
-  };
-
-  const handleEditMessage = (messageId: string, newContent: string) => {
-    if (!selectedUser || !currentUser) return;
-    const chatId = generateChatId(currentUser.id, selectedUser.id);
-    editMessage(chatId, messageId, newContent);
-
-    toast({
-      title: 'Message edited',
-      description: 'Your message has been updated.',
+  // Online presence
+  useEffect(() => {
+    const activityRef = ref(database, 'activity');
+    const unsubscribe = onValue(activityRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, { status?: string; lastActive?: number }> | null;
+      const online = new Set<string>();
+      const now = Date.now();
+      if (data) {
+        for (const [uid, act] of Object.entries(data)) {
+          if (act.status === 'active' && now - (act.lastActive || 0) < 60000) {
+            online.add(uid);
+          }
+        }
+      }
+      setOnlineUsers(online);
     });
-  };
+    return () => off(activityRef);
+  }, []);
 
-  const handleDeleteMessage = (messageId: string, deleteForEveryone = false) => {
-    if (!selectedUser || !currentUser) return;
-    const chatId = generateChatId(currentUser.id, selectedUser.id);
-    deleteMessage(chatId, messageId, deleteForEveryone);
-
-    toast({
-      title: deleteForEveryone ? 'Message deleted for everyone' : 'Message deleted',
-      description: deleteForEveryone
-        ? 'This message was removed for all participants.'
-        : 'Message was removed for you.',
+  // Fetch messages
+  useEffect(() => {
+    if (!activeContactId || !currentUserId) return;
+    let chatPath: string;
+    if (activeContactId === 'global') {
+      chatPath = 'chats/group_global';
+    } else {
+      chatPath = `chats/${getDmChatId(currentUserId, activeContactId)}`;
+    }
+    const messagesRef = ref(database, `${chatPath}/messages`);
+    const messagesQuery = query(messagesRef, orderByChild('timestamp'), limitToLast(50));
+    const unsubscribe = onValue(messagesQuery, (snapshot) => {
+      const data = snapshot.val() as Record<string, Omit<Message, 'id'>> | null;
+      const msgs: Message[] = [];
+      if (data) {
+        for (const [id, msg] of Object.entries(data)) {
+          msgs.push({
+            id,
+            text: msg.text,
+            senderId: msg.senderId,
+            senderName: msg.senderName || 'Unknown',
+            timestamp: msg.timestamp,
+            readBy: msg.readBy || {},
+            fileUrl: msg.fileUrl,
+            fileName: msg.fileName,
+            fileType: msg.fileType,
+          });
+        }
+      }
+      msgs.sort((a, b) => a.timestamp - b.timestamp);
+      setMessages(msgs);
+      setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+      const updates: Record<string, boolean> = {};
+      msgs.forEach(msg => {
+        if (msg.senderId !== currentUserId && !msg.readBy[currentUserId]) {
+          updates[`${chatPath}/messages/${msg.id}/readBy/${currentUserId}`] = true;
+        }
+      });
+      if (Object.keys(updates).length) update(ref(database), updates);
     });
+    return () => off(messagesRef);
+  }, [activeContactId, currentUserId]);
+
+  // Typing indicator listener
+  useEffect(() => {
+    if (!activeContactId || !currentUserId) return;
+    let typingPath: string;
+    if (activeContactId === 'global') {
+      typingPath = 'chats/group_global/typing';
+    } else {
+      typingPath = `chats/${getDmChatId(currentUserId, activeContactId)}/typing`;
+    }
+    const typingRef = ref(database, typingPath);
+    const unsubscribe = onValue(typingRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data && typeof data === 'object') {
+        setTypingUsers(data as Record<string, boolean>);
+      } else {
+        setTypingUsers({});
+      }
+    });
+    return () => off(typingRef);
+  }, [activeContactId, currentUserId]);
+
+  const sendMessage = async (text: string, file?: { url: string; name: string; type: string }) => {
+  if ((!text.trim() && !file) || !currentUserId || !activeContactId) return;
+  let chatPath: string;
+  const isGlobal = activeContactId === 'global';
+  if (isGlobal) {
+    chatPath = 'chats/group_global';
+  } else {
+    chatPath = `chats/${getDmChatId(currentUserId, activeContactId)}`;
+  }
+  const newMsgRef = push(ref(database, `${chatPath}/messages`));
+  const messageData: any = {
+    text: text.trim() || (file ? '📎 File attached' : ''),
+    senderId: currentUserId,
+    senderName: currentUserName,
+    timestamp: Date.now(),
+    readBy: { [currentUserId]: true },
+  };
+  if (file) {
+    messageData.fileUrl = file.url;
+    messageData.fileName = file.name;
+    messageData.fileType = file.type;
+  }
+  await set(newMsgRef, messageData);
+  await remove(ref(database, `${chatPath}/typing/${currentUserId}`));
+  setInputText('');
+  setMediaPreview(null);
+
+  // ---------- SEND NOTIFICATIONS ----------
+  const now = Date.now();
+  const throttleKey = `lastGroupNotif_${currentUserId}`;
+  const lastGroupNotif = localStorage.getItem(throttleKey);
+  const THROTTLE_MS = 60000; // 1 minute
+
+  if (isGlobal) {
+    // Group message – notify all other users
+    if (!lastGroupNotif || now - parseInt(lastGroupNotif) > THROTTLE_MS) {
+      localStorage.setItem(throttleKey, now.toString());
+      // Fetch all users except the sender
+      const usersSnap = await get(ref(database, 'users'));
+      const notificationPromises: Promise<void>[] = [];
+      usersSnap.forEach((child) => {
+        const uid = child.key;
+        if (uid === currentUserId) return;
+        // Only notify users who are active (optional: check lastActive within 5 min)
+        const notifRef = push(ref(database, `notifications/${uid}`));
+        notificationPromises.push(set(notifRef, {
+          title: `New message in Company Group from ${currentUserName}`,
+          body: text.trim().substring(0, 100) || (file ? '📎 Shared a file' : ''),
+          type: 'group_chat',
+          read: false,
+          createdAt: now,
+        }));
+        // Browser notification (only if permission granted)
+        if (Notification.permission === 'granted') {
+          new Notification(`Company Group: ${currentUserName}`, {
+            body: text.trim().substring(0, 100) || (file ? 'Shared a file' : ''),
+            icon: '/favicon.ico',
+          });
+        }
+      });
+      await Promise.all(notificationPromises);
+    }
+  } else {
+    // Direct message – notify the recipient
+    const notifRef = push(ref(database, `notifications/${activeContactId}`));
+    await set(notifRef, {
+      title: `New message from ${currentUserName}`,
+      body: text.trim().substring(0, 100) || (file ? '📎 Sent a file' : ''),
+      type: 'chat_message',
+      read: false,
+      createdAt: now,
+    });
+    if (Notification.permission === 'granted') {
+      new Notification(`Message from ${currentUserName}`, {
+        body: text.trim().substring(0, 100) || (file ? 'Sent a file' : ''),
+        icon: '/favicon.ico',
+      });
+    }
+  }
+};
+
+  const handleTyping = useCallback(async () => {
+    if (!activeContactId || !currentUserId) return;
+    let typingPath: string;
+    if (activeContactId === 'global') {
+      typingPath = 'chats/group_global/typing';
+    } else {
+      typingPath = `chats/${getDmChatId(currentUserId, activeContactId)}/typing`;
+    }
+    await set(ref(database, `${typingPath}/${currentUserId}`), true);
+    if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
+    typingTimeoutRef.current = setTimeout(async () => {
+      await remove(ref(database, `${typingPath}/${currentUserId}`));
+    }, 2000);
+  }, [activeContactId, currentUserId]);
+
+  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    try {
+      const url = await uploadToCloudinary(file);
+      await sendMessage('', { url, name: file.name, type: file.type });
+      toast.success('File uploaded');
+    } catch (err) {
+      console.error(err);
+      toast.error('Upload failed: ' + (err as Error).message);
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   };
 
-  const getCurrentChatMessages = () => {
-    if (!selectedUser || !currentUser) return [];
-    const chatId = generateChatId(currentUser.id, selectedUser.id);
-    return messages[chatId] || [];
+  const triggerFileUpload = () => {
+    fileInputRef.current?.click();
   };
 
-  const getCurrentTypingUsers = () => {
-    if (!selectedUser || !currentUser) return [];
-    const chatId = generateChatId(currentUser.id, selectedUser.id);
-    return (typingUsers[chatId] || []).filter((id) => id !== currentUser.id);
+  const getSenderInitials = (name: string) => {
+    if (!name || name.length === 0) return '?';
+    return name.charAt(0).toUpperCase();
   };
 
-  const toggleUserList = () => {
-    setShowUserList(!showUserList);
-  };
+  const filteredContacts = contacts.filter(c =>
+    c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    c.email.toLowerCase().includes(searchTerm.toLowerCase())
+  );
 
   return (
-    <div className="flex flex-col md:flex-row h-full bg-gray-50 relative">
-      <div className="md:hidden flex items-center justify-between p-3 border-b border-gray-200 bg-white">
-        <button 
-          onClick={toggleUserList}
-          className="p-2 rounded-md hover:bg-gray-100"
-        >
-          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
-            <path fillRule="evenodd" d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1z" clipRule="evenodd" />
-          </svg>
-        </button>
-        <h1 className="text-lg font-semibold">
-          {selectedUser ? selectedUser.name : 'Chat'}
-        </h1>
-        <div className="w-8"></div>
-      </div>
-
-      <div className={`${showUserList ? 'flex' : 'hidden'} md:flex w-full md:w-80 border-r border-gray-200 bg-white flex-shrink-0 absolute md:relative z-10 h-full md:h-auto`}>
-        <UserList
-          searchTerm={searchTerm}
-          onSearchChange={setSearchTerm}
-          selectedUser={selectedUser}
-          onUserSelect={handleUserSelect}
-          onlineUsers={onlineUsers}
-          onCloseMobile={() => setShowUserList(false)}
-        />
-      </div>
-
-      <div className="flex-1 flex flex-col min-w-0 h-full">
-        {selectedUser ? (
-          <ChatWindow
-            selectedUser={selectedUser}
-            messages={getCurrentChatMessages()}
-            onSendMessage={sendMessage}
-            onEditMessage={handleEditMessage}
-            onDeleteMessage={handleDeleteMessage}
-            onExitChat={() => {
-              setSelectedUser(null);
-              setCurrentChat(null);
-              if (window.innerWidth < 768) {
-                setShowUserList(true);
-              }
-            }}
-            onTyping={handleTyping}
-            typingUsers={getCurrentTypingUsers()}
-            messagesEndRef={messagesEndRef}
-            onBackToUsers={toggleUserList}
-          />
-        ) : (
-          <div className="flex-1 flex items-center justify-center text-gray-500 bg-gray-50">
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="text-center p-4"
-            >
-              <div className="w-24 h-24 md:w-32 md:h-32 bg-gradient-to-br from-blue-100 to-green-100 rounded-full flex items-center justify-center mb-4 md:mb-6 mx-auto">
-                <span className="text-4xl md:text-6xl">💬</span>
-              </div>
-              <h3 className="text-lg md:text-xl font-semibold mb-2 md:mb-3 text-gray-700">
-                {currentUser?.role === 'admin' ? 'Admin Chat Panel' : 'Employee Communication'}
-              </h3>
-              <p className="text-sm md:text-base text-gray-500 max-w-xs md:max-w-sm leading-relaxed">
-                Select a contact from the sidebar to start a conversation.
-                <br />
-                Stay connected with your team through instant messaging.
-              </p>
-            </motion.div>
+    <div className="flex h-full bg-white rounded-lg shadow-sm overflow-hidden">
+      {/* Contact List Sidebar */}
+      <div className="w-80 border-r bg-gray-50 flex flex-col">
+        <div className="p-4 border-b">
+          <h3 className="font-semibold text-gray-700 mb-2">Chats</h3>
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <Input
+              placeholder="Search contacts..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9 h-9 text-sm rounded-full"
+            />
           </div>
-        )}
+        </div>
+        <ScrollArea className="flex-1">
+          <div className="p-2 space-y-1">
+            {/* Global Group */}
+            <button
+              onClick={() => setActiveContactId('global')}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                activeContactId === 'global'
+                  ? 'bg-blue-100 text-blue-700'
+                  : 'hover:bg-gray-100 text-gray-700'
+              }`}
+            >
+              <Users className="h-5 w-5" />
+              <div className="flex-1 text-left">
+                <p className="text-sm font-medium">Company Group</p>
+                <p className="text-xs text-gray-500">All employees & admins</p>
+              </div>
+            </button>
+            {/* Individual Contacts */}
+            {filteredContacts.map(contact => (
+              <button
+                key={contact.id}
+                onClick={() => setActiveContactId(contact.id)}
+                className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
+                  activeContactId === contact.id
+                    ? 'bg-blue-100 text-blue-700'
+                    : 'hover:bg-gray-100 text-gray-700'
+                }`}
+              >
+                <div className="relative">
+                  <Avatar className="h-9 w-9">
+                    <AvatarFallback className="bg-gray-200 text-gray-700 text-sm">
+                      {contact.name.charAt(0).toUpperCase()}
+                    </AvatarFallback>
+                  </Avatar>
+                  {onlineUsers.has(contact.id) && (
+                    <span className="absolute bottom-0 right-0 w-2.5 h-2.5 bg-green-500 rounded-full border-2 border-white" />
+                  )}
+                </div>
+                <div className="flex-1 text-left">
+                  <p className="text-sm font-medium">{contact.name}</p>
+                  <p className="text-xs text-gray-500">{contact.department || contact.role || 'Employee'}</p>
+                </div>
+              </button>
+            ))}
+          </div>
+        </ScrollArea>
       </div>
+
+      {/* Chat Area */}
+      {activeContactId ? (
+        <div className="flex-1 flex flex-col">
+          <div className="p-3 border-b bg-white flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h2 className="font-semibold">
+                {activeContactId === 'global'
+                  ? 'Company Group'
+                  : contacts.find(c => c.id === activeContactId)?.name || 'Chat'}
+              </h2>
+              {Object.keys(typingUsers).length > 0 && (
+                <Badge variant="outline" className="text-xs animate-pulse">
+                  {Object.keys(typingUsers).length} typing...
+                </Badge>
+              )}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button variant="ghost" size="icon" onClick={triggerFileUpload} disabled={uploading}>
+                <Paperclip className="h-4 w-4" />
+              </Button>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleFileSelect}
+                className="hidden"
+                accept="image/*,video/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
+              />
+            </div>
+          </div>
+
+          <ScrollArea className="flex-1 p-4">
+            <div className="space-y-3">
+              {messages.map(msg => (
+                <div
+                  key={msg.id}
+                  className={`flex ${msg.senderId === currentUserId ? 'justify-end' : 'justify-start'}`}
+                >
+                  <div className={`max-w-[70%] flex gap-2 ${msg.senderId === currentUserId ? 'flex-row-reverse' : ''}`}>
+                    {msg.senderId !== currentUserId && (
+                      <Avatar className="h-7 w-7">
+                        <AvatarFallback className="bg-gray-200 text-gray-700 text-xs">
+                          {getSenderInitials(msg.senderName)}
+                        </AvatarFallback>
+                      </Avatar>
+                    )}
+                    <div>
+                      <div
+                        className={`rounded-lg px-3 py-2 ${
+                          msg.senderId === currentUserId
+                            ? 'bg-blue-600 text-white'
+                            : 'bg-gray-100 text-gray-800'
+                        }`}
+                      >
+                        {msg.fileUrl ? (
+                          msg.fileType?.startsWith('image/') ? (
+                            <img src={msg.fileUrl} alt="attachment" className="max-w-[200px] rounded" />
+                          ) : msg.fileType?.startsWith('video/') ? (
+                            <video src={msg.fileUrl} controls className="max-w-[200px] rounded" />
+                          ) : (
+                            <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="underline flex items-center gap-1">
+                              <FileText className="h-4 w-4" /> {msg.fileName}
+                            </a>
+                          )
+                        ) : (
+                          <p className="text-sm break-words">{msg.text}</p>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 mt-1 text-xs text-gray-400">
+                        <span>{formatDistanceToNow(msg.timestamp, { addSuffix: true })}</span>
+                        {msg.senderId === currentUserId && (
+                          <span>
+                            {msg.readBy && Object.keys(msg.readBy).length > 1 ? (
+                              <CheckCheck className="h-3 w-3" />
+                            ) : (
+                              <Clock className="h-3 w-3" />
+                            )}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {uploading && (
+                <div className="flex justify-end">
+                  <div className="bg-gray-200 rounded-lg px-3 py-2 text-sm text-gray-500">Uploading...</div>
+                </div>
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+          </ScrollArea>
+
+          <div className="p-3 border-t bg-white">
+            <div className="flex gap-2">
+              <Input
+                value={inputText}
+                onChange={(e) => setInputText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendMessage(inputText);
+                  }
+                }}
+                onInput={handleTyping}
+                placeholder="Type a message..."
+                className="flex-1"
+              />
+              <Button onClick={() => sendMessage(inputText)} disabled={!inputText.trim() && !uploading}>
+                <Send className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="flex-1 flex items-center justify-center text-gray-400">
+          Select a contact to start chatting
+        </div>
+      )}
     </div>
   );
 };
