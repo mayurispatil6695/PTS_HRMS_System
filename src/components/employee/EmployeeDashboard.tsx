@@ -17,6 +17,9 @@ import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
 import { WorkSessionProvider } from '../../contexts/WorkSessionContext';
 import NotificationSystem from '../ui/NotificationSystem';
+import EmployeeReview from './EmployeeReview';
+import EmployeeGoalSetting from './EmployeeGoalSetting';
+import { TrendingUp } from 'lucide-react';
 
 const EmployeeDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -85,6 +88,8 @@ const EmployeeDashboard = () => {
                 <Route path="/reports" element={<EmployeeReports />} />
                 <Route path="/chat" element={<EmployeeChat />} />
                 <Route path="/mytask" element={<MyTask />} />
+                <Route path="/review" element={<EmployeeReview />} />
+                <Route path="employee/goals" element={<EmployeeGoalSetting />} />
               </Routes>
             </WorkSessionProvider>
           </div>

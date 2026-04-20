@@ -10,7 +10,7 @@ import {
   Users,
   FileText,
   X,
-  Building2
+  Building2,Star,
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useAuth } from '../../hooks/useAuth';
@@ -30,6 +30,7 @@ const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = fal
     { icon: CheckSquare, label: 'Tasks', path: '/manager/tasks' },
     { icon: Clock, label: 'Attendance', path: '/manager/attendance' },
     { icon: Calendar, label: 'Leaves', path: '/manager/leaves' },
+    { icon: Star, label: 'Team Performance Reviews', path: '/manager/reviews' },
     { icon: Users, label: 'Employees', path: '/manager/employees' },
     { icon: FileText, label: 'Reports', path: '/manager/reports' },
   ];

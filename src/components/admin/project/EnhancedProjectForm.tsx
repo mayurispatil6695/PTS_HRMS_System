@@ -13,7 +13,6 @@ import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { toast } from '../../ui/use-toast';
 
-
 interface Employee {
   id: string;
   name: string;
@@ -33,6 +32,7 @@ interface Task {
   status: string;
   createdAt: string;
   employeeName?: string;
+  dependsOn?: string[];   // ✅ added
 }
 
 interface Subtask {
@@ -129,7 +129,8 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     description: '',
     assignedTo: '',
     priority: 'medium' as 'low' | 'medium' | 'high',
-    dueDate: ''
+    dueDate: '',
+    dependsOn: [] as string[]   // ✅ added
   });
 
   const [formData, setFormData] = useState<ProjectFormData>({
@@ -229,12 +230,17 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     if (!newTask.title || !newTask.assignedTo || !newTask.dueDate) return;
     const task: Task = {
       id: Date.now().toString(),
-      ...newTask,
+      title: newTask.title,
+      description: newTask.description,
+      assignedTo: newTask.assignedTo,
+      priority: newTask.priority,
+      dueDate: newTask.dueDate,
       status: 'todo',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      dependsOn: newTask.dependsOn   // ✅ save dependencies
     };
     setFormData(prev => ({ ...prev, tasks: [...prev.tasks, task] }));
-    setNewTask({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '' });
+    setNewTask({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '', dependsOn: [] });
   };
 
   const removeTask = (taskId: string) => {
@@ -315,23 +321,23 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
 
       await set(ref(database, `projects/${projectId}`), projectData);
 
-// After projectData is saved
-const employeesToNotify = [...formData.assignedEmployees];
-if (formData.assignedTeamLeader && !employeesToNotify.includes(formData.assignedTeamLeader)) {
-  employeesToNotify.push(formData.assignedTeamLeader);
-}
+      // After projectData is saved
+      const employeesToNotify = [...formData.assignedEmployees];
+      if (formData.assignedTeamLeader && !employeesToNotify.includes(formData.assignedTeamLeader)) {
+        employeesToNotify.push(formData.assignedTeamLeader);
+      }
 
-for (const empId of employeesToNotify) {
-  const notifRef = push(ref(database, `notifications/${empId}`));
-  await set(notifRef, {
-    title: 'New Project Assigned',
-    body: `You have been added to project: ${formData.name}`,
-    type: 'project_assigned',
-    read: false,
-    createdAt: Date.now(),
-    projectId: projectId,
-  });
-}
+      for (const empId of employeesToNotify) {
+        const notifRef = push(ref(database, `notifications/${empId}`));
+        await set(notifRef, {
+          title: 'New Project Assigned',
+          body: `You have been added to project: ${formData.name}`,
+          type: 'project_assigned',
+          read: false,
+          createdAt: Date.now(),
+          projectId: projectId,
+        });
+      }
 
       // Assign to employees (for their personal dashboards)
       const employeesToAssign = [...(formData.assignedTeamLeader ? [formData.assignedTeamLeader] : []), ...formData.assignedEmployees];
@@ -420,31 +426,101 @@ for (const empId of employeesToNotify) {
               ))}
             </div>
           </div>
-          <div className="border-t pt-4"><Label className="text-lg">Tasks</Label>
+          
+          {/* TASKS SECTION WITH DEPENDENCIES */}
+          <div className="border-t pt-4">
+            <Label className="text-lg">Tasks</Label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-gray-50 rounded">
               <Input placeholder="Task title" value={newTask.title} onChange={e => setNewTask({...newTask, title: e.target.value})} />
               <Input type="date" value={newTask.dueDate} onChange={e => setNewTask({...newTask, dueDate: e.target.value})} />
               <Select value={newTask.assignedTo} onValueChange={val => setNewTask({...newTask, assignedTo: val})}>
                 <SelectTrigger><SelectValue placeholder="Assign to" /></SelectTrigger>
-                <SelectContent>{formData.assignedEmployees.map(eid => { const emp = employees.find(e => e.id === eid); return emp ? <SelectItem key={eid} value={eid}>{emp.name}</SelectItem> : null; })}</SelectContent>
+                <SelectContent>
+                  {formData.assignedEmployees.map(eid => {
+                    const emp = employees.find(e => e.id === eid);
+                    return emp ? <SelectItem key={eid} value={eid}>{emp.name}</SelectItem> : null;
+                  })}
+                </SelectContent>
               </Select>
               <Select value={newTask.priority} onValueChange={val => setNewTask({...newTask, priority: val as 'low' | 'medium' | 'high'})}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent>
               </Select>
-              <div className="md:col-span-2"><Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})} /></div>
-              <Button type="button" onClick={addTask} disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate}><Plus className="h-4 w-4" /> Add Task</Button>
+
+              {/* ✅ DEPENDENCIES MULTI-SELECT (spans both columns) */}
+              <div className="md:col-span-2">
+                <Label className="text-sm">Depends on (optional)</Label>
+                <div className="border rounded-md p-2 max-h-32 overflow-y-auto space-y-1 mt-1">
+                  {formData.tasks.length === 0 ? (
+                    <p className="text-xs text-gray-400">No tasks added yet</p>
+                  ) : (
+                    formData.tasks.map(t => (
+                      <label key={t.id} className="flex items-center gap-2 text-sm">
+                        <input
+                          type="checkbox"
+                          checked={newTask.dependsOn.includes(t.id)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setNewTask({...newTask, dependsOn: [...newTask.dependsOn, t.id]});
+                            } else {
+                              setNewTask({...newTask, dependsOn: newTask.dependsOn.filter(id => id !== t.id)});
+                            }
+                          }}
+                        />
+                        {t.title}
+                      </label>
+                    ))
+                  )}
+                </div>
+                {newTask.dependsOn.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {newTask.dependsOn.map(depId => {
+                      const depTask = formData.tasks.find(t => t.id === depId);
+                      return (
+                        <Badge key={depId} variant="secondary" className="text-xs">
+                          {depTask?.title || depId}
+                          <button
+                            className="ml-1 text-red-500 hover:text-red-700"
+                            onClick={() => setNewTask({...newTask, dependsOn: newTask.dependsOn.filter(id => id !== depId)})}
+                          >
+                            ×
+                          </button>
+                        </Badge>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              <div className="md:col-span-2">
+                <Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})} />
+              </div>
+              <Button type="button" onClick={addTask} disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate} className="md:col-span-2">
+                <Plus className="h-4 w-4 mr-1" /> Add Task
+              </Button>
             </div>
+
+            {/* List of added tasks with dependency display */}
             {formData.tasks.map(task => {
               const emp = employees.find(e => e.id === task.assignedTo);
+              const dependsOnTasks = task.dependsOn?.map(depId => formData.tasks.find(t => t.id === depId)?.title).filter(Boolean).join(', ');
               return (
-                <div key={task.id} className="flex justify-between items-center border p-2 mt-2 rounded">
-                  <div><span className="font-medium">{task.title}</span> – {emp?.name}<br /><span className="text-xs">Due: {task.dueDate}</span></div>
+                <div key={task.id} className="flex justify-between items-start border p-2 mt-2 rounded">
+                  <div>
+                    <span className="font-medium">{task.title}</span> – {emp?.name}<br />
+                    <span className="text-xs">Due: {task.dueDate}</span>
+                    {dependsOnTasks && (
+                      <div className="text-xs text-gray-500 mt-1">
+                        ⚠️ Depends on: {dependsOnTasks}
+                      </div>
+                    )}
+                  </div>
                   <Button variant="ghost" size="sm" onClick={() => removeTask(task.id)}><X className="h-4 w-4" /></Button>
                 </div>
               );
             })}
           </div>
+
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={onCancel}>Cancel</Button>
             <Button type="submit">Create Project</Button>

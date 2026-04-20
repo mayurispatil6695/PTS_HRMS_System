@@ -15,6 +15,10 @@ import { ref, onValue, off, remove } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
+import ProjectChat from './project/ProjectChat';
+import ProjectCalendar from './project/ProjectCalendar';
+import SprintBoard from './project/SprintBoard';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 
 // Employee interface
 interface Employee {
@@ -47,7 +51,7 @@ interface FirebaseProjectData {
   createdBy?: string;
   tasks?: Record<string, unknown>;
   progress?: number;
-  clientId?: string; // optional for client filtering
+  clientId?: string;
 }
 
 // Project interface for the component
@@ -92,17 +96,16 @@ interface ProjectManagementProps {
   role?: 'admin' | 'team_manager' | 'team_leader' | 'client' | 'employee';
   userId?: string;
   readOnly?: boolean;
-  department?: string; // for manager filtering
+  department?: string;
 }
 
-const ProjectManagement: React.FC<ProjectManagementProps> = ({ 
-  role: propRole, 
-  userId: propUserId, 
+const ProjectManagement: React.FC<ProjectManagementProps> = ({
+  role: propRole,
+  userId: propUserId,
   readOnly = false,
-  department: propDepartment 
+  department: propDepartment
 }) => {
   const { user: authUser } = useAuth();
-  // Determine effective role and userId: use props if provided, else from auth
   const effectiveRole = propRole || authUser?.role || 'employee';
   const effectiveUserId = propUserId || authUser?.id || '';
   const effectiveDepartment = propDepartment || authUser?.department || '';
@@ -112,18 +115,26 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline'>('kanban');
+  const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline' | 'calendar' | 'sprint'>('kanban');
 
   const isAdmin = effectiveRole === 'admin';
   const isTeamManager = effectiveRole === 'team_manager';
   const isTeamLeader = effectiveRole === 'team_leader';
   const isClient = effectiveRole === 'client';
-  const isEmployee = effectiveRole === 'employee';
 
   const [adminNames, setAdminNames] = useState<Record<string, string>>({});
   const [globalEmployees, setGlobalEmployees] = useState<Employee[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
 
-  // Fetch admin names from users node
+  // Helper: enrich tasks with employee names
+  const enrichTasksWithNames = (tasks: Record<string, any>) => {
+    return Object.values(tasks).map((task: any) => ({
+      ...task,
+      assignedToName: globalEmployees.find(e => e.id === task.assignedTo)?.name || 'Unassigned'
+    }));
+  };
+
+  // Fetch admin names
   useEffect(() => {
     const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
@@ -141,7 +152,7 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     return () => off(usersRef);
   }, []);
 
-  // Fetch all employees (non‑admin) globally
+  // Fetch all employees (non‑admin)
   useEffect(() => {
     const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
@@ -165,7 +176,25 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     return () => off(usersRef);
   }, []);
 
-  // Fetch projects from the global `/projects` node
+  // allTasks memo (used for some views)
+  const allTasks = useMemo(() => {
+    const tasksList: any[] = [];
+    projects.forEach(project => {
+      if (project.tasks) {
+        Object.values(project.tasks).forEach((task: any) => {
+          tasksList.push({
+            ...task,
+            projectId: project.id,
+            projectName: project.name,
+            assignedToName: globalEmployees.find(e => e.id === task.assignedTo)?.name || 'Unassigned',
+          });
+        });
+      }
+    });
+    return tasksList;
+  }, [projects, globalEmployees]);
+
+  // Fetch projects from Firebase
   useEffect(() => {
     if (!effectiveUserId) return;
 
@@ -206,7 +235,6 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
 
           let filteredProjects: Project[] = [];
 
-          // Role-based filtering
           if (isAdmin) {
             filteredProjects = allProjects;
           } else if (isTeamManager && effectiveDepartment) {
@@ -216,7 +244,6 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
           } else if (isClient) {
             filteredProjects = allProjects.filter(p => p.clientId === effectiveUserId);
           } else {
-            // Employee (default) – show only projects they are assigned to
             filteredProjects = allProjects.filter(p => p.assignedEmployees?.includes(effectiveUserId));
           }
 
@@ -348,25 +375,43 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                     : 0;
 
                   return (
-                    <div key={project.id} className="mb-8 border rounded-lg p-4">
-                      <h3 className="text-lg font-semibold mb-2">{project.name}</h3>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span>Overall Progress</span>
-                        <span>{projectProgress}%</span>
-                      </div>
-                      <div className="w-full bg-gray-200 rounded-full h-2.5 mb-4">
-                        <div className="bg-blue-600 h-2.5 rounded-full" style={{ width: `${projectProgress}%` }}></div>
-                      </div>
+                    <div key={project.id} className="border rounded-lg p-4">
+                      <h3 className="text-lg font-bold mb-2">{project.name}</h3>
+
+                      {/* Views */}
                       {displayMode === 'kanban' && (
-                        <KanbanBoard
-                          projects={[project]}
-                          employees={globalEmployees}
-                          onTaskClick={(task) => alert(`Task: ${task.title}\nStatus: ${task.status}\nPriority: ${task.priority}\nAssigned to: ${task.assignedTo || 'Unassigned'}`)}
+                        <KanbanBoard projects={[project]} employees={globalEmployees} readOnly={readOnly} />
+                      )}
+                      {displayMode === 'list' && (
+                        <ListView projects={[project]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)}  />
+                      )}
+                      {displayMode === 'timeline' && (
+                        <TimelineView projects={[project]} readOnly={readOnly} />
+                      )}
+                      {displayMode === 'calendar' && (
+                        <ProjectCalendar
+                          tasks={enrichTasksWithNames(project.tasks || {})}
+                          projectId={project.id}
                           readOnly={readOnly}
                         />
                       )}
-                      {displayMode === 'list' && <ListView projects={[project]} employees={globalEmployees} readOnly={readOnly} />}
-                      {displayMode === 'timeline' && <TimelineView projects={[project]} readOnly={readOnly} />}
+                      {displayMode === 'sprint' && (
+                        <SprintBoard
+                          tasks={enrichTasksWithNames(project.tasks || {})}
+                          projectId={project.id}
+                          readOnly={readOnly}
+                        />
+                      )}
+
+                      {/* Team Chat */}
+                      <Collapsible>
+                        <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">
+                          💬 Team Chat
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="pt-2">
+                          <ProjectChat projectId={project.id} />
+                        </CollapsibleContent>
+                      </Collapsible>
                     </div>
                   );
                 })}
@@ -392,12 +437,12 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
             {isAdmin
               ? `Viewing all projects across the organization (${projects.length} total projects)`
               : isTeamManager
-              ? `Managing projects for ${effectiveDepartment} department`
-              : isTeamLeader
-              ? 'Managing your team projects'
-              : isClient
-              ? 'Viewing your assigned projects'
-              : 'Create and manage your projects'}
+                ? `Managing projects for ${effectiveDepartment} department`
+                : isTeamLeader
+                  ? 'Managing your team projects'
+                  : isClient
+                    ? 'Viewing your assigned projects'
+                    : 'Create and manage your projects'}
           </p>
         </div>
 
@@ -424,6 +469,20 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
               onClick={() => setDisplayMode('timeline')}
             >
               <Calendar className="h-4 w-4 mr-1" /> Timeline
+            </Button>
+            <Button
+              variant={displayMode === 'calendar' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDisplayMode('calendar')}
+            >
+              <Calendar className="h-4 w-4 mr-1" /> Calendar
+            </Button>
+            <Button
+              variant={displayMode === 'sprint' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => setDisplayMode('sprint')}
+            >
+              <LayoutGrid className="h-4 w-4 mr-1" /> Sprint
             </Button>
           </div>
 
@@ -486,12 +545,12 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                 {isAdmin
                   ? 'No projects have been created yet'
                   : isTeamManager
-                  ? 'No projects found for your department'
-                  : isTeamLeader
-                  ? 'No projects assigned to your team'
-                  : isClient
-                  ? 'No projects assigned to you'
-                  : 'Get started by creating your first project'}
+                    ? 'No projects found for your department'
+                    : isTeamLeader
+                      ? 'No projects assigned to your team'
+                      : isClient
+                        ? 'No projects assigned to you'
+                        : 'Get started by creating your first project'}
               </p>
               {canCreate && (
                 <Button onClick={() => setShowAddForm(true)}>
@@ -502,12 +561,53 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
             </div>
           ) : isAdmin ? (
             renderAdminView()
-          ) : displayMode === 'kanban' ? (
-            <KanbanBoard projects={projects} employees={globalEmployees} readOnly={readOnly} />
-          ) : displayMode === 'list' ? (
-            <ListView projects={projects} employees={globalEmployees} readOnly={readOnly} />
           ) : (
-            <TimelineView projects={projects} readOnly={readOnly} />
+            <div className="space-y-6">
+              {projects.map(project => (
+                <div key={project.id} className="border rounded-lg p-4">
+                  <h3 className="text-lg font-bold mb-2">{project.name}</h3>
+
+                  {displayMode === 'kanban' && (
+                    <KanbanBoard projects={[project]} employees={globalEmployees} readOnly={readOnly} />
+                  )}
+                  {displayMode === 'list' && (
+                    <ListView
+                      projects={[project]}
+                      employees={globalEmployees}
+                      readOnly={readOnly}
+                      onTaskUpdate={() => setRefreshKey(prev => prev + 1)}  // ✅ add this
+                    />
+                  )}
+                  {displayMode === 'timeline' && (
+                    <TimelineView projects={[project]} readOnly={readOnly} />
+                  )}
+                  {displayMode === 'calendar' && (
+                    <ProjectCalendar
+                      tasks={enrichTasksWithNames(project.tasks || {})}
+                      projectId={project.id}
+                      readOnly={readOnly}
+                    />
+                  )}
+                  {displayMode === 'sprint' && (
+                    <SprintBoard
+                      tasks={enrichTasksWithNames(project.tasks || {})}
+                      projectId={project.id}
+                      readOnly={readOnly}
+                    />
+                  )}
+
+                  {/* Team Chat */}
+                  <Collapsible>
+                    <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">
+                      💬 Team Chat
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-2">
+                      <ProjectChat projectId={project.id} />
+                    </CollapsibleContent>
+                  </Collapsible>
+                </div>
+              ))}
+            </div>
           )}
         </CardContent>
       </Card>

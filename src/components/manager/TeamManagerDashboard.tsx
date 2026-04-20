@@ -8,7 +8,7 @@ import { useAuth } from '../../hooks/useAuth';
 import ManagerSidebar from './TeamManagerSidebar';
 import ProjectManagement from '../admin/ProjectManagement';
 import DailyTaskEmployee from '../admin/DailyTaskEmployee';
-
+import ManagerReviews from './ManagerReviews';
 const TeamManagerDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -62,6 +62,7 @@ const TeamManagerDashboard = () => {
               } />
               <Route path="/projects" element={<ProjectManagement role="team_manager" userId={user?.id} department={user?.department} />} />
               <Route path="/tasks" element={<DailyTaskEmployee role="team_manager" userId={user?.id} department={user?.department} />} />
+              <Route path="/reviews" element={<ManagerReviews />} />
             </Routes>
           </div>
         </main>

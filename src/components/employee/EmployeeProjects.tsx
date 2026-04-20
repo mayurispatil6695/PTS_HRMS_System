@@ -1,7 +1,5 @@
-// EmployeeProjects.tsx – with task dependencies and fixed toast
+// EmployeeProjects.tsx – Fully corrected version
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import ReactQuill from 'react-quill';
-import 'react-quill/dist/quill.snow.css';
 import { motion } from 'framer-motion';
 import {
   FolderOpen, Calendar, Target, MessageSquare,
@@ -19,6 +17,12 @@ import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject }
 import { toast } from 'react-hot-toast';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
+import { Label } from '../ui/label';
+import { Input } from '../ui/input';
+import ProjectChat from '../admin/project/ProjectChat';
+import { Sparkles } from 'lucide-react';
+import { getTaskSuggestions } from '@/services/aiServices';
 
 type ChangeValue = string | number | boolean | null;
 
@@ -119,30 +123,19 @@ const EmployeeProjects = () => {
   const [newTaskStatus, setNewTaskStatus] = useState<string>('');
   const [taskComment, setTaskComment] = useState<string>('');
   const [uploadingAttachments, setUploadingAttachments] = useState<Record<string, boolean>>({});
-  const [showMention, setShowMention] = useState(false);
-  const [mentionFilter, setMentionFilter] = useState('');
-  const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 });
-  const quillRef = useRef<any>(null);
-  const mentionDropdownRef = useRef<HTMLDivElement>(null);
   const [isManager, setIsManager] = useState(false);
   const [runningTimer, setRunningTimer] = useState<{ projectId: string; taskId: string; logId: string; startTime: number } | null>(null);
   const [timerElapsed, setTimerElapsed] = useState(0);
   const timerIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const quillModules = {
-    toolbar: [
-      ['bold', 'italic', 'underline'],
-      [{ list: 'ordered' }, { list: 'bullet' }],
-      ['link', 'clean']
-    ]
-  };
+  // Manual time log modal state
+  const [showManualLogModal, setShowManualLogModal] = useState(false);
+  const [manualLogTask, setManualLogTask] = useState<Task | null>(null);
+  const [manualHours, setManualHours] = useState(0);
+  const [manualMinutes, setManualMinutes] = useState(0);
+  const [manualNote, setManualNote] = useState('');
 
   const employeesList = useMemo(() => Object.values(employees).map(emp => ({ id: emp.id, name: emp.name })), [employees]);
-
-  const filteredEmployees = useMemo(() => {
-    if (!mentionFilter) return employeesList;
-    return employeesList.filter(emp => emp.name.toLowerCase().includes(mentionFilter.toLowerCase()));
-  }, [employeesList, mentionFilter]);
 
   const formatDuration = (ms: number) => {
     if (!ms) return '0m';
@@ -151,13 +144,25 @@ const EmployeeProjects = () => {
     return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
   };
 
+  // ✅ FIXED: Single startTimer function with all checks
   const startTimer = async (projectId: string, taskId: string) => {
-    if (runningTimer) return;
+    if (runningTimer) {
+      toast.error('Stop current timer first');
+      return;
+    }
+    if (!taskId || taskId === 'undefined' || taskId === 'null') {
+      toast.error('Invalid task – cannot start timer');
+      console.error('startTimer called with invalid taskId:', taskId);
+      return;
+    }
+    if (!user?.id) return;
+
     const logId = Date.now().toString();
     const logRef = ref(database, `projects/${projectId}/tasks/${taskId}/timeLogs/${logId}`);
+
     await set(logRef, {
-      employeeId: user?.id,
-      employeeName: user?.name,
+      employeeId: user.id,
+      employeeName: user.name,
       startTime: Date.now(),
       endTime: null,
       durationMs: 0,
@@ -165,10 +170,15 @@ const EmployeeProjects = () => {
       loggedAt: Date.now(),
       isRunning: true
     });
+
     setRunningTimer({ projectId, taskId, logId, startTime: Date.now() });
     setTimerElapsed(0);
     if (timerIntervalRef.current) clearInterval(timerIntervalRef.current);
-    timerIntervalRef.current = setInterval(() => setTimerElapsed(prev => prev + 1000), 1000);
+    timerIntervalRef.current = setInterval(() => {
+      setTimerElapsed(prev => prev + 1000);
+    }, 1000);
+
+    toast.success('Timer started');
   };
 
   const stopTimer = async () => {
@@ -186,79 +196,63 @@ const EmployeeProjects = () => {
     toast.success(`Logged ${Math.round(duration / 60000)} minutes`);
   };
 
-  const openManualLogModal = (task: Task) => toast.error('Manual time log coming soon');
+  // Add this after the `stopTimer` function and before `updateTaskStatus`
 
-  const insertMention = (employeeName: string) => {
-    if (!quillRef.current) return;
-    const editor = quillRef.current.getEditor();
-    const selection = editor.getSelection();
-    if (!selection) return;
-    const cursorPos = selection.index;
-    const textBeforeCursor = editor.getText(0, cursorPos);
-    const lastAtIndex = textBeforeCursor.lastIndexOf('@');
-    if (lastAtIndex !== -1) {
-      editor.deleteText(lastAtIndex, cursorPos - lastAtIndex);
-      editor.insertText(lastAtIndex, `@${employeeName} `);
-      editor.setSelection(lastAtIndex + employeeName.length + 2);
-    }
-    setShowMention(false);
-    setMentionFilter('');
-  };
-
-  const handleEditorChange = (content: string, delta: any, source: string, editor: any) => {
-    setTaskComment(content);
-    if (source !== 'user') return;
-    const selection = editor.getSelection();
-    if (!selection) { setShowMention(false); return; }
-    const cursorPos = selection.index;
-    const textBeforeCursor = editor.getText(0, cursorPos);
-    const match = textBeforeCursor.match(/@([\w\s]*)$/);
-    if (match) {
-      const filter = match[1];
-      setMentionFilter(filter);
-      setShowMention(true);
-      const bounds = editor.getBounds(cursorPos - filter.length - 1, 1);
-      const editorElement = document.querySelector('.ql-editor');
-      if (editorElement) {
-        const editorRect = editorElement.getBoundingClientRect();
-        setMentionPosition({
-          top: bounds.top - editorRect.top + bounds.height + 5,
-          left: bounds.left - editorRect.left
-        });
+  const sendTeamNotification = async (project: Project, task: Task, completedBy: string) => {
+    const teamMemberIds = [...(project.assignedEmployees || []), project.assignedTeamLeader].filter(Boolean);
+    for (const memberId of teamMemberIds) {
+      const notifRef = push(ref(database, `notifications/${memberId}`));
+      await set(notifRef, {
+        title: 'Task Completed ✅',
+        body: `${completedBy} completed "${task.title}" in project ${project.name}`,
+        type: 'task_completed',
+        read: false,
+        createdAt: Date.now(),
+        taskId: task.id,
+        projectId: project.id,
+      });
+      // Browser notification (if permission granted)
+      if (Notification.permission === 'granted') {
+        new Notification('Task Completed', { body: `${completedBy} completed "${task.title}"` });
       }
-    } else {
-      setShowMention(false);
     }
   };
 
-  useEffect(() => {
-    const handleClickOutside = (e: MouseEvent) => {
-      if (mentionDropdownRef.current && !mentionDropdownRef.current.contains(e.target as Node)) setShowMention(false);
-    };
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
+  // ✅ IMPLEMENTED: Manual time log modal
+  const openManualLogModal = (task: Task) => {
+    setManualLogTask(task);
+    setManualHours(0);
+    setManualMinutes(0);
+    setManualNote('');
+    setShowManualLogModal(true);
+  };
 
-  useEffect(() => {
-    return () => { if (timerIntervalRef.current) clearInterval(timerIntervalRef.current); };
-  }, []);
-
-  useEffect(() => {
-    if (!user?.adminUid || !user?.id) return;
-    const employeeRef = ref(database, `users/${user.adminUid}/employees/${user.id}`);
-    const unsubscribe = onValue(employeeRef, (snapshot) => {
-      const data = snapshot.val();
-      setIsTeamLead(data?.role === 'team_leader');
-      setIsManager(data?.role === 'team_manager');
+  const saveManualLog = async () => {
+    if (!manualLogTask || !user?.id) return;
+    const durationMs = (manualHours * 60 + manualMinutes) * 60 * 1000;
+    if (durationMs <= 0) {
+      toast.error('Please enter a positive duration');
+      return;
+    }
+    const logId = Date.now().toString();
+    const logRef = ref(database, `projects/${manualLogTask.projectId}/tasks/${manualLogTask.id}/timeLogs/${logId}`);
+    await set(logRef, {
+      employeeId: user.id,
+      employeeName: user.name,
+      startTime: Date.now() - durationMs,
+      endTime: Date.now(),
+      durationMs,
+      note: manualNote,
+      loggedAt: Date.now(),
+      isRunning: false,
     });
-    return () => unsubscribe();
-  }, [user]);
-
-  const extractMentions = (text: string): string[] => {
-    const mentionRegex = /@([^@\s]+(?: [^@\s]+)*)/g;
-    const matches = text.matchAll(mentionRegex);
-    const mentionedNames = [...matches].map(m => m[1]);
-    return employeesList.filter(emp => mentionedNames.includes(emp.name)).map(emp => emp.id);
+    const taskRef = ref(database, `projects/${manualLogTask.projectId}/tasks/${manualLogTask.id}`);
+    await update(taskRef, { totalTimeSpentMs: increment(durationMs) });
+    toast.success(`Logged ${manualHours}h ${manualMinutes}m manually`);
+    setShowManualLogModal(false);
+    // Refresh local state by re-fetching projects (or update optimistically)
+    // For simplicity, we'll just refetch – but you can update local state directly.
+    window.location.reload(); // Or better: refetch projects data
   };
 
   const uploadAttachment = async (projectId: string, taskId: string, file: File) => {
@@ -342,18 +336,17 @@ const EmployeeProjects = () => {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   };
 
-  // Determine if user is team lead (legacy) – we now use role, but keep for compatibility
   useEffect(() => {
     if (!user?.adminUid || !user?.id) return;
     const employeeRef = ref(database, `users/${user.adminUid}/employees/${user.id}`);
     const unsubscribe = onValue(employeeRef, (snapshot) => {
       const data = snapshot.val();
       setIsTeamLead(data?.role === 'team_leader');
+      setIsManager(data?.role === 'team_manager');
     });
     return () => unsubscribe();
   }, [user]);
 
-  // Load all employees
   useEffect(() => {
     if (!user?.adminUid) return;
     const employeesRef = ref(database, `users/${user.adminUid}/employees`);
@@ -364,7 +357,6 @@ const EmployeeProjects = () => {
     return () => unsubscribeEmployees();
   }, [user?.adminUid]);
 
-  // Fetch projects
   useEffect(() => {
     if (!user?.id) {
       setLoading(false);
@@ -404,6 +396,9 @@ const EmployeeProjects = () => {
           Object.entries(proj.tasks).forEach(([tid, task]) => {
             enhancedTasks[tid] = {
               ...task,
+              id: tid,
+              projectId: proj.id,
+              dependsOn: task.dependsOn || [],
               assignedToName: task.assignedTo && employees[task.assignedTo] ? employees[task.assignedTo].name : 'Unassigned',
             };
           });
@@ -425,9 +420,9 @@ const EmployeeProjects = () => {
     return () => unsubscribe();
   }, [user, isTeamLead, employees]);
 
-  // FIXED: updateTaskStatus with dependency check and fixed toast
-  const updateTaskStatus = async (projectId: string, taskId: string) => {
-    if (!user?.id || !newTaskStatus) return;
+  // ✅ FIXED: updateTaskStatus – now uses fresh state and proper path
+  const updateTaskStatus = async (projectId: string, taskId: string, newStatus: string) => {
+    if (!user?.id || !newStatus) return;
 
     try {
       const project = projects.find(p => p.id === projectId);
@@ -438,38 +433,40 @@ const EmployeeProjects = () => {
       }
 
       // Check dependencies
-      if (task.dependsOn && task.dependsOn.length > 0) {
-        const dependencies = task.dependsOn;
-        const incompleteDeps: string[] = [];
+      // Replace your dependency check block with this:
 
-        for (const depId of dependencies) {
-          const depTask = project.tasks[depId];
+      if (task.dependsOn && task.dependsOn.length > 0) {
+        const incompleteDeps: string[] = [];
+        for (const depId of task.dependsOn) {
+          // Normalize ID (remove spaces, ensure string)
+          const normalizedId = String(depId).trim();
+          const depTask = project.tasks[normalizedId];
+          console.log(`Checking ${depId} -> found:`, depTask?.title, depTask?.status);
           if (depTask && depTask.status !== 'completed') {
             incompleteDeps.push(depTask.title || depId);
+          } else if (!depTask) {
+            console.warn(`Dependency task not found: ${depId}`);
           }
         }
-
         if (incompleteDeps.length > 0) {
-          toast.error(`Cannot update status. The following tasks must be completed first:\n${incompleteDeps.join(', ')}`);
+          toast.error(`Cannot update status. Complete: ${incompleteDeps.join(', ')}`);
           return;
         }
       }
 
-      // If the current status is already the same, do nothing
-      if (task.status === newTaskStatus) {
-        toast('Status is already set to this value');
+      if (task.status === newStatus) {
+        toast('Status already set to this value');
         setEditingTaskId(null);
         setNewTaskStatus('');
         return;
       }
 
-      // Proceed with update
       const timestamp = Date.now().toString();
       const isoTime = new Date().toISOString();
       const changes = [{
         field: 'status',
         oldValue: task.status,
-        newValue: newTaskStatus,
+        newValue: newStatus,
       }];
       const updateData: TaskUpdate = {
         timestamp: isoTime,
@@ -481,12 +478,33 @@ const EmployeeProjects = () => {
       };
 
       await update(ref(database, `projects/${projectId}/tasks/${taskId}`), {
-        status: newTaskStatus,
+        status: newStatus,
         updatedAt: new Date().toISOString(),
         [`updates/${timestamp}`]: updateData,
       });
+      // Send team notification if task is completed
+      if (newStatus === 'completed') {
+        await sendTeamNotification(project, task, user.name || 'Someone');
+      }
+      // Update local state
+      setProjects(prev =>
+        prev.map(p => {
+          if (p.id !== projectId) return p;
+          const updatedTasks = { ...p.tasks };
+          updatedTasks[taskId] = {
+            ...updatedTasks[taskId],
+            status: newStatus,
+            updatedAt: new Date().toISOString(),
+            updates: {
+              ...(updatedTasks[taskId].updates || {}),
+              [timestamp]: updateData,
+            },
+          };
+          return { ...p, tasks: updatedTasks };
+        })
+      );
 
-      // Notify admins and team lead (as before)
+      // Send notifications
       const taskTitle = task.title || 'a task';
       const adminNotifications: Promise<void>[] = [];
       const usersSnapshot = await get(ref(database, 'users'));
@@ -496,7 +514,7 @@ const EmployeeProjects = () => {
           const notifRef = push(ref(database, `notifications/${userSnap.key}`));
           adminNotifications.push(set(notifRef, {
             title: 'Task Status Updated',
-            body: `${user?.name} changed status of "${taskTitle}" (${project?.name}) to ${newTaskStatus}`,
+            body: `${user?.name} changed status of "${taskTitle}" (${project?.name}) to ${newStatus}`,
             type: 'task_update',
             read: false,
             createdAt: Date.now(),
@@ -509,7 +527,7 @@ const EmployeeProjects = () => {
         const notifRef = push(ref(database, `notifications/${project.assignedTeamLeader}`));
         adminNotifications.push(set(notifRef, {
           title: 'Task Status Updated',
-          body: `${user?.name} changed status of "${taskTitle}" to ${newTaskStatus}`,
+          body: `${user?.name} changed status of "${taskTitle}" to ${newStatus}`,
           type: 'task_update',
           read: false,
           createdAt: Date.now(),
@@ -518,23 +536,6 @@ const EmployeeProjects = () => {
         }));
       }
       await Promise.all(adminNotifications);
-
-      setProjects(prev =>
-        prev.map(p => {
-          if (p.id !== projectId) return p;
-          const updatedTasks = { ...p.tasks };
-          updatedTasks[taskId] = {
-            ...updatedTasks[taskId],
-            status: newTaskStatus,
-            updatedAt: new Date().toISOString(),
-            updates: {
-              ...(updatedTasks[taskId].updates || {}),
-              [timestamp]: updateData,
-            },
-          };
-          return { ...p, tasks: updatedTasks };
-        })
-      );
 
       toast.success('Task status updated');
       setEditingTaskId(null);
@@ -555,29 +556,17 @@ const EmployeeProjects = () => {
       const commentId = timestamp;
       const currentProject = projects.find(p => p.id === projectId);
       const taskTitle = currentProject?.tasks[taskId]?.title || 'a task';
-      const mentionedUserIds = extractMentions(taskComment);
       const commentData: Comment = {
         id: commentId,
         text: taskComment,
         createdAt: new Date().toISOString(),
         createdBy: user.name || (isTeamLead ? 'Team Lead' : 'Employee'),
         createdById: user.id,
-        mentions: mentionedUserIds,
+        mentions: [],
       };
       await set(ref(database, `projects/${projectId}/tasks/${taskId}/comments/${commentId}`), commentData);
-      for (const userId of mentionedUserIds) {
-        if (userId === user.id) continue;
-        const notifRef = push(ref(database, `notifications/${userId}`));
-        await set(notifRef, {
-          title: `New mention from ${user.name}`,
-          body: `${user.name} mentioned you in a comment on task "${taskTitle}"`,
-          read: false,
-          createdAt: Date.now(),
-          taskId: taskId,
-          projectId: projectId,
-          type: 'mention',
-        });
-      }
+      toast.success('Comment added successfully');
+      setTaskComment('');
       setProjects(prev =>
         prev.map(p => {
           if (p.id !== projectId) return p;
@@ -587,8 +576,6 @@ const EmployeeProjects = () => {
           return { ...p, tasks: updatedTasks };
         })
       );
-      toast.success('Comment added successfully');
-      setTaskComment('');
     } catch (error) {
       console.error('Error adding comment:', error);
       toast.error('Failed to add comment');
@@ -652,38 +639,10 @@ const EmployeeProjects = () => {
   return (
     <>
       <style>{`
-        .mention-dropdown {
-          position: absolute;
-          z-index: 50;
-          background: white;
-          border: 1px solid #e2e8f0;
-          border-radius: 0.5rem;
-          box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1);
-          max-height: 160px;
-          overflow-y: auto;
-          min-width: 150px;
-        }
-        .mention-dropdown-item {
-          padding: 0.5rem 1rem;
-          cursor: pointer;
-          font-size: 0.875rem;
-        }
-        .mention-dropdown-item:hover {
-          background-color: #f3f4f6;
-        }
-        .ql-container {
-          overflow: visible !important;
-        }
-        .ql-editor {
-          overflow-y: auto !important;
-        }
-        .relative {
-          overflow: visible !important;
-        }
-        /* Fix progress bar alignment */
-        .space-y-2 > .w-full {
-          width: 100% !important;
-        }
+        .ql-container { overflow: visible !important; }
+        .ql-editor { overflow-y: auto !important; }
+        .relative { overflow: visible !important; }
+        .space-y-2 > .w-full { width: 100% !important; }
       `}</style>
       <div className="space-y-6">
         <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
@@ -702,7 +661,6 @@ const EmployeeProjects = () => {
               const completedTasksCount = tasksArray.filter(task => task.status === 'completed').length;
               const totalTasksCount = tasksArray.length;
               const progress = totalTasksCount > 0 ? Math.round((completedTasksCount / totalTasksCount) * 100) : 0;
-
               const teamMembers = isTeamLead && project.assignedEmployees
                 ? project.assignedEmployees.map(employeeId => ({ id: employeeId, name: employees[employeeId]?.name || 'Unknown', email: employees[employeeId]?.email || '' }))
                 : [];
@@ -710,7 +668,6 @@ const EmployeeProjects = () => {
               return (
                 <Card key={project.id}>
                   <CardContent className="p-6 space-y-4">
-                    {/* Project header, description, team members, progress bar */}
                     <div className="flex justify-between items-start">
                       <div>
                         <h3 className="text-lg font-bold">{project.name}</h3>
@@ -736,9 +693,17 @@ const EmployeeProjects = () => {
                       </div>
                     )}
 
-                    <div className="space-y-2">
-                      <div className="flex justify-between text-sm"><span>Overall Progress</span><span>{progress}%</span></div>
-                      <Progress value={progress} className="h-2 w-full" />
+                    <div className="space-y-2 w-full">
+                      <div className="flex justify-between text-sm">
+                        <span>Overall Progress</span>
+                        <span>{progress}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2.5">
+                        <div
+                          className="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
                     </div>
 
                     {tasksArray.length > 0 && (
@@ -756,77 +721,190 @@ const EmployeeProjects = () => {
                                 const comments = task.comments ? Object.entries(task.comments).sort(([a], [b]) => parseInt(b) - parseInt(a)).map(([ts, cmt]) => ({ timestamp: ts, ...cmt })) : [];
                                 const attachments = task.attachments ? Object.values(task.attachments) : [];
 
+                                // ✅ Check if employee is allowed to see full controls
+                                const isAssignedToMe = task.assignedTo === user?.id;
+                                const canFullAccess = isTeamLead || isAssignedToMe;
+
                                 return (
                                   <div key={`${project.id}_${task.id}`} className="border rounded-lg p-4 space-y-3">
                                     <div className="flex justify-between items-start">
-                                      <div><h4 className="font-medium">{task.title || 'Untitled Task'}</h4>{task.description && <p className="text-sm text-gray-600 mt-1">{task.description}</p>}</div>
+                                      <div>
+                                        <h4 className="font-medium">{task.title || 'Untitled Task'}</h4>
+                                        {task.description && <p className="text-sm text-gray-600 mt-1">{task.description}</p>}
+                                      </div>
                                       <div className="flex items-center gap-2">
-                                        <Badge className={getTaskStatusColor(status)}>{status.replace('_', ' ')}</Badge>
-                                        <div className="text-right text-sm text-gray-500">{task.dueDate && (<><div>Due: {formatDate(task.dueDate)}</div><div>{formatTime(task.dueDate)}</div></>)}</div>
-                                      </div>
-                                    </div>
-
-                                    {isTeamLead && (<div className="flex items-center gap-2 text-sm"><span className="font-medium">Assigned to:</span><Badge variant="outline">{task.assignedToName || 'Unassigned'}</Badge></div>)}
-
-                                    {/* ATTACHMENTS SECTION */}
-                                    <div className="border-t pt-3">
-                                      <div className="flex items-center justify-between mb-2"><h4 className="text-sm font-medium">Attachments</h4>{(isTeamLead || task.assignedTo === user.id) && (<label className="cursor-pointer inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3"><Paperclip className="h-4 w-4 mr-1" /> Upload<input type="file" className="hidden" onChange={(e) => { if (e.target.files && e.target.files[0]) uploadAttachment(project.id, task.id, e.target.files[0]); }} /></label>)}</div>
-                                      {attachments.length === 0 ? (<p className="text-xs text-gray-400">No attachments yet</p>) : (<div className="space-y-2">{attachments.map(att => (<div key={att.id} className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm"><div className="flex items-center gap-2 flex-1 min-w-0">{att.type.startsWith('image/') ? <Image className="h-4 w-4 text-blue-500 flex-shrink-0" /> : <File className="h-4 w-4 text-gray-500 flex-shrink-0" />}<span className="truncate">{att.name}</span><span className="text-xs text-gray-400">({formatFileSize(att.size)})</span><span className="text-xs text-gray-400">by {att.uploadedBy}</span></div><div className="flex items-center gap-1"><a href={att.url} target="_blank" rel="noopener noreferrer" className="p-1 hover:bg-gray-200 rounded"><Download className="h-4 w-4 text-gray-600" /></a>{(isTeamLead || att.uploadedById === user.id) && (<button onClick={() => deleteAttachment(project.id, task.id, att.id, att.url)} className="p-1 hover:bg-red-100 rounded"><Trash2 className="h-4 w-4 text-red-500" /></button>)}</div></div>))}</div>)}
-                                      {uploadingAttachments[`${project.id}_${task.id}`] && (<div className="mt-2 text-xs text-blue-500">Uploading...</div>)}
-                                    </div>
-
-                                    {/* Update Status */}
-                                    <div className="border-t pt-3">
-                                      {isTeamLead || task.assignedTo === user.id ? (
-                                        editingTaskId === task.id ? (
-                                          <div className="space-y-3">
-                                            <div className="flex items-center gap-2">
-                                              <Select value={newTaskStatus || task.status} onValueChange={setNewTaskStatus}>
-                                                <SelectTrigger className="w-[180px]"><SelectValue placeholder="Select status" /></SelectTrigger>
-                                                <SelectContent>
-                                                  <SelectItem value="not_started">Not Started</SelectItem>
-                                                  <SelectItem value="in_progress">In Progress</SelectItem>
-                                                  <SelectItem value="completed">Completed</SelectItem>
-                                                  <SelectItem value="pending">Pending</SelectItem>
-                                                  <SelectItem value="having_issue">Having Issue</SelectItem>
-                                                </SelectContent>
-                                              </Select>
-                                              <Button size="sm" onClick={() => updateTaskStatus(project.id, task.id)}><Save className="h-4 w-4 mr-1" /> Save</Button>
-                                              <Button variant="outline" size="sm" onClick={() => { setEditingTaskId(null); setNewTaskStatus(''); }}><X className="h-4 w-4 mr-1" /> Cancel</Button>
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          <Button variant="outline" size="sm" onClick={() => { setEditingTaskId(task.id); setNewTaskStatus(task.status || 'not_started'); }}><Edit className="h-4 w-4 mr-1" /> Update Status</Button>
-                                        )
-                                      ) : (<div className="text-xs text-gray-400">Only assigned employee can update</div>)}
-                                    </div>
-
-                                    {/* Time Tracking */}
-                                    <div className="border-t pt-3">
-                                      <h4 className="text-sm font-medium mb-2">Time Tracking</h4>
-                                      <div className="flex items-center gap-3">
-                                        {runningTimer && runningTimer.taskId === task.id ? (<Button size="sm" variant="outline" onClick={stopTimer} className="bg-red-50"><StopCircle className="h-4 w-4 mr-1" /> Stop Timer ({formatDuration(timerElapsed)})</Button>) : (<Button size="sm" variant="outline" onClick={() => startTimer(project.id, task.id)}><Play className="h-4 w-4 mr-1" /> Start Timer</Button>)}
-                                        <Button size="sm" variant="outline" onClick={() => openManualLogModal(task)}><Edit className="h-4 w-4 mr-1" /> Log Time</Button>
-                                      </div>
-                                      <div className="mt-2 text-sm text-gray-600">Total logged: {formatDuration(task.totalTimeSpentMs || 0)}</div>
-                                      {task.timeLogs && Object.values(task.timeLogs).slice(0, 2).map((log: any) => (<div key={log.id} className="text-xs text-gray-500 mt-1">{new Date(log.startTime).toLocaleTimeString()} – {formatDuration(log.durationMs)} {log.note && `(${log.note})`}</div>))}
-                                    </div>
-
-                                    {/* Task Updates */}
-                                    {taskUpdates.length > 0 && (<div className="border-t pt-3"><h4 className="text-sm font-medium mb-2">Update History</h4><div className="space-y-2 max-h-40 overflow-y-auto">{taskUpdates.map((update, idx) => (<div key={idx} className="text-xs bg-gray-50 p-2 rounded"><div className="flex justify-between"><span className="font-medium">{update.updatedByRole === 'admin' ? 'Admin' : update.updatedByRole === 'team_lead' ? 'Team Lead' : update.updatedBy}</span><span className="text-gray-500">{formatDate(update.timestamp)} {formatTime(update.timestamp)}</span></div><div className="mt-1">{update.changes.map((change, i) => (<p key={i}>Changed <span className="font-medium">{change.field}</span> from <span className="italic"> "{change.oldValue}"</span> to <span className="font-medium"> "{change.newValue}"</span></p>))}</div>{update.note && <p className="mt-1 italic">Note: "{update.note}"</p>}</div>))}</div></div>)}
-
-                                    {/* Comments */}
-                                    <div className="border-t pt-3">
-                                      <h4 className="text-sm font-medium mb-2">Comments</h4>
-                                      <div className="space-y-3">
-                                        {comments.map((comment, idx) => (<div key={idx} className="text-sm bg-gray-50 p-3 rounded-lg"><div className="text-gray-700" dangerouslySetInnerHTML={{ __html: comment.text }} /><p className="text-xs text-gray-500 mt-1">{comment.createdBy} • {formatDate(comment.createdAt)} • {formatTime(comment.createdAt)}</p></div>))}
-                                        <div className="space-y-2 relative">
-                                          <ReactQuill ref={quillRef} value={taskComment} onChange={handleEditorChange} placeholder="Add a comment... (use @ to mention someone)" modules={quillModules} />
-                                          {showMention && (<div ref={mentionDropdownRef} className="fixed z-[9999] bg-white border border-gray-200 rounded-lg shadow-xl max-h-60 overflow-y-auto min-w-[180px]" style={{ top: `${mentionPosition.top + (document.querySelector('.ql-editor')?.getBoundingClientRect().top || 0)}px`, left: `${mentionPosition.left + (document.querySelector('.ql-editor')?.getBoundingClientRect().left || 0)}px` }}>{filteredEmployees.length > 0 ? filteredEmployees.map(emp => (<div key={emp.id} className="px-4 py-2 hover:bg-gray-100 cursor-pointer text-sm border-b last:border-b-0" onClick={() => insertMention(emp.name)}>{emp.name}</div>)) : <div className="px-4 py-2 text-sm text-gray-500">No employees found</div>}</div>)}
-                                          <Button size="sm" onClick={() => addTaskComment(project.id, task.id)}><MessageSquare className="h-4 w-4 mr-1" /> Add Comment</Button>
+                                        {canFullAccess && (
+                                          <Badge className={getTaskStatusColor(status)}>{status.replace('_', ' ')}</Badge>
+                                        )}
+                                        <div className="text-right text-sm text-gray-500">
+                                          {task.dueDate && (<><div>Due: {formatDate(task.dueDate)}</div><div>{formatTime(task.dueDate)}</div></>)}
                                         </div>
                                       </div>
                                     </div>
+
+                                    {isTeamLead && canFullAccess && (
+                                      <div className="flex items-center gap-2 text-sm">
+                                        <span className="font-medium">Assigned to:</span>
+                                        <Badge variant="outline">{task.assignedToName || 'Unassigned'}</Badge>
+                                      </div>
+                                    )}
+
+                                    {/* ✅ Only show full details if allowed */}
+                                    {canFullAccess ? (
+                                      <>
+                                        {/* ATTACHMENTS SECTION */}
+                                        <div className="border-t pt-3">
+                                          <div className="flex items-center justify-between mb-2">
+                                            <h4 className="text-sm font-medium">Attachments</h4>
+                                            {(isTeamLead || task.assignedTo === user.id) && (
+                                              <label className="cursor-pointer inline-flex items-center justify-center rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-9 px-3">
+                                                <Paperclip className="h-4 w-4 mr-1" /> Upload
+                                                <input type="file" className="hidden" onChange={(e) => { if (e.target.files && e.target.files[0]) uploadAttachment(project.id, task.id, e.target.files[0]); }} />
+                                              </label>
+                                            )}
+                                          </div>
+                                          {attachments.length === 0 ? (<p className="text-xs text-gray-400">No attachments yet</p>) : (
+                                            <div className="space-y-2">
+                                              {attachments.map(att => (
+                                                <div key={att.id} className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm">
+                                                  <div className="flex items-center gap-2 flex-1 min-w-0">
+                                                    {att.type.startsWith('image/') ? <Image className="h-4 w-4 text-blue-500 flex-shrink-0" /> : <File className="h-4 w-4 text-gray-500 flex-shrink-0" />}
+                                                    <span className="truncate">{att.name}</span>
+                                                    <span className="text-xs text-gray-400">({formatFileSize(att.size)})</span>
+                                                    <span className="text-xs text-gray-400">by {att.uploadedBy}</span>
+                                                  </div>
+                                                  <div className="flex items-center gap-1">
+                                                    <a href={att.url} target="_blank" rel="noopener noreferrer" className="p-1 hover:bg-gray-200 rounded"><Download className="h-4 w-4 text-gray-600" /></a>
+                                                    {(isTeamLead || att.uploadedById === user.id) && (
+                                                      <button onClick={() => deleteAttachment(project.id, task.id, att.id, att.url)} className="p-1 hover:bg-red-100 rounded"><Trash2 className="h-4 w-4 text-red-500" /></button>
+                                                    )}
+                                                  </div>
+                                                </div>
+                                              ))}
+                                            </div>
+                                          )}
+                                          {uploadingAttachments[`${project.id}_${task.id}`] && (<div className="mt-2 text-xs text-blue-500">Uploading...</div>)}
+                                        </div>
+
+                                        {/* Update Status */}
+                                        <div className="border-t pt-3">
+                                          {editingTaskId === task.id ? (
+                                            <div className="space-y-3">
+                                              <div className="flex items-center gap-2">
+                                                <Select value={newTaskStatus || task.status} onValueChange={setNewTaskStatus}>
+                                                  <SelectTrigger className="w-[180px]"><SelectValue placeholder="Select status" /></SelectTrigger>
+                                                  <SelectContent>
+                                                    <SelectItem value="not_started">Not Started</SelectItem>
+                                                    <SelectItem value="in_progress">In Progress</SelectItem>
+                                                    <SelectItem value="completed">Completed</SelectItem>
+                                                    <SelectItem value="pending">Pending</SelectItem>
+                                                    <SelectItem value="having_issue">Having Issue</SelectItem>
+                                                  </SelectContent>
+                                                </Select>
+                                                <Button size="sm" onClick={() => updateTaskStatus(project.id, task.id, newTaskStatus)}><Save className="h-4 w-4 mr-1" /> Save</Button>
+                                                <Button variant="outline" size="sm" onClick={() => { setEditingTaskId(null); setNewTaskStatus(''); }}><X className="h-4 w-4 mr-1" /> Cancel</Button>
+                                                {/* ✅ AI Suggest Button */}
+                                                <Button
+                                                  type="button"
+                                                  variant="outline"
+                                                  size="sm"
+                                                  onClick={async () => {
+                                                    try {
+                                                      const suggestions = await getTaskSuggestions(task.title, task.description);
+                                                      toast.success(`AI suggests: ${suggestions.priority} priority, due in ${suggestions.dueDateOffsetDays} days`);
+                                                    } catch (error: any) {
+                                                      console.error(error);
+                                                      // ✅ Add this check
+                                                      if (error.message?.includes('429')) {
+                                                        toast.error('AI quota exceeded. Please try again later or upgrade your plan.');
+                                                      } else {
+                                                        toast.error('AI suggestion failed');
+                                                      }
+                                                    }
+                                                  }}
+                                                >
+                                                  <Sparkles className="h-4 w-4 mr-1" />
+                                                  AI Suggest
+                                                </Button>
+                                              </div>
+                                            </div>
+                                          ) : (
+                                            <Button variant="outline" size="sm" onClick={() => { setEditingTaskId(task.id); setNewTaskStatus(task.status || 'not_started'); }}><Edit className="h-4 w-4 mr-1" /> Update Status</Button>
+                                          )}
+                                        </div>
+
+                                        {/* Time Tracking */}
+                                        <div className="border-t pt-3">
+                                          <h4 className="text-sm font-medium mb-2">Time Tracking</h4>
+                                          <div className="flex items-center gap-3">
+                                            {runningTimer && runningTimer.taskId === task.id ? (
+                                              <Button size="sm" variant="outline" onClick={stopTimer} className="bg-red-50"><StopCircle className="h-4 w-4 mr-1" /> Stop Timer ({formatDuration(timerElapsed)})</Button>
+                                            ) : (
+                                              <Button size="sm" variant="outline" onClick={() => startTimer(project.id, task.id)}><Play className="h-4 w-4 mr-1" /> Start Timer</Button>
+                                            )}
+                                            <Button size="sm" variant="outline" onClick={() => openManualLogModal(task)}><Edit className="h-4 w-4 mr-1" /> Log Time</Button>
+                                          </div>
+                                          <div className="mt-2 text-sm text-gray-600">Total logged: {formatDuration(task.totalTimeSpentMs || 0)}</div>
+                                          {task.timeLogs && Object.values(task.timeLogs).slice(0, 2).map((log: any) => (
+                                            <div key={log.id} className="text-xs text-gray-500 mt-1">
+                                              {new Date(log.startTime).toLocaleTimeString()} – {formatDuration(log.durationMs)} {log.note && `(${log.note})`}
+                                            </div>
+                                          ))}
+                                        </div>
+
+                                        {/* Task Updates */}
+                                        {taskUpdates.length > 0 && (
+                                          <div className="border-t pt-3">
+                                            <h4 className="text-sm font-medium mb-2">Update History</h4>
+                                            <div className="space-y-2 max-h-40 overflow-y-auto">
+                                              {taskUpdates.map((update, idx) => (
+                                                <div key={idx} className="text-xs bg-gray-50 p-2 rounded">
+                                                  <div className="flex justify-between">
+                                                    <span className="font-medium">{update.updatedByRole === 'admin' ? 'Admin' : update.updatedByRole === 'team_lead' ? 'Team Lead' : update.updatedBy}</span>
+                                                    <span className="text-gray-500">{formatDate(update.timestamp)} {formatTime(update.timestamp)}</span>
+                                                  </div>
+                                                  <div className="mt-1">
+                                                    {update.changes.map((change, i) => (
+                                                      <p key={i}>Changed <span className="font-medium">{change.field}</span> from <span className="italic"> "{change.oldValue}"</span> to <span className="font-medium"> "{change.newValue}"</span></p>
+                                                    ))}
+                                                  </div>
+                                                  {update.note && <p className="mt-1 italic">Note: "{update.note}"</p>}
+                                                </div>
+                                              ))}
+                                            </div>
+                                          </div>
+                                        )}
+
+                                        {/* Comments */}
+                                        <div className="border-t pt-3">
+                                          <h4 className="text-sm font-medium mb-2">Comments</h4>
+                                          <div className="space-y-3">
+                                            {comments.map((comment, idx) => (
+                                              <div key={idx} className="text-sm bg-gray-50 p-3 rounded-lg">
+                                                <div className="text-gray-700" dangerouslySetInnerHTML={{ __html: comment.text }} />
+                                                <p className="text-xs text-gray-500 mt-1">{comment.createdBy} • {formatDate(comment.createdAt)} • {formatTime(comment.createdAt)}</p>
+                                              </div>
+                                            ))}
+                                            <div className="space-y-2">
+                                              <textarea
+                                                value={taskComment}
+                                                onChange={(e) => setTaskComment(e.target.value)}
+                                                placeholder="Add a comment..."
+                                                className="w-full p-2 border rounded"
+                                              />
+                                              <Button size="sm" onClick={() => addTaskComment(project.id, task.id)}>
+                                                <MessageSquare className="h-4 w-4 mr-1" /> Add Comment
+                                              </Button>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </>
+                                    ) : (
+                                      // ✅ Minimal view for unassigned tasks (only task name and due date)
+                                      <div className="text-xs text-gray-400 italic border-t pt-2 mt-2">
+                                        Only assigned employee can view details
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               })}
@@ -834,7 +912,18 @@ const EmployeeProjects = () => {
                           </CollapsibleContent>
                         </Collapsible>
                       </div>
+
+
                     )}
+
+                    <Collapsible>
+                      <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded">
+                        💬 Team Chat
+                      </CollapsibleTrigger>
+                      <CollapsibleContent className="pt-2">
+                        <ProjectChat projectId={project.id} />
+                      </CollapsibleContent>
+                    </Collapsible>
                   </CardContent>
                 </Card>
               );
@@ -842,6 +931,55 @@ const EmployeeProjects = () => {
           </div>
         )}
       </div>
+
+      {/* Manual Time Log Modal */}
+      <Dialog open={showManualLogModal} onOpenChange={setShowManualLogModal}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Log Time Manually</DialogTitle>
+            <DialogDescription>
+              Enter the time spent on this task. You can also add a note.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <Label>Hours</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={manualHours}
+                  onChange={(e) => setManualHours(parseInt(e.target.value) || 0)}
+                />
+              </div>
+              <div>
+                <Label>Minutes</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  max={59}
+                  step={1}
+                  value={manualMinutes}
+                  onChange={(e) => setManualMinutes(parseInt(e.target.value) || 0)}
+                />
+              </div>
+            </div>
+            <div>
+              <Label>Note (optional)</Label>
+              <Input
+                value={manualNote}
+                onChange={(e) => setManualNote(e.target.value)}
+                placeholder="e.g., Code review, bug fixing, etc."
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowManualLogModal(false)}>Cancel</Button>
+              <Button onClick={saveManualLog}>Save Time</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 };

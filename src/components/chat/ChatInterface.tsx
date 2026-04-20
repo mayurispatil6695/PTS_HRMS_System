@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { ref, push, set, onValue, off, update, query, orderByChild, limitToLast, get,remove } from 'firebase/database';
+import { ref, push, set, onValue, off, update, query, orderByChild, limitToLast, get, remove } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Avatar, AvatarFallback } from '../ui/avatar';
@@ -7,7 +7,7 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { ScrollArea } from '../ui/scroll-area';
 import { Badge } from '../ui/badge';
-import { Send, Paperclip, Users, Clock, CheckCheck, Search, X, FileText } from 'lucide-react';
+import { Send, Paperclip, Users, Clock, CheckCheck, Search, X, FileText, Trash2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -60,6 +60,7 @@ const ChatInterface = () => {
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [uploading, setUploading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -202,85 +203,104 @@ const ChatInterface = () => {
   }, [activeContactId, currentUserId]);
 
   const sendMessage = async (text: string, file?: { url: string; name: string; type: string }) => {
-  if ((!text.trim() && !file) || !currentUserId || !activeContactId) return;
-  let chatPath: string;
-  const isGlobal = activeContactId === 'global';
-  if (isGlobal) {
-    chatPath = 'chats/group_global';
-  } else {
-    chatPath = `chats/${getDmChatId(currentUserId, activeContactId)}`;
-  }
-  const newMsgRef = push(ref(database, `${chatPath}/messages`));
-  const messageData: any = {
-    text: text.trim() || (file ? '📎 File attached' : ''),
-    senderId: currentUserId,
-    senderName: currentUserName,
-    timestamp: Date.now(),
-    readBy: { [currentUserId]: true },
+    if ((!text.trim() && !file) || !currentUserId || !activeContactId) return;
+    let chatPath: string;
+    const isGlobal = activeContactId === 'global';
+    if (isGlobal) {
+      chatPath = 'chats/group_global';
+    } else {
+      chatPath = `chats/${getDmChatId(currentUserId, activeContactId)}`;
+    }
+    const newMsgRef = push(ref(database, `${chatPath}/messages`));
+    const messageData: any = {
+      text: text.trim() || (file ? '📎 File attached' : ''),
+      senderId: currentUserId,
+      senderName: currentUserName,
+      timestamp: Date.now(),
+      readBy: { [currentUserId]: true },
+    };
+    if (file) {
+      messageData.fileUrl = file.url;
+      messageData.fileName = file.name;
+      messageData.fileType = file.type;
+    }
+    await set(newMsgRef, messageData);
+    await remove(ref(database, `${chatPath}/typing/${currentUserId}`));
+    setInputText('');
+    // send notifications (existing code)
+    const now = Date.now();
+    const throttleKey = `lastGroupNotif_${currentUserId}`;
+    const lastGroupNotif = localStorage.getItem(throttleKey);
+    const THROTTLE_MS = 60000;
+    if (isGlobal) {
+      if (!lastGroupNotif || now - parseInt(lastGroupNotif) > THROTTLE_MS) {
+        localStorage.setItem(throttleKey, now.toString());
+        const usersSnap = await get(ref(database, 'users'));
+        const notificationPromises: Promise<void>[] = [];
+        usersSnap.forEach((child) => {
+          const uid = child.key;
+          if (uid === currentUserId) return;
+          const notifRef = push(ref(database, `notifications/${uid}`));
+          notificationPromises.push(set(notifRef, {
+            title: `New message in Company Group from ${currentUserName}`,
+            body: text.trim().substring(0, 100) || (file ? '📎 Shared a file' : ''),
+            type: 'group_chat',
+            read: false,
+            createdAt: now,
+          }));
+          if (Notification.permission === 'granted') {
+            new Notification(`Company Group: ${currentUserName}`, {
+              body: text.trim().substring(0, 100) || (file ? 'Shared a file' : ''),
+              icon: '/favicon.ico',
+            });
+          }
+        });
+        await Promise.all(notificationPromises);
+      }
+    } else {
+      const notifRef = push(ref(database, `notifications/${activeContactId}`));
+      await set(notifRef, {
+        title: `New message from ${currentUserName}`,
+        body: text.trim().substring(0, 100) || (file ? '📎 Sent a file' : ''),
+        type: 'chat_message',
+        read: false,
+        createdAt: now,
+      });
+      if (Notification.permission === 'granted') {
+        new Notification(`Message from ${currentUserName}`, {
+          body: text.trim().substring(0, 100) || (file ? 'Sent a file' : ''),
+          icon: '/favicon.ico',
+        });
+      }
+    }
   };
-  if (file) {
-    messageData.fileUrl = file.url;
-    messageData.fileName = file.name;
-    messageData.fileType = file.type;
-  }
-  await set(newMsgRef, messageData);
-  await remove(ref(database, `${chatPath}/typing/${currentUserId}`));
-  setInputText('');
-  setMediaPreview(null);
 
-  // ---------- SEND NOTIFICATIONS ----------
-  const now = Date.now();
-  const throttleKey = `lastGroupNotif_${currentUserId}`;
-  const lastGroupNotif = localStorage.getItem(throttleKey);
-  const THROTTLE_MS = 60000; // 1 minute
-
-  if (isGlobal) {
-    // Group message – notify all other users
-    if (!lastGroupNotif || now - parseInt(lastGroupNotif) > THROTTLE_MS) {
-      localStorage.setItem(throttleKey, now.toString());
-      // Fetch all users except the sender
-      const usersSnap = await get(ref(database, 'users'));
-      const notificationPromises: Promise<void>[] = [];
-      usersSnap.forEach((child) => {
-        const uid = child.key;
-        if (uid === currentUserId) return;
-        // Only notify users who are active (optional: check lastActive within 5 min)
-        const notifRef = push(ref(database, `notifications/${uid}`));
-        notificationPromises.push(set(notifRef, {
-          title: `New message in Company Group from ${currentUserName}`,
-          body: text.trim().substring(0, 100) || (file ? '📎 Shared a file' : ''),
-          type: 'group_chat',
-          read: false,
-          createdAt: now,
-        }));
-        // Browser notification (only if permission granted)
-        if (Notification.permission === 'granted') {
-          new Notification(`Company Group: ${currentUserName}`, {
-            body: text.trim().substring(0, 100) || (file ? 'Shared a file' : ''),
-            icon: '/favicon.ico',
-          });
-        }
-      });
-      await Promise.all(notificationPromises);
+  // ✅ DELETE MESSAGE FUNCTION
+  const deleteMessage = async (messageId: string, senderId: string) => {
+    // Only sender or admin can delete
+    const canDelete = senderId === currentUserId || isAdmin;
+    if (!canDelete) {
+      toast.error('You are not allowed to delete this message');
+      return;
     }
-  } else {
-    // Direct message – notify the recipient
-    const notifRef = push(ref(database, `notifications/${activeContactId}`));
-    await set(notifRef, {
-      title: `New message from ${currentUserName}`,
-      body: text.trim().substring(0, 100) || (file ? '📎 Sent a file' : ''),
-      type: 'chat_message',
-      read: false,
-      createdAt: now,
-    });
-    if (Notification.permission === 'granted') {
-      new Notification(`Message from ${currentUserName}`, {
-        body: text.trim().substring(0, 100) || (file ? 'Sent a file' : ''),
-        icon: '/favicon.ico',
-      });
+    if (!confirm('Delete this message?')) return;
+    try {
+      let chatPath: string;
+      if (activeContactId === 'global') {
+        chatPath = 'chats/group_global';
+      } else if (activeContactId) {
+        chatPath = `chats/${getDmChatId(currentUserId!, activeContactId)}`;
+      } else {
+        return;
+      }
+      const messageRef = ref(database, `${chatPath}/messages/${messageId}`);
+      await remove(messageRef);
+      toast.success('Message deleted');
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to delete message');
     }
-  }
-};
+  };
 
   const handleTyping = useCallback(async () => {
     if (!activeContactId || !currentUserId) return;
@@ -427,7 +447,7 @@ const ChatInterface = () => {
               {messages.map(msg => (
                 <div
                   key={msg.id}
-                  className={`flex ${msg.senderId === currentUserId ? 'justify-end' : 'justify-start'}`}
+                  className={`flex ${msg.senderId === currentUserId ? 'justify-end' : 'justify-start'} group`}
                 >
                   <div className={`max-w-[70%] flex gap-2 ${msg.senderId === currentUserId ? 'flex-row-reverse' : ''}`}>
                     {msg.senderId !== currentUserId && (
@@ -472,6 +492,16 @@ const ChatInterface = () => {
                         )}
                       </div>
                     </div>
+                    {/* ✅ Delete button - appears on hover */}
+                    {(msg.senderId === currentUserId || isAdmin) && (
+                      <button
+                        onClick={() => deleteMessage(msg.id, msg.senderId)}
+                        className="opacity-0 group-hover:opacity-100 transition-opacity ml-1 self-center text-gray-400 hover:text-red-500"
+                        title="Delete message"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

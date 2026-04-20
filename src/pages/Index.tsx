@@ -7,9 +7,16 @@ import TeamManagerDashboard from '../components/manager/TeamManagerDashboard';
 import TeamLeaderDashboard from '../components/teamlead/TeamLeaderDashboard';
 import ClientDashboard from '../components/client/ClientDashboard';
 import { useAuth } from '../hooks/useAuth';
+import { useEffect } from 'react';
 
 const Index = () => {
+
   const { user, loading } = useAuth();
+  useEffect(() => {
+  if ('Notification' in window && Notification.permission !== 'denied') {
+    Notification.requestPermission();
+  }
+}, []);
 
   if (loading) {
     return (
@@ -18,6 +25,7 @@ const Index = () => {
       </div>
     );
   }
+  
 
   // Role‑based redirect mapping
   const getDashboardPath = (role: string) => {

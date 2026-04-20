@@ -15,7 +15,8 @@ import {
   Building2,
   MessageCircle,
   Workflow,
-  Video
+  Video,
+  Star
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useAuth } from '../../hooks/useAuth';
@@ -41,6 +42,7 @@ const EmployeeSidebar: React.FC<EmployeeSidebarProps> = ({ onClose, isMobile = f
       { icon: Share2, label: 'Social Media Calendar', path: '/employee/social-calendar' }
     ] : []),
     { icon: Plane, label: 'Leaves', path: '/employee/leaves' },
+    { icon: Star, label: 'My Performance Review', path: '/employee/review' },
     { icon: Receipt, label: 'Salary Slips', path: '/employee/salary' },
     { icon: FileText, label: 'Reports', path: '/employee/reports' },
   ];

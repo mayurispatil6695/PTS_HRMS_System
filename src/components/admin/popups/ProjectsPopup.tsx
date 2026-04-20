@@ -47,7 +47,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
   const filteredProjects = useMemo(() => {
     if (activeTab === 'all') return projects;
     return projects.filter((project) => {
-    if (activeTab === 'active') return project.status === 'in_progress' || project.status === 'active';
+      if (activeTab === 'active') return project.status === 'in_progress' || project.status === 'active';
       if (activeTab === 'paused') return project.status === 'on_hold';
       if (activeTab === 'completed') return project.status === 'completed';
       return true;
@@ -122,6 +122,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
         {/* Tab buttons */}
         <div className="flex flex-wrap gap-2 mb-4">
           <Button
+            key="tab-all"
             variant={activeTab === 'all' ? 'default' : 'outline'}
             onClick={() => setActiveTab('all')}
             className="flex items-center gap-1"
@@ -129,14 +130,16 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
             All ({projects.length})
           </Button>
           <Button
+            key="tab-active"
             variant={activeTab === 'active' ? 'default' : 'outline'}
             onClick={() => setActiveTab('active')}
             className="flex items-center gap-1"
           >
-           <PlayCircle className="h-4 w-4" />
-  Active ({projects.filter(p => p.status === 'in_progress' || p.status === 'active').length})
+            <PlayCircle className="h-4 w-4" />
+            Active ({projects.filter(p => p.status === 'in_progress' || p.status === 'active').length})
           </Button>
           <Button
+            key="tab-completed"
             variant={activeTab === 'completed' ? 'default' : 'outline'}
             onClick={() => setActiveTab('completed')}
             className="flex items-center gap-1"
@@ -145,6 +148,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
             Completed ({projects.filter((p) => p.status === 'completed').length})
           </Button>
           <Button
+            key="tab-paused"
             variant={activeTab === 'paused' ? 'default' : 'outline'}
             onClick={() => setActiveTab('paused')}
             className="flex items-center gap-1"

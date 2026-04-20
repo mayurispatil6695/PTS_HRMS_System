@@ -19,6 +19,7 @@ import {
   Workflow,
   TrendingUp,
   Video,
+  Star,
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import VirtualOffice from '../ui/VirtualOffice';
@@ -40,6 +41,8 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
     { icon: FolderOpen, label: 'Projects', path: '/admin/projects' },
     { icon: Workflow, label: 'Employee Task', path: '/admin/employeetask' },
     { icon: Plane, label: 'Leaves', path: '/admin/leaves' },
+    { icon: Star, label: 'Performance Reviews', path: '/admin/performance-reviews' },
+    { icon: TrendingUp, label: 'Performance Analytics', path: '/admin/performance-analytics' },
     { icon: MessageCircle, label: 'Chat', path: '/admin/chat' },
     { icon: CreditCard, label: 'Salary Management', path: '/admin/salary' },
     { icon: FileText, label: 'Reports', path: '/admin/reports' },

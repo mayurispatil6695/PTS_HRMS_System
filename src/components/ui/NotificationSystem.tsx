@@ -1,4 +1,3 @@
-// src/components/ui/NotificationSystem.tsx
 import React, { useState, useEffect } from 'react';
 import { ref, onValue, off, update, remove } from 'firebase/database';
 import { database } from '../../firebase';
@@ -21,6 +20,18 @@ interface Notification {
   leaveId?: string;
 }
 
+// Firebase notification data structure
+interface FirebaseNotification {
+  title?: string;
+  body?: string;
+  type?: string;
+  read?: boolean;
+  createdAt?: number;
+  taskId?: string;
+  projectId?: string;
+  leaveId?: string;
+}
+
 const NotificationSystem = () => {
   const { user } = useAuth();
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -31,15 +42,15 @@ const NotificationSystem = () => {
     if (!user?.id) return;
     const notifRef = ref(database, `notifications/${user.id}`);
     const unsubscribe = onValue(notifRef, (snapshot) => {
-      const data = snapshot.val();
+      const data = snapshot.val() as Record<string, FirebaseNotification> | null;
       const list: Notification[] = [];
       if (data) {
-        Object.entries(data).forEach(([id, notif]: [string, any]) => {
+        Object.entries(data).forEach(([id, notif]) => {
           list.push({
             id,
             title: notif.title || 'Notification',
             body: notif.body || '',
-            type: notif.type || 'task_assigned',
+            type: (notif.type as Notification['type']) || 'task_assigned',
             read: notif.read || false,
             createdAt: notif.createdAt || Date.now(),
             taskId: notif.taskId,
@@ -63,9 +74,9 @@ const NotificationSystem = () => {
 
   const markAllAsRead = async () => {
     if (!user?.id) return;
-    const updates: Record<string, any> = {};
+    const updates: Record<string, { read: boolean }> = {};
     notifications.forEach(n => {
-      updates[`${n.id}/read`] = true;
+      updates[`${n.id}/read`] = { read: true };
     });
     await update(ref(database, `notifications/${user.id}`), updates);
   };

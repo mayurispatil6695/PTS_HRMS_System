@@ -22,8 +22,7 @@ import { motion } from 'framer-motion';
 import { Users, Calendar, Clock, Filter, Search, RefreshCw, Trash2, Paperclip } from 'lucide-react';
 import { MessageSquare } from 'lucide-react';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
-
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
 /* ================= TYPES ================= */
 
 interface FirebaseEmployeeData {
@@ -103,6 +102,7 @@ interface DailyTask {
   date: string;
   time: string;
   status: 'pending' | 'in-progress' | 'completed';
+  priority?: 'low' | 'medium' | 'high';
   createdAt: string;
   projectId?: string;
   projectName?: string;
@@ -156,7 +156,7 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   const [filterDate, setFilterDate] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterDepartment, setFilterDepartment] = useState('all');
-const [previewImage, setPreviewImage] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<string | null>(null);
   const getTime = () => new Date().toTimeString().slice(0, 5);
 
   const [formData, setFormData] = useState({
@@ -168,7 +168,8 @@ const [previewImage, setPreviewImage] = useState<string | null>(null);
     description: '',
     date: new Date().toISOString().split('T')[0],
     time: getTime(),
-    status: 'pending' as const
+    status: 'pending' as const,
+    priority: 'medium' as 'low' | 'medium' | 'high',
   });
 
   // Can assign tasks? Only admin or team manager (or team leader if allowed)
@@ -465,6 +466,7 @@ const [previewImage, setPreviewImage] = useState<string | null>(null);
   };
 
   // Submit new task (only admin or manager)
+   // Submit new task (only admin or manager)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canAssignTasks) {
@@ -504,22 +506,24 @@ const [previewImage, setPreviewImage] = useState<string | null>(null);
           email: newTask.email,
           department: newTask.department,
           dueDate: newTask.date,
+          time: newTask.time,
           status: newTask.status,
+          priority: newTask.priority, // ✅ ADDED
           createdAt: newTask.createdAt,
           createdBy: newTask.assignedBy,
           createdByName: newTask.assignedByName,
         });
-        // Create notification for the assignee
-const notifRef = push(ref(database, `notifications/${formData.employeeId}`));
-await set(notifRef, {
-  title: 'New Task Assigned',
-  body: `You have been assigned a new task: ${formData.task}`,
-  type: 'task_assigned',
-  read: false,
-  createdAt: Date.now(),
-  taskId: newTaskRef.key,
-  projectId: taskType === 'project' ? selectedProject : undefined,
-});
+        // ✅ Notification for project task (with projectId)
+        const notifRef = push(ref(database, `notifications/${formData.employeeId}`));
+        await set(notifRef, {
+          title: 'New Task Assigned',
+          body: `You have been assigned a new task: ${formData.task}`,
+          type: 'task_assigned',
+          read: false,
+          createdAt: Date.now(),
+          taskId: newTaskRef.key,
+          projectId: selectedProject,
+        });
       } else {
         const empTaskRef = push(ref(database, `users/${selectedEmployee.adminId}/employees/${formData.employeeId}/dailyTasks`));
         await set(empTaskRef, {
@@ -528,6 +532,7 @@ await set(notifRef, {
           date: newTask.date,
           time: newTask.time,
           status: newTask.status,
+          priority: newTask.priority, // ✅ ADDED
           createdAt: newTask.createdAt,
           assignedBy: newTask.assignedBy,
           assignedByName: newTask.assignedByName,
@@ -537,17 +542,16 @@ await set(notifRef, {
           department: newTask.department,
           adminId: newTask.adminId,
         });
-        // Create notification for the assignee
-const notifRef = push(ref(database, `notifications/${formData.employeeId}`));
-await set(notifRef, {
-  title: 'New Task Assigned',
-  body: `You have been assigned a new task: ${formData.task}`,
-  type: 'task_assigned',
-  read: false,
-  createdAt: Date.now(),
-  taskId: empTaskRef.key,
-  projectId: taskType === 'project' ? selectedProject : undefined,
-});
+        // ✅ Notification for standalone task (NO projectId)
+        const notifRef = push(ref(database, `notifications/${formData.employeeId}`));
+        await set(notifRef, {
+          title: 'New Task Assigned',
+          body: `You have been assigned a new task: ${formData.task}`,
+          type: 'task_assigned',
+          read: false,
+          createdAt: Date.now(),
+          taskId: empTaskRef.key,
+        });
       }
 
       toast({ title: "Task Added Successfully ✅", variant: "default" });
@@ -559,7 +563,8 @@ await set(notifRef, {
         employeeId: '',
         employeeName: '',
         email: '',
-        department: ''
+        department: '',
+        priority: 'medium',
       });
       setSelectedProject('');
       setTaskType('standalone');
@@ -569,7 +574,6 @@ await set(notifRef, {
       toast({ title: "Error saving task", variant: "destructive" });
     }
   };
-
   const formatDate = (d: string) => {
     if (!d) return 'Invalid date';
     const date = new Date(d);
@@ -603,10 +607,10 @@ await set(notifRef, {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Task Management</h1>
           <p className="text-gray-600">
-            {isAdmin ? 'Assign and track tasks across all employees' : 
-             isTeamManager ? `Manage tasks for ${effectiveDepartment} department` :
-             isTeamLeader ? 'Manage your team tasks' :
-             'View your assigned tasks'}
+            {isAdmin ? 'Assign and track tasks across all employees' :
+              isTeamManager ? `Manage tasks for ${effectiveDepartment} department` :
+                isTeamLeader ? 'Manage your team tasks' :
+                  'View your assigned tasks'}
           </p>
         </div>
         <Badge variant="outline" className="bg-blue-50">
@@ -652,9 +656,30 @@ await set(notifRef, {
                 <Input placeholder="Task title" value={formData.task} onChange={e => setFormData({ ...formData, task: e.target.value })} />
                 <Textarea placeholder="Task description" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} rows={3} />
                 <div className="grid grid-cols-2 gap-4">
-                  <Input type="date" value={formData.date} onChange={e => setFormData({ ...formData, date: e.target.value })} />
-                  <Input type="time" value={formData.time} onChange={e => setFormData({ ...formData, time: e.target.value })} />
-                </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-sm font-medium mb-1 block">Priority</label>
+                      <Select value={formData.priority} onValueChange={(val) => setFormData({ ...formData, priority: val as 'low' | 'medium' | 'high' })}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select priority" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="low">Low</SelectItem>
+                          <SelectItem value="medium">Medium</SelectItem>
+                          <SelectItem value="high">High</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium mb-1 block">Due Date</label>
+                      <Input type="date" value={formData.date} onChange={e => setFormData({ ...formData, date: e.target.value })} />
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium mb-1 block">Time</label>
+                      <Input type="time" value={formData.time} onChange={e => setFormData({ ...formData, time: e.target.value })} />
+                    </div>
+                  </div>
+                                  </div>
                 <Button type="submit" className="w-full">Assign Task</Button>
               </form>
             </CardContent>
@@ -753,43 +778,43 @@ await set(notifRef, {
                               </CollapsibleContent>
                             </Collapsible>
                           </TableCell>
-                          
 
-<TableCell>
-  {task.attachments && task.attachments.length > 0 ? (
-    <div className="flex flex-col gap-1">
-      {task.attachments.slice(0, 2).map((att) => {
-        const isImage = att.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(att.name);
-        return isImage ? (
-          <button
-            key={att.id}
-            onClick={() => setPreviewImage(att.url)}
-            className="text-blue-500 hover:underline text-xs flex items-center gap-1 text-left"
-          >
-            <Paperclip className="h-3 w-3" />
-            {att.name.length > 20 ? att.name.slice(0, 20) + '…' : att.name}
-          </button>
-        ) : (
-          <a
-            key={att.id}
-            href={att.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-blue-500 hover:underline text-xs flex items-center gap-1"
-          >
-            <Paperclip className="h-3 w-3" />
-            {att.name.length > 20 ? att.name.slice(0, 20) + '…' : att.name}
-          </a>
-        );
-      })}
-      {task.attachments.length > 2 && (
-        <span className="text-xs text-gray-400">+{task.attachments.length - 2} more</span>
-      )}
-    </div>
-  ) : (
-    <span className="text-xs text-gray-400">—</span>
-  )}
-</TableCell>
+
+                          <TableCell>
+                            {task.attachments && task.attachments.length > 0 ? (
+                              <div className="flex flex-col gap-1">
+                                {task.attachments.slice(0, 2).map((att) => {
+                                  const isImage = att.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(att.name);
+                                  return isImage ? (
+                                    <button
+                                      key={att.id}
+                                      onClick={() => setPreviewImage(att.url)}
+                                      className="text-blue-500 hover:underline text-xs flex items-center gap-1 text-left"
+                                    >
+                                      <Paperclip className="h-3 w-3" />
+                                      {att.name.length > 20 ? att.name.slice(0, 20) + '…' : att.name}
+                                    </button>
+                                  ) : (
+                                    <a
+                                      key={att.id}
+                                      href={att.url}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-500 hover:underline text-xs flex items-center gap-1"
+                                    >
+                                      <Paperclip className="h-3 w-3" />
+                                      {att.name.length > 20 ? att.name.slice(0, 20) + '…' : att.name}
+                                    </a>
+                                  );
+                                })}
+                                {task.attachments.length > 2 && (
+                                  <span className="text-xs text-gray-400">+{task.attachments.length - 2} more</span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs text-gray-400">—</span>
+                            )}
+                          </TableCell>
 
 
 
@@ -811,16 +836,19 @@ await set(notifRef, {
         </Card>
       </motion.div>
       {/* Image Preview Modal */}
-<Dialog open={!!previewImage} onOpenChange={() => setPreviewImage(null)}>
-  <DialogContent className="max-w-3xl">
-    <DialogHeader>
-      <DialogTitle>Image Preview</DialogTitle>
-    </DialogHeader>
-    <div className="flex justify-center">
-      <img src={previewImage || ''} alt="Preview" className="max-w-full max-h-[70vh] object-contain" />
-    </div>
-  </DialogContent>
-</Dialog>
+      <Dialog open={!!previewImage} onOpenChange={() => setPreviewImage(null)}>
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>Image Preview</DialogTitle>
+             <DialogDescription className="sr-only">
+              Preview of the uploaded image attachment.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-center">
+            <img src={previewImage || ''} alt="Preview" className="max-w-full max-h-[70vh] object-contain" />
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

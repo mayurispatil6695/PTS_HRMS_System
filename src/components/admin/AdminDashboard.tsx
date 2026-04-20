@@ -1,5 +1,5 @@
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import AdminSidebar from './AdminSidebar';
@@ -23,10 +23,9 @@ import DailyTaskEmployee from './DailyTaskEmployee';
 import NotificationSystem from '../ui/NotificationSystem';
 import IdleDetectionPage from './IdleDetectionPage';
 import WorkloadHeatmap from './WorkloadHeatmap';
-
-
-
-
+import PerformanceReviews from './PerformanceReviews';
+import PerformanceAnalytics from './PerformanceAnalytics';
+// ...
 
 const AdminDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -37,7 +36,11 @@ const AdminDashboard = () => {
     logout();
     navigate('/login');
   };
-
+useEffect(() => {
+  if ('Notification' in window && Notification.permission !== 'denied') {
+    Notification.requestPermission();
+  }
+}, []);
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Mobile sidebar overlay */}
@@ -104,9 +107,10 @@ const AdminDashboard = () => {
               
               <Route path="/employeetask" element={<DailyTaskEmployee />}/>
               <Route path="/idle-detection" element={<IdleDetectionPage />} />
-             
+           <Route path="performance-reviews" element={<PerformanceReviews />} />
+           <Route path="performance-analytics" element={<PerformanceAnalytics />} />
               <Route path="/workload" element={<WorkloadHeatmap />} />
-            </Routes>
+                         </Routes>
           </div>
         </main>
       </div>
