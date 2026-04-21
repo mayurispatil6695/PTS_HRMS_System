@@ -1,4 +1,3 @@
-// src/components/manager/TeamManagerDashboard.tsx
 import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -9,6 +8,10 @@ import ManagerSidebar from './TeamManagerSidebar';
 import ProjectManagement from '../admin/ProjectManagement';
 import DailyTaskEmployee from '../admin/DailyTaskEmployee';
 import ManagerReviews from './ManagerReviews';
+import TeamDashboard from './TeamDashboard';
+import LeaveCalendar from './LeaveCalendar';
+import TaskReminder from './TaskReminder'; // optional, create if needed
+
 const TeamManagerDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -53,6 +56,7 @@ const TeamManagerDashboard = () => {
             <Routes>
               <Route path="/" element={
                 <div className="space-y-6">
+                  {/* Optional: <TaskReminder /> */}
                   <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
                     <h2 className="text-2xl font-bold">Manager Overview</h2>
                     <p className="text-gray-600">Manage projects and tasks for your department.</p>
@@ -63,6 +67,8 @@ const TeamManagerDashboard = () => {
               <Route path="/projects" element={<ProjectManagement role="team_manager" userId={user?.id} department={user?.department} />} />
               <Route path="/tasks" element={<DailyTaskEmployee role="team_manager" userId={user?.id} department={user?.department} />} />
               <Route path="/reviews" element={<ManagerReviews />} />
+              <Route path="/team-dashboard" element={<TeamDashboard />} />
+              <Route path="/leave-calendar" element={<LeaveCalendar />} />
             </Routes>
           </div>
         </main>

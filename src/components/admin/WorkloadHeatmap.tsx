@@ -71,6 +71,10 @@ interface FirebaseUserData {
   employees?: Record<string, { dailyTasks?: Record<string, FirebaseTask> }>;
 }
 
+// Raw data types for Firebase
+type ProjectsData = Record<string, { tasks?: Record<string, FirebaseTask> }>;
+type UsersData = Record<string, FirebaseUserData>;
+
 // ==================== HELPER COMPONENTS ====================
 const SkeletonCard = () => (
   <div className="relative overflow-hidden rounded-xl bg-card border border-border animate-pulse">
@@ -148,24 +152,41 @@ const WorkloadHeatmap = () => {
   const [selectedEmployee, setSelectedEmployee] = useState<string>('');
   const [heatmapData, setHeatmapData] = useState<{ date: string; count: number }[]>([]);
 
-  // Fetch employees from Firebase
+  // Fetch all employees (no filtering)
   useEffect(() => {
     const fetchEmployees = async () => {
       const usersSnap = await get(ref(database, 'users'));
+      const usersData = usersSnap.val() as UsersData | null;
       const empList: Employee[] = [];
-      usersSnap.forEach((userSnap) => {
-        const userData = userSnap.val() as FirebaseUserData;
+      if (usersData) {
+        for (const userData of Object.values(usersData)) {
+          if (userData.role === 'admin') continue;
+          const profile = userData.profile || userData.employee;
+          if (profile?.name) {
+            empList.push({
+              id: userData.role === 'admin' ? '' : 'some-id', // You need to get actual ID from key
+              name: profile.name,
+              department: profile.department || 'General',
+            });
+          }
+        }
+      }
+      // Actually, we need to capture the keys. Let's refactor properly:
+      const fixedList: Employee[] = [];
+      usersSnap.forEach((child) => {
+        const uid = child.key;
+        const userData = child.val() as FirebaseUserData;
         if (userData.role === 'admin') return;
         const profile = userData.profile || userData.employee;
         if (profile?.name) {
-          empList.push({
-            id: userSnap.key || '',
+          fixedList.push({
+            id: uid || '',
             name: profile.name,
             department: profile.department || 'General',
           });
         }
       });
-      setEmployees(empList);
+      setEmployees(fixedList);
     };
     fetchEmployees();
   }, []);
@@ -195,9 +216,9 @@ const WorkloadHeatmap = () => {
     });
 
     const fetchAllTasks = async () => {
-      // 1. Fetch project tasks (global projects node)
+      // 1. Fetch project tasks
       const projectsSnap = await get(ref(database, 'projects'));
-      const projects = projectsSnap.val() as Record<string, FirebaseProject> | null;
+      const projects = projectsSnap.val() as ProjectsData | null;
       if (projects) {
         for (const proj of Object.values(projects)) {
           const tasks = proj.tasks;
@@ -232,7 +253,7 @@ const WorkloadHeatmap = () => {
 
       // 2. Fetch standalone tasks (dailyTasks)
       const usersSnap = await get(ref(database, 'users'));
-      const usersData = usersSnap.val() as Record<string, FirebaseUserData> | null;
+      const usersData = usersSnap.val() as UsersData | null;
       if (usersData) {
         for (const adminData of Object.values(usersData)) {
           if (adminData.employees) {
@@ -289,17 +310,17 @@ const WorkloadHeatmap = () => {
   useEffect(() => {
     if (!selectedEmployee) return;
     const fetchHeatmapData = async () => {
-      const dailyMap = new Map<string, number>(); // date -> total hours
+      const dailyMap = new Map<string, number>();
       const projectsSnap = await get(ref(database, 'projects'));
-      const projects = projectsSnap.val() as Record<string, any> | null;
+      const projects = projectsSnap.val() as ProjectsData | null;
       if (projects) {
         for (const proj of Object.values(projects)) {
           const tasks = proj.tasks;
           if (!tasks) continue;
-          for (const task of Object.values(tasks) as any[]) {
+          for (const task of Object.values(tasks)) {
             if (task.assignedTo !== selectedEmployee) continue;
             if (task.timeLogs) {
-              for (const log of Object.values(task.timeLogs) as any[]) {
+              for (const log of Object.values(task.timeLogs)) {
                 const start = log.startTime;
                 const duration = log.durationMs;
                 if (start && duration) {
@@ -352,7 +373,8 @@ const WorkloadHeatmap = () => {
     ? (mode === 'taskCount' ? totalTasks / workloadData.length : totalHours / workloadData.length)
     : 0;
 
-  const employeeOptions = useMemo(() => workloadData.map(w => ({ id: w.employeeId, name: w.employeeName })), [workloadData]);
+  // Employee dropdown options: use all employees (not just those with workload data)
+  const employeeOptions = useMemo(() => employees.map(emp => ({ id: emp.id, name: emp.name })), [employees]);
 
   if (loading) {
     return (

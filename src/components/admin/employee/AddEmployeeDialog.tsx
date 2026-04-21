@@ -5,7 +5,7 @@ import { Input } from '../../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../ui/select';
 import { Avatar, AvatarFallback, AvatarImage } from '../../ui/avatar';
 import { Plus, Upload, Camera, User, Phone, Calendar, DollarSign, Edit } from 'lucide-react';
-import { getDatabase, ref, set, update ,push,onValue} from 'firebase/database';
+import { getDatabase, ref, set, update, push, onValue, off } from 'firebase/database';
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { auth, database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
@@ -16,9 +16,9 @@ import { cn } from '../../../lib/utils';
 import { toast } from 'sonner';
 import type { Employee as BaseEmployee } from './EmployeeList';
 
-// ✅ Extend Employee to include role (since it's missing in the base type)
 interface Employee extends BaseEmployee {
   role?: 'employee' | 'team_leader' | 'team_manager' | 'client';
+  managerId?: string;
 }
 
 interface NewEmployee {
@@ -40,6 +40,7 @@ interface NewEmployee {
   bankName: string;
   ifscCode: string;
   role: 'employee' | 'team_leader' | 'team_manager' | 'client';
+  managerId: string;
 }
 
 interface AddEmployeeDialogProps {
@@ -153,7 +154,7 @@ const departmentDesignations = {
     'Director of Sales',
     'VP of Sales'
   ]
-}
+};
 
 const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
   departments,
@@ -184,11 +185,14 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     bankAccountNumber: '',
     bankName: '',
     ifscCode: '',
-    role: 'employee' 
+    role: 'employee',
+    managerId: ''
   });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [designations, setDesignations] = useState<string[]>([]);
+  const [designationsList, setDesignationsList] = useState<string[]>([]);
+  const [managers, setManagers] = useState<{ id: string; name: string }[]>([]);
+  const [selectedManagerId, setSelectedManagerId] = useState('');
 
   const isControlled = externalOpen !== undefined;
   const open = isControlled ? externalOpen : internalOpen;
@@ -197,12 +201,30 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
   const workModes = ['office', 'remote', 'hybrid'];
   const employmentTypes = ['full-time', 'part-time', 'freelancing', 'internship'];
 
+  // Fetch all users with role 'team_manager' (look inside profile)
+useEffect(() => {
+  const usersRef = ref(database, 'users');
+  const unsubscribe = onValue(usersRef, (snapshot) => {
+    const mgrs: { id: string; name: string }[] = [];
+    snapshot.forEach((child) => {
+      const userData = child.val();
+      // ✅ role is stored inside 'profile' object
+      const profile = userData.profile || userData;
+      if (profile.role === 'team_manager') {
+        mgrs.push({ id: child.key || '', name: profile.name || child.key });
+      }
+    });
+    setManagers(mgrs);
+  });
+  return () => off(usersRef);
+}, []);
+
   useEffect(() => {
     if (formData.department && departmentDesignations[formData.department as keyof typeof departmentDesignations]) {
-      setDesignations(departmentDesignations[formData.department as keyof typeof departmentDesignations]);
+      setDesignationsList(departmentDesignations[formData.department as keyof typeof departmentDesignations]);
       setFormData(prev => ({ ...prev, designation: '' }));
     } else {
-      setDesignations([]);
+      setDesignationsList([]);
     }
   }, [formData.department]);
 
@@ -226,11 +248,12 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         bankAccountNumber: employeeToEdit.bankDetails?.accountNumber || '',
         bankName: employeeToEdit.bankDetails?.bankName || '',
         ifscCode: employeeToEdit.bankDetails?.ifscCode || '',
-        role: employeeToEdit.role || 'employee'
+        role: employeeToEdit.role || 'employee',
+        managerId: employeeToEdit.managerId || ''
       });
-
+      setSelectedManagerId(employeeToEdit.managerId || '');
       if (employeeToEdit.department && departmentDesignations[employeeToEdit.department as keyof typeof departmentDesignations]) {
-        setDesignations(departmentDesignations[employeeToEdit.department as keyof typeof departmentDesignations]);
+        setDesignationsList(departmentDesignations[employeeToEdit.department as keyof typeof departmentDesignations]);
       }
     } else {
       setFormData({
@@ -251,9 +274,11 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         bankAccountNumber: '',
         bankName: '',
         ifscCode: '',
-        role: 'employee'
+        role: 'employee',
+        managerId: ''
       });
-      setDesignations([]);
+      setSelectedManagerId('');
+      setDesignationsList([]);
     }
   }, [employeeToEdit]);
 
@@ -328,6 +353,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
             ifscCode: formData.ifscCode
           },
           role: formData.role,
+          managerId: selectedManagerId,
           updatedAt: new Date().toISOString()
         };
 
@@ -381,6 +407,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           role: formData.role,  
+          managerId: selectedManagerId,
           addedBy: user.id,
           status: 'active'
         };
@@ -412,6 +439,18 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
       setLoading(false);
     }
   };
+
+  const isSubmitDisabled = loading ||
+    !formData.name ||
+    !formData.email ||
+    (!employeeToEdit && !formData.password) ||
+    !formData.department ||
+    !formData.designation ||
+    !formData.joiningDate ||
+    !formData.salary ||
+    !formData.emergencyContactName ||
+    !formData.emergencyContactNumber ||
+    (!employeeToEdit && formData.password.length < 6);
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -552,7 +591,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
                   <SelectValue placeholder={formData.department ? "Select designation" : "Select department first"} />
                 </SelectTrigger>
                 <SelectContent>
-                  {designations.map((des) => (
+                  {designationsList.map((des) => (
                     <SelectItem key={des} value={des}>{des}</SelectItem>
                   ))}
                 </SelectContent>
@@ -646,7 +685,6 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
               </Select>
             </div>
 
-            {/* ✅ Role selector – fixed any type */}
             <div className="space-y-2">
               <label className="text-sm font-medium text-gray-700">Role *</label>
               <Select 
@@ -662,6 +700,19 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
                   <SelectItem value="team_leader">Team Leader</SelectItem>
                   <SelectItem value="team_manager">Team Manager</SelectItem>
                   <SelectItem value="client">Client</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* ✅ Manager selection dropdown */}
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-gray-700">Manager</label>
+              <Select value={selectedManagerId} onValueChange={setSelectedManagerId} disabled={loading}>
+                <SelectTrigger><SelectValue placeholder="Select manager" /></SelectTrigger>
+                <SelectContent>
+                  {managers.map(mgr => (
+                    <SelectItem key={mgr.id} value={mgr.id}>{mgr.name}</SelectItem>
+                  ))}
                 </SelectContent>
               </Select>
             </div>
@@ -756,22 +807,10 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
             </Button>
             <Button
               onClick={handleSubmit}
-              disabled={
-                loading ||
-                !formData.name ||
-                !formData.email ||
-                (!employeeToEdit && !formData.password) ||
-                !formData.department ||
-                !formData.designation ||
-                !formData.joiningDate ||
-                !formData.salary ||
-                !formData.emergencyContactName ||
-                !formData.emergencyContactNumber ||
-                (!employeeToEdit && formData.password.length < 6)
-              }
+              disabled={isSubmitDisabled}
             >
               {loading ? (
-               <>
+                <>
                   <svg className="animate-spin -ml-1 mr-2 h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                     <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                     <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>

@@ -10,7 +10,8 @@ import {
   Users,
   FileText,
   X,
-  Building2,Star,
+  Building2,
+  Star,
 } from 'lucide-react';
 import { Button } from '../ui/button';
 import { useAuth } from '../../hooks/useAuth';
@@ -28,10 +29,11 @@ const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = fal
     { icon: LayoutDashboard, label: 'Dashboard', path: '/manager/' },
     { icon: FolderOpen, label: 'Projects', path: '/manager/projects' },
     { icon: CheckSquare, label: 'Tasks', path: '/manager/tasks' },
+    { icon: Users, label: 'Team Dashboard', path: '/manager/team-dashboard' },
+    { icon: Calendar, label: 'Leave Calendar', path: '/manager/leave-calendar' },
     { icon: Clock, label: 'Attendance', path: '/manager/attendance' },
     { icon: Calendar, label: 'Leaves', path: '/manager/leaves' },
     { icon: Star, label: 'Team Performance Reviews', path: '/manager/reviews' },
-    { icon: Users, label: 'Employees', path: '/manager/employees' },
     { icon: FileText, label: 'Reports', path: '/manager/reports' },
   ];
 
@@ -44,7 +46,6 @@ const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = fal
 
   return (
     <div className={`h-full flex flex-col bg-white ${isMobile ? 'w-full' : 'w-64'}`}>
-      {/* Header */}
       <div className="flex items-center justify-between p-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
@@ -62,7 +63,6 @@ const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = fal
         )}
       </div>
 
-      {/* User Info */}
       <div className="p-4 border-b border-gray-200">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-white font-semibold">
@@ -76,7 +76,6 @@ const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = fal
         </div>
       </div>
 
-      {/* Navigation */}
       <nav className="flex-1 overflow-y-auto p-4">
         <ul className="space-y-1">
           {menuItems.map((item, index) => (
@@ -103,7 +102,6 @@ const ManagerSidebar: React.FC<ManagerSidebarProps> = ({ onClose, isMobile = fal
         </ul>
       </nav>
 
-      {/* Footer */}
       <div className="p-4 border-t border-gray-200">
         <div className="text-xs text-gray-500 text-center truncate">
           © 2025 PTS System

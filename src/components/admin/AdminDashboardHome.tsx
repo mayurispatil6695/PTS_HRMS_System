@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Users, UserCheck, Calendar, Clock, FolderOpen, Camera, Bell, X, AlertTriangle } from 'lucide-react';
 import DashboardCard from './DashboardCard';
@@ -7,16 +7,14 @@ import LeavePopup from './popups/LeavePopup';
 import EmployeesPopup from './popups/EmployeesPopup';
 import ProjectsPopup from './popups/ProjectsPopup';
 import MarketingPostsPopup from './popups/MarketingPostsPopup';
-import { ref, onValue, off, query, orderByChild, DataSnapshot,update } from 'firebase/database';
+import { ref, onValue, off, query, orderByChild, DataSnapshot, update } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
-import { DailyIdleReport } from './DailyIdleReport';
 import { AttendanceRecord } from '@/types/attendance';
 import { Project, Task, ProjectUpdate } from '@/types/project';
-
 import {
   Employee,
   MarketingPost,
@@ -27,7 +25,7 @@ import {
   IdleNotification,
 } from '@/types/admin';
 
-// Add this interface for Firebase project data
+// Firebase project data interface
 interface FirebaseProjectData {
   name?: string;
   description?: string;
@@ -45,6 +43,16 @@ interface FirebaseProjectData {
   updates?: Record<string, unknown>;
 }
 
+// Work session data
+interface WorkSession {
+  isPunchedIn?: boolean;
+  isOnBreak?: boolean;
+  punchInTime?: number;
+  punchOutTime?: number;
+  breakStartTime?: number;
+  lastUpdated?: number;
+}
+
 const AdminDashboardHome = () => {
   const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
   const { user } = useAuth();
@@ -56,7 +64,6 @@ const AdminDashboardHome = () => {
   const [marketingPosts, setMarketingPosts] = useState<MarketingPost[]>([]);
   const [initialLoadComplete, setInitialLoadComplete] = useState(false);
   const [stats, setStats] = useState({
-    
     totalEmployees: 0,
     activeEmployees: 0,
     pendingLeaves: 0,
@@ -87,7 +94,10 @@ const AdminDashboardHome = () => {
   } | null>(null);
   const [notificationTimeout, setNotificationTimeout] = useState<NodeJS.Timeout | null>(null);
 
-  // Check and request notification permission
+  // Keep previous work session states to detect changes
+  const prevWorkSessionsRef = useRef<Map<string, WorkSession>>(new Map());
+
+  // Request notification permission
   useEffect(() => {
     if (!('Notification' in window)) {
       console.log('This browser does not support desktop notification');
@@ -103,6 +113,57 @@ const AdminDashboardHome = () => {
     }
   }, []);
 
+  // ========== ATTENDANCE EVENT NOTIFICATIONS ==========
+  useEffect(() => {
+    if (!employees.length) return;
+
+    const workSessionsRef = ref(database, 'workSessions');
+    const unsubscribe = onValue(workSessionsRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, WorkSession> | null;
+      if (!data) return;
+
+      // For each employee, compare with previous state
+      for (const [empId, current] of Object.entries(data)) {
+        const prev = prevWorkSessionsRef.current.get(empId);
+        const employee = employees.find(e => e.id === empId);
+        if (!employee) continue;
+
+        // Detect punch in (was not punched in, now punched in)
+        if (!prev?.isPunchedIn && current.isPunchedIn) {
+          const message = `${employee.name} punched in.`;
+          showAttendanceNotification('Punched In', message, 'green');
+        }
+        // Detect punch out (was punched in, now not punched in)
+        if (prev?.isPunchedIn && !current.isPunchedIn) {
+          const message = `${employee.name} punched out.`;
+          showAttendanceNotification('Punched Out', message, 'blue');
+        }
+        // Detect break start (was not on break, now on break)
+        if (!prev?.isOnBreak && current.isOnBreak) {
+          const message = `${employee.name} started a break.`;
+          showAttendanceNotification('Break Started', message, 'yellow');
+        }
+        // Detect break end (was on break, now not on break)
+        if (prev?.isOnBreak && !current.isOnBreak) {
+          const message = `${employee.name} ended break.`;
+          showAttendanceNotification('Break Ended', message, 'purple');
+        }
+      }
+      prevWorkSessionsRef.current = new Map(Object.entries(data));
+    });
+
+    return () => off(workSessionsRef);
+  }, [employees]);
+
+  // Helper to show toast + browser notification
+  const showAttendanceNotification = (title: string, body: string, color: 'green' | 'blue' | 'yellow' | 'purple') => {
+    // Toast
+    toast(body, { icon: '🔔', duration: 4000 });
+    // Browser notification
+    if (notificationPermission === 'granted') {
+      new Notification(title, { body, icon: '/logo.png' });
+    }
+  };
   // Check for posts scheduled for today and upcoming posts
   useEffect(() => {
     if (marketingPosts.length === 0) return;
@@ -646,6 +707,38 @@ useEffect(() => {
     }
   }, [employees, leaveRequests, attendanceRecords, projects, marketingPosts]);
 
+  useEffect(() => {
+  const activityRef = ref(database, 'activity');
+  const unsubscribe = onValue(activityRef, (snapshot) => {
+    const data = snapshot.val();
+    if (!data) return;
+    Object.entries(data).forEach(([userId, userData]: [string, any]) => {
+      if (userData.isIdle === true && !userData.alertSent) {
+        // Fetch employee name
+        const employee = employees.find(e => e.id === userId);
+        if (employee) {
+          // Show browser notification
+          if (Notification.permission === 'granted') {
+            new Notification(`⚠️ Idle Employee: ${employee.name}`, {
+              body: `${employee.name} (${employee.department}) has been idle for ${userData.idleDuration || 20} seconds.`,
+              icon: '/logo.png',
+              tag: `idle-${userId}`,
+            });
+          }
+          // Also show a toast (optional)
+          toast.error(`${employee.name} is idle!`, { duration: 5000 });
+          // Mark alert as sent to avoid spamming
+          update(ref(database, `activity/${userId}`), { alertSent: true });
+        }
+      } else if (userData.isIdle === false) {
+        // Reset alert flag when user becomes active again
+        update(ref(database, `activity/${userId}`), { alertSent: false });
+      }
+    });
+  });
+  return () => off(activityRef);
+}, [employees]);
+
   const formatIdleTime = (startTime: number): string => {
     const idleSeconds = Math.floor((Date.now() - startTime) / 1000);
     const minutes = Math.floor(idleSeconds / 60);
@@ -857,7 +950,7 @@ useEffect(() => {
         
       </div>
       <div className="mt-6">
-  <DailyIdleReport />
+  
 </div>
      
 

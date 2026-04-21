@@ -19,7 +19,7 @@ interface IdleDetectionOptions {
 
 export const useIdleDetection = (options: IdleDetectionOptions) => {
   const {
-    idleTimeout = 300000, // 5 minutes (was 10000) – adjust as needed
+    idleTimeout = 10000,
     checkInterval = 1000,
     onIdleStart,
     onIdleEnd,

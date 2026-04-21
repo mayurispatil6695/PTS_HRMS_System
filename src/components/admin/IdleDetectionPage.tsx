@@ -1,29 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { Clock, AlertTriangle, Play, Coffee } from 'lucide-react';
+import { Clock, AlertTriangle, Play, Coffee, Download, RefreshCw } from 'lucide-react';
 import { Card, CardContent } from '../ui/card';
 import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
 import { ref, onValue, off, get } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
+import { toast } from 'react-hot-toast';
 
+// ========== TYPES ==========
 interface EmployeeProfile {
   name: string;
   email?: string;
   department?: string;
 }
 
-interface PunchRecord {
-  punchIn?: string;
-  punchOut?: string | null;
-  date?: string;
-  status?: string;
-  breaks?: Record<string, { breakIn: string; breakOut?: string }>;
-}
-
 interface ActivityData {
   isIdle?: boolean;
   idleStartTime?: number;
   lastActive?: number;
+  status?: string;
 }
 
 interface IdleEmployee {
@@ -37,89 +33,101 @@ interface IdleEmployee {
   idleStartTime: number | null;
   lastActive: number;
   totalIdleMsToday: number;
-  adminId: string; // for debugging
+  adminId: string;
 }
 
+interface FirebaseUserData {
+  employees?: Record<string, EmployeeProfile>;
+  [key: string]: unknown;
+}
+
+// ========== HELPERS ==========
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
-// Improved date matching: tries several formats
-const isToday = (dateStr?: string): boolean => {
-  if (!dateStr) return false;
-  const today = getTodayStr();
-  // Case 1: "2026-04-16T09:30:00.000Z"
-  if (dateStr.startsWith(today)) return true;
-  // Case 2: "2026-04-16"
-  if (dateStr === today) return true;
-  // Case 3: numeric timestamp (milliseconds)
-  const timestamp = Number(dateStr);
-  if (!isNaN(timestamp) && timestamp > 0) {
-    const d = new Date(timestamp);
-    return d.toISOString().split('T')[0] === today;
-  }
-  // Case 4: try to parse as Date object
-  try {
-    const d = new Date(dateStr);
-    if (!isNaN(d.getTime())) {
-      return d.toISOString().split('T')[0] === today;
-    }
-  } catch (e) {
-    // ignore
-  }
-  return false;
+const formatIdleDuration = (ms: number): string => {
+  if (ms <= 0) return '0s';
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 };
 
-// Fetch today's attendance record for an employee
-const getTodayAttendanceRecord = async (
+const fetchTotalIdleToday = async (empId: string): Promise<number> => {
+  const today = getTodayStr();
+  const totalRef = ref(database, `idleLogs/${empId}/${today}/totalIdleMs`);
+  const snapshot = await get(totalRef);
+  return snapshot.val() || 0;
+};
+
+// Get today's punch status (punched in/out and on break) from attendance records
+const getTodayPunchStatus = async (
   adminId: string,
   empId: string
-): Promise<PunchRecord | null> => {
-  const punchingRef = ref(database, `users/${adminId}/employees/${empId}/punching`);
-  const snapshot = await get(punchingRef);
-  const data = snapshot.val() as Record<string, PunchRecord> | null;
-  if (!data) return null;
-
-  // Find the record that matches today's date
-  for (const rec of Object.values(data)) {
-    if (isToday(rec.date)) {
-      return rec;
-    }
+): Promise<{ isPunchedIn: boolean; isOnBreak: boolean }> => {
+  const sessionRef = ref(database, `workSessions/${empId}`);
+  const snapshot = await get(sessionRef);
+  const data = snapshot.val();
+  if (data) {
+    return {
+      isPunchedIn: data.isPunchedIn || false,
+      isOnBreak: data.isOnBreak || false,
+    };
   }
-  return null;
+  return { isPunchedIn: false, isOnBreak: false };
 };
-
-const getPunchedInStatus = (record: PunchRecord | null): { isPunchedIn: boolean; isOnBreak: boolean } => {
-  if (!record) return { isPunchedIn: false, isOnBreak: false };
-  const isPunchedIn = !!record.punchIn && !record.punchOut;
-  let isOnBreak = false;
-  if (record.breaks) {
-    isOnBreak = Object.values(record.breaks).some(brk => brk.breakIn && !brk.breakOut);
-  }
-  return { isPunchedIn, isOnBreak };
-};
-
+// ========== MAIN COMPONENT ==========
 const IdleDetectionPage = () => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<IdleEmployee[]>([]);
   const [loading, setLoading] = useState(true);
-  const [stats, setStats] = useState({
-    avgIdleMinutes: 0,
-    highIdleCount: 0,
-    onBreakCount: 0,
-  });
+  const [refreshKey, setRefreshKey] = useState(0);
+  const [currentTime, setCurrentTime] = useState(Date.now());
+  const [stats, setStats] = useState({ avgIdleMinutes: 0, highIdleCount: 0, onBreakCount: 0 });
 
-  const formatIdleTime = (ms: number): string => {
-    const minutes = Math.floor(ms / 60000);
-    if (minutes < 60) return `${minutes}m`;
-    const hours = Math.floor(minutes / 60);
-    const remainingMinutes = minutes % 60;
-    return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  useEffect(() => {
+    const interval = setInterval(() => setCurrentTime(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleRefresh = () => {
+    setRefreshKey(prev => prev + 1);
+    toast.success('Refreshing idle data...');
   };
 
-  const fetchTotalIdleToday = async (empId: string): Promise<number> => {
-    const today = getTodayStr();
-    const totalRef = ref(database, `idleLogs/${empId}/${today}/totalIdleMs`);
-    const snapshot = await get(totalRef);
-    return snapshot.val() || 0;
+  const exportDailyReport = () => {
+    const punchedIn = employees.filter(e => e.isPunchedIn);
+    if (punchedIn.length === 0) {
+      toast.error('No punched‑in employees to export');
+      return;
+    }
+    const headers = ['Employee', 'Department', 'Status', 'Current Idle', 'Total Idle Today', 'Alert'];
+    const rows = punchedIn.map(emp => {
+      let currentIdleMs = 0;
+      if (emp.isIdle && emp.idleStartTime) {
+        currentIdleMs = Math.max(0, currentTime - emp.idleStartTime);
+      }
+      const totalIdleMinutes = Math.floor(emp.totalIdleMsToday / 60000);
+      const status = emp.isOnBreak ? 'break' : (emp.isIdle ? 'idle' : 'active');
+      const alert = totalIdleMinutes > 45 ? 'High Idle' : '';
+      return [
+        emp.name,
+        emp.department,
+        status,
+        formatIdleDuration(currentIdleMs),
+        formatIdleDuration(emp.totalIdleMsToday),
+        alert,
+      ];
+    });
+    const csvContent = [headers, ...rows].map(row => row.join(',')).join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `idle_report_${getTodayStr()}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success('Report downloaded');
   };
 
   useEffect(() => {
@@ -128,74 +136,70 @@ const IdleDetectionPage = () => {
       return;
     }
 
-    const fetchAllEmployees = async () => {
-      const usersRef = ref(database, 'users');
-      const snapshot = await get(usersRef);
-      const allUsers = snapshot.val() as Record<string, any> | null;
+    const loadData = async () => {
+      const usersSnap = await get(ref(database, 'users'));
+      const allUsers = usersSnap.val() as Record<string, FirebaseUserData> | null;
       if (!allUsers) {
         setEmployees([]);
         setLoading(false);
         return;
       }
 
-      const allEmployees: IdleEmployee[] = [];
+      const employeeMap = new Map<
+        string,
+        { name: string; department: string; email: string; adminId: string }
+      >();
 
-      // Iterate over every user (admin) node
       for (const [adminId, adminData] of Object.entries(allUsers)) {
         const employeesNode = adminData?.employees;
         if (!employeesNode || typeof employeesNode !== 'object') continue;
-
         for (const [empId, empData] of Object.entries(employeesNode)) {
           const profile = empData as EmployeeProfile;
-          // Use name if available, otherwise fallback to ID
-          const employeeName = profile.name || empId;
-          const employeeDept = profile.department || 'No Department';
-          const employeeEmail = profile.email || '';
-
-          // Fetch attendance record for this employee (using the correct adminId)
-          const attendanceRecord = await getTodayAttendanceRecord(adminId, empId);
-          const status = getPunchedInStatus(attendanceRecord);
-          const totalIdleMs = await fetchTotalIdleToday(empId);
-
-          // Log Samina's data for debugging
-          if (employeeName.toLowerCase().includes('samina')) {
-            console.log(`🔍 Samina Begum found under admin ${adminId}`);
-            console.log('  Employee ID:', empId);
-            console.log('  Attendance record:', attendanceRecord);
-            console.log('  isPunchedIn:', status.isPunchedIn);
-            console.log('  isOnBreak:', status.isOnBreak);
-            console.log('  totalIdleMs:', totalIdleMs);
+          if (!employeeMap.has(empId)) {
+            employeeMap.set(empId, {
+              name: profile.name || empId,
+              department: profile.department || 'No Department',
+              email: profile.email || '',
+              adminId,
+            });
           }
-
-          allEmployees.push({
-            id: empId,
-            name: employeeName,
-            email: employeeEmail,
-            department: employeeDept,
-            isPunchedIn: status.isPunchedIn,
-            isOnBreak: status.isOnBreak,
-            isIdle: false,
-            idleStartTime: null,
-            lastActive: Date.now(),
-            totalIdleMsToday: totalIdleMs,
-            adminId: adminId,
-          });
         }
       }
 
-      console.log(`Total employees found across all admins: ${allEmployees.length}`);
-      console.log('First 5 employees:', allEmployees.slice(0, 5).map(e => ({ name: e.name, isPunchedIn: e.isPunchedIn })));
+      const employeePromises: Promise<IdleEmployee>[] = [];
+      for (const [empId, info] of employeeMap.entries()) {
+        employeePromises.push(
+          (async () => {
+            const punchStatus = await getTodayPunchStatus(info.adminId, empId);
+            const totalIdleMs = await fetchTotalIdleToday(empId);
+            return {
+              id: empId,
+              name: info.name,
+              email: info.email,
+              department: info.department,
+              isPunchedIn: punchStatus.isPunchedIn,
+              isOnBreak: punchStatus.isOnBreak,
+              isIdle: false,
+              idleStartTime: null,
+              lastActive: Date.now(),
+              totalIdleMsToday: totalIdleMs,
+              adminId: info.adminId,
+            };
+          })()
+        );
+      }
+
+      const allEmployees = await Promise.all(employeePromises);
       setEmployees(allEmployees);
       setLoading(false);
 
-      // Set up real-time listeners for all employees (optional, but we'll keep it simple)
-      // For performance, we only listen to activity for idle status (global)
       const activityRef = ref(database, 'activity');
       const unsubscribeActivity = onValue(activityRef, (snap) => {
         const activity = snap.val() as Record<string, ActivityData> | null;
+        if (!activity) return;
         setEmployees(prev =>
           prev.map(emp => {
-            const act = activity?.[emp.id];
+            const act = activity[emp.id];
             return {
               ...emp,
               isIdle: act?.isIdle || false,
@@ -206,19 +210,12 @@ const IdleDetectionPage = () => {
         );
       });
 
-      // We won't set up per‑employee punching listeners to avoid too many listeners,
-      // but the page will refresh when the user reloads or we can add a refresh button.
-      // For real‑time, we could add them, but it's optional.
-
-      return () => {
-        off(activityRef);
-      };
+      return () => off(activityRef);
     };
 
-    fetchAllEmployees();
-  }, [user?.id]);
+    loadData();
+  }, [user?.id, refreshKey]);
 
-  // Recalculate stats only for punched‑in employees
   useEffect(() => {
     const punchedIn = employees.filter(e => e.isPunchedIn);
     const totalIdleMinutes = punchedIn.reduce((sum, e) => sum + (e.totalIdleMsToday / 60000), 0);
@@ -237,17 +234,28 @@ const IdleDetectionPage = () => {
   }
 
   const punchedInEmployees = employees.filter(e => e.isPunchedIn);
-  console.log(`Punched in employees count: ${punchedInEmployees.length}`, punchedInEmployees.map(e => e.name));
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold">Idle Detection</h1>
-        <p className="text-sm text-muted-foreground mt-0.5">
-          Real‑time idle monitoring for employees currently punched in
-        </p>
+      {/* Header with buttons */}
+      <div className="flex flex-wrap justify-between items-center gap-4">
+        <div>
+          <h1 className="text-2xl font-semibold">Idle Detection</h1>
+          <p className="text-sm text-muted-foreground mt-0.5">
+            Real‑time idle monitoring for employees currently punched in
+          </p>
+        </div>
+        <div className="flex gap-2">
+          <Button variant="outline" size="sm" onClick={handleRefresh}>
+            <RefreshCw className="w-4 h-4 mr-1" /> Refresh
+          </Button>
+          <Button variant="outline" size="sm" onClick={exportDailyReport}>
+            <Download className="w-4 h-4 mr-1" /> Download Report
+          </Button>
+        </div>
       </div>
 
+      {/* Stats cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-4">
@@ -284,11 +292,12 @@ const IdleDetectionPage = () => {
         </Card>
       </div>
 
+      {/* Employees table */}
       <div className="rounded-xl border bg-white overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
-            <thead>
-              <tr className="border-b bg-gray-50">
+            <thead className="bg-gray-50">
+              <tr className="border-b">
                 <th className="text-left text-xs font-medium text-gray-500 px-4 py-3">Employee</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-4 py-3">Department</th>
                 <th className="text-left text-xs font-medium text-gray-500 px-4 py-3">Status</th>
@@ -298,16 +307,18 @@ const IdleDetectionPage = () => {
               </tr>
             </thead>
             <tbody>
-              {punchedInEmployees.map((emp) => {
-                const currentIdleMinutes = emp.isIdle && emp.idleStartTime
-                  ? Math.floor((Date.now() - emp.idleStartTime) / 60000)
-                  : 0;
+              {punchedInEmployees.map(emp => {
+                let currentIdleMs = 0;
+                if (emp.isIdle && emp.idleStartTime) {
+                  currentIdleMs = currentTime - emp.idleStartTime;
+                  if (currentIdleMs < 0) currentIdleMs = 0;
+                }
                 const totalIdleMinutes = Math.floor(emp.totalIdleMsToday / 60000);
                 const isHighIdle = totalIdleMinutes > 45;
                 const status = emp.isOnBreak ? 'break' : (emp.isIdle ? 'idle' : 'active');
 
                 return (
-                  <tr key={emp.id} className="border-b last:border-0 hover:bg-gray-50 transition">
+                  <tr key={emp.id} className="border-b hover:bg-gray-50">
                     <td className="px-4 py-3 text-sm font-medium">{emp.name}</td>
                     <td className="px-4 py-3 text-sm text-gray-500">{emp.department || '—'}</td>
                     <td className="px-4 py-3">
@@ -328,10 +339,10 @@ const IdleDetectionPage = () => {
                       </Badge>
                     </td>
                     <td className="px-4 py-3 font-mono text-sm">
-                      {currentIdleMinutes > 0 ? formatIdleTime(currentIdleMinutes * 60000) : '0m'}
+                      {formatIdleDuration(currentIdleMs)}
                     </td>
                     <td className="px-4 py-3 font-mono text-sm">
-                      {formatIdleTime(emp.totalIdleMsToday)}
+                      {formatIdleDuration(emp.totalIdleMsToday)}
                     </td>
                     <td className="px-4 py-3">
                       {isHighIdle && (
