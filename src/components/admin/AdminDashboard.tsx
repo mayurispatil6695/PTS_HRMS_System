@@ -1,5 +1,4 @@
-
-import React, { useEffect, useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import AdminSidebar from './AdminSidebar';
@@ -25,7 +24,7 @@ import IdleDetectionPage from './IdleDetectionPage';
 import WorkloadHeatmap from './WorkloadHeatmap';
 import PerformanceReviews from './PerformanceReviews';
 import PerformanceAnalytics from './PerformanceAnalytics';
-// ...
+import { DarkModeToggle } from '../ui/DarkModeToggle';
 
 const AdminDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -36,57 +35,55 @@ const AdminDashboard = () => {
     logout();
     navigate('/login');
   };
-useEffect(() => {
-  if ('Notification' in window && Notification.permission !== 'denied') {
-    Notification.requestPermission();
-  }
-}, []);
+
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission !== 'denied') {
+      Notification.requestPermission();
+    }
+  }, []);
+
   return (
-    <div className="flex h-screen bg-gray-50">
+    <div className="flex h-screen bg-background">
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
-        <div 
+        <div
           className="fixed inset-0 bg-black bg-opacity-50 z-40 md:hidden"
           onClick={() => setSidebarOpen(false)}
         />
       )}
 
       {/* Sidebar */}
-      <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white shadow-lg transform transition-transform duration-300 ease-in-out md:translate-x-0 md:static md:inset-0 ${
-        sidebarOpen ? 'translate-x-0' : '-translate-x-full'
-      }`}>
+      <div
+        className={`fixed inset-y-0 left-0 z-50 w-64 bg-card shadow-lg transform transition-transform duration-300 ease-in-out md:translate-x-0 md:static md:inset-0 border-r border-border ${
+          sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+        }`}
+      >
         <AdminSidebar onClose={() => setSidebarOpen(false)} />
       </div>
 
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
-        {/* Header */}
-       <header className="bg-white shadow-sm border-b border-gray-200">
-  <div className="flex items-center justify-between px-4 py-3">
-    {/* Left side – menu & title */}
-    <div className="flex items-center gap-4">
-      <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setSidebarOpen(true)}>
-        <Menu className="h-5 w-5" />
-      </Button>
-      <div>
-        <h1 className="text-xl font-semibold text-gray-800">Admin Dashboard</h1>
-        <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
-      </div>
-    </div>
+        <header className="bg-card border-b border-border px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4 md:hidden">
+              <Button variant="ghost" size="icon" onClick={() => setSidebarOpen(true)}>
+                <Menu className="h-5 w-5" />
+              </Button>
+            </div>
+            <div>
+              <h1 className="text-xl font-semibold text-foreground">Admin Dashboard</h1>
+              <p className="text-sm text-muted-foreground">Welcome back, {user?.name}</p>
+            </div>
+            <div className="flex items-center gap-4">
+              <DarkModeToggle />
+              <NotificationSystem />
+              <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">
+                Logout
+              </Button>
+            </div>
+          </div>
+        </header>
 
-    {/* Right side – notifications + logout */}
-    <div className="flex items-center gap-4">
-      <NotificationSystem />
-      <Button
-        variant="outline"
-        onClick={handleLogout}
-        className="hover:bg-red-50 hover:text-red-600 transition-colors"
-      >
-        Logout
-      </Button>
-    </div>
-  </div>
-</header>
         {/* Main content area */}
         <main className="flex-1 overflow-auto">
           <div className="p-6">
@@ -104,13 +101,12 @@ useEffect(() => {
               <Route path="/reports" element={<ReportsManagement />} />
               <Route path="/expenses" element={<ExpenseManagement />} />
               <Route path="/settings" element={<SettingsManagement />} />
-              
-              <Route path="/employeetask" element={<DailyTaskEmployee />}/>
+              <Route path="/employeetask" element={<DailyTaskEmployee />} />
               <Route path="/idle-detection" element={<IdleDetectionPage />} />
-           <Route path="performance-reviews" element={<PerformanceReviews />} />
-           <Route path="performance-analytics" element={<PerformanceAnalytics />} />
+              <Route path="/performance-reviews" element={<PerformanceReviews />} />
+              <Route path="/performance-analytics" element={<PerformanceAnalytics />} />
               <Route path="/workload" element={<WorkloadHeatmap />} />
-                         </Routes>
+            </Routes>
           </div>
         </main>
       </div>

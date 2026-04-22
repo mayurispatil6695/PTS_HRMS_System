@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { Calendar, Clock, Download, Filter, Search, AlertTriangle, Check, X, RotateCcw, Trash2, Bell } from 'lucide-react';
+import { Calendar, Clock, Download, Filter, Search, AlertTriangle, Check, X, RotateCcw, Trash2, Bell, Settings, Plus } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -9,7 +9,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, query, orderByChild, update, remove, off, push, set } from 'firebase/database';
+import { ref, onValue, query, orderByChild, update, remove, off, push, set, get } from 'firebase/database';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../ui/dialog';
+import { Label } from '../ui/label';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/tabs';
 
 interface LeaveManagementProps {
   role?: 'admin' | 'manager' | 'team_leader' | 'client';
@@ -68,6 +71,32 @@ interface RawEmployeeData {
   [key: string]: unknown;
 }
 
+interface LeaveBalance {
+  casual: number;
+  sick: number;
+  annual: number;
+  compOff: number;
+  updatedAt?: string;
+}
+
+interface CarryForwardRule {
+  max: number;
+  percentage: number;
+}
+
+// ✅ Helper to map leave type to balance field (excluding 'updatedAt')
+type BalanceField = 'casual' | 'sick' | 'annual' | 'compOff';
+
+const getBalanceField = (leaveType: string): BalanceField | null => {
+  const mapping: Record<string, BalanceField> = {
+    'Casual Leave': 'casual',
+    'Sick Leave': 'sick',
+    'Annual Leave': 'annual',
+    'Comp-off Leave': 'compOff'
+  };
+  return mapping[leaveType] || null;
+};
+
 const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -84,6 +113,18 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
   const [showNotification, setShowNotification] = useState(false);
   const [currentNotification, setCurrentNotification] = useState<Notification | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
+  
+  const [leaveBalances, setLeaveBalances] = useState<Record<string, LeaveBalance>>({});
+  const [leaveSettings, setLeaveSettings] = useState<{ carryForward: Record<string, CarryForwardRule>; financialYearStart: string }>({
+    carryForward: { casual: { max: 10, percentage: 100 }, sick: { max: 15, percentage: 80 }, annual: { max: 30, percentage: 100 }, compOff: { max: 10, percentage: 0 } },
+    financialYearStart: '2026-01-01'
+  });
+  const [showBalanceModal, setShowBalanceModal] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
+  const [balanceForm, setBalanceForm] = useState<LeaveBalance>({ casual: 0, sick: 0, annual: 0, compOff: 0 });
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [carryForwardForm, setCarryForwardForm] = useState(leaveSettings.carryForward);
+  
   const PAGE_SIZE = 50;
 
   useEffect(() => {
@@ -119,6 +160,27 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     });
     return () => off(usersRef);
   }, [user]);
+
+  useEffect(() => {
+    const balancesRef = ref(database, 'leaveBalances');
+    const unsubscribe = onValue(balancesRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) setLeaveBalances(data);
+    });
+    return () => off(balancesRef);
+  }, []);
+
+  useEffect(() => {
+    const settingsRef = ref(database, 'leaveSettings');
+    const unsubscribe = onValue(settingsRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setLeaveSettings(data);
+        setCarryForwardForm(data.carryForward || leaveSettings.carryForward);
+      }
+    });
+    return () => off(settingsRef);
+  }, []);
 
   useEffect(() => {
     if (!user || employees.length === 0) {
@@ -241,6 +303,9 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     }
   };
 
+  const calculateDays = (start: string, end: string) => Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / (1000 * 60 * 60 * 24)) + 1;
+
+  // ✅ CORRECTED updateLeaveStatus with proper mapping and type safety
   const updateLeaveStatus = async (request: LeaveRequest, newStatus: 'approved' | 'rejected' | 'pending') => {
     if (!user || !request.adminId) { toast({ title: "Error", description: "Cannot process request", variant: "destructive" }); return; }
     try {
@@ -249,8 +314,35 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
       if (newStatus === 'approved') { updates.approvedAt = new Date().toISOString(); updates.approvedBy = user.name || 'Admin'; }
       else if (newStatus === 'rejected') { updates.rejectedAt = new Date().toISOString(); }
       else if (newStatus === 'pending') { updates.rejectedAt = ''; updates.approvedAt = ''; updates.approvedBy = ''; }
+
+      const days = calculateDays(request.startDate, request.endDate);
+      const balanceField = getBalanceField(request.leaveType);
+      if (!balanceField) {
+        // Leave type that doesn't consume balance (e.g., Maternity, Paternity) – skip deduction
+        // Proceed without touching balance
+      } else {
+        const currentBalanceObj = leaveBalances[request.employeeId] || { casual: 0, sick: 0, annual: 0, compOff: 0 };
+        const available = currentBalanceObj[balanceField]; // already a number
+        if (newStatus === 'approved' && request.status !== 'approved') {
+          if (available < days) {
+            toast.error(`Insufficient ${request.leaveType} balance. Available: ${available} days`);
+            setLoading(false);
+            return;
+          }
+          const newBalance = { ...currentBalanceObj, [balanceField]: available - days };
+          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
+        } else if (newStatus === 'rejected' && request.status === 'approved') {
+          const newBalance = { ...currentBalanceObj, [balanceField]: available + days };
+          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
+        } else if (newStatus === 'pending' && request.status === 'approved') {
+          const newBalance = { ...currentBalanceObj, [balanceField]: available + days };
+          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
+        }
+      }
+
       const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
       await update(leaveRef, updates);
+      
       const notifRef = push(ref(database, `notifications/${request.employeeId}`));
       await set(notifRef, {
         title: newStatus === 'approved' ? 'Leave Approved' : 'Leave Rejected',
@@ -260,6 +352,7 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
         createdAt: Date.now(),
         leaveId: request.id,
       });
+      
       const notifType = newStatus === 'approved' ? 'approved' : (newStatus === 'rejected' ? 'rejected' : 'reopened');
       showSystemNotification({
         type: notifType,
@@ -277,6 +370,50 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     finally { setLoading(false); }
   };
 
+  const openBalanceModal = (employee: Employee) => {
+    setSelectedEmployee(employee);
+    const balances = leaveBalances[employee.id] || { casual: 0, sick: 0, annual: 0, compOff: 0 };
+    setBalanceForm(balances);
+    setShowBalanceModal(true);
+  };
+
+  const saveBalance = async () => {
+    if (!selectedEmployee) return;
+    await set(ref(database, `leaveBalances/${selectedEmployee.id}`), {
+      ...balanceForm,
+      updatedAt: new Date().toISOString()
+    });
+    toast.success(`Leave balance updated for ${selectedEmployee.name}`);
+    setShowBalanceModal(false);
+  };
+
+  const saveCarryForwardSettings = async () => {
+    await set(ref(database, 'leaveSettings/carryForward'), carryForwardForm);
+    toast.success('Carry‑forward rules saved');
+    setShowSettingsModal(false);
+  };
+
+  const runCarryForward = async () => {
+    if (!confirm('Run year-end carry-forward? This will reset balances based on current rules.')) return;
+    const currentYearBalances = { ...leaveBalances };
+    const rules = leaveSettings.carryForward;
+    for (const [empId, balance] of Object.entries(currentYearBalances)) {
+      const newBalance: LeaveBalance = { casual: 0, sick: 0, annual: 0, compOff: 0 };
+      for (const type of ['casual', 'sick', 'annual', 'compOff'] as const) {
+        const rule = rules[type];
+        if (rule && rule.percentage > 0) {
+          let carried = (balance[type] || 0) * (rule.percentage / 100);
+          if (rule.max && carried > rule.max) carried = rule.max;
+          newBalance[type] = carried;
+        } else {
+          newBalance[type] = 0;
+        }
+      }
+      await set(ref(database, `leaveBalances/${empId}`), { ...newBalance, updatedAt: new Date().toISOString() });
+    }
+    toast.success('Carry-forward completed');
+  };
+
   const handleApprove = (req: LeaveRequest) => updateLeaveStatus(req, 'approved');
   const handleReject = (req: LeaveRequest) => updateLeaveStatus(req, 'rejected');
   const handleReapprove = (req: LeaveRequest) => updateLeaveStatus(req, 'pending');
@@ -286,6 +423,15 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     if (!window.confirm('Delete this leave request?')) return;
     try {
       setLoading(true);
+      if (request.status === 'approved') {
+        const days = calculateDays(request.startDate, request.endDate);
+        const balanceField = getBalanceField(request.leaveType);
+        if (balanceField) {
+          const currentBalanceObj = leaveBalances[request.employeeId] || { casual: 0, sick: 0, annual: 0, compOff: 0 };
+          const newBalance = { ...currentBalanceObj, [balanceField]: currentBalanceObj[balanceField] + days };
+          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
+        }
+      }
       const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
       await remove(leaveRef);
       toast({ title: "Deleted", description: "Leave request deleted" });
@@ -301,8 +447,6 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
       default: return 'bg-gray-100 text-gray-700';
     }
   };
-
-  const calculateDays = (start: string, end: string) => Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / (1000 * 60 * 60 * 24)) + 1;
 
   const exportLeaves = () => {
     const csv = [
@@ -326,6 +470,7 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
 
   return (
     <div className="space-y-6 relative">
+      {/* Notification toast – same as before, omitted for brevity but keep your existing JSX */}
       {showNotification && currentNotification && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -371,15 +516,10 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
       </div>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Filter className="h-4 w-4" /> Filters</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-2"><Filter className="h-4 w-4" /> Filters</CardTitle></CardHeader>
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <div className="relative">
-              <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
-              <Input placeholder="Search employee..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10" />
-            </div>
+            <div className="relative"><Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" /><Input placeholder="Search employee..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10" /></div>
             <Input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
             <Select value={filterStatus} onValueChange={setFilterStatus}>
               <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
@@ -390,96 +530,109 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
                 <SelectItem value="rejected">Rejected</SelectItem>
               </SelectContent>
             </Select>
-            <Button onClick={exportLeaves} className="w-full"><Download className="h-4 w-4 mr-2" /> Export</Button>
+            <div className="flex gap-2">
+              <Button onClick={exportLeaves} className="flex-1"><Download className="h-4 w-4 mr-2" /> Export</Button>
+              <Button variant="outline" onClick={() => setShowSettingsModal(true)}><Settings className="h-4 w-4" /></Button>
+            </div>
           </div>
         </CardContent>
       </Card>
 
       <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2"><Calendar className="h-4 w-4" /> Leave Requests ({filteredRequests.length})</CardTitle>
-        </CardHeader>
+        <CardHeader><CardTitle className="flex items-center gap-2"><Calendar className="h-4 w-4" /> Leave Requests ({filteredRequests.length})</CardTitle></CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left p-3">Employee</th>
-                  <th className="text-left p-3">Leave Type</th>
-                  <th className="text-left p-3">Dates</th>
-                  <th className="text-left p-3">Duration</th>
-                  <th className="text-left p-3">Status</th>
-                  <th className="text-left p-3">Applied On</th>
-                  <th className="text-left p-3">Actions</th>
+                  <th className="text-left p-3">Employee</th><th className="text-left p-3">Leave Type</th><th className="text-left p-3">Dates</th>
+                  <th className="text-left p-3">Duration</th><th className="text-left p-3">Status</th><th className="text-left p-3">Applied On</th>
+                  <th className="text-left p-3">Balance</th><th className="text-left p-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {displayedRequests.map((req, idx) => (
-                  <tr key={`${req.id}-${idx}`} className="border-b hover:bg-gray-50">
-                    <td className="p-3">
-                      <div>
-                        <p className="font-medium">{req.employeeName}</p>
-                        <p className="text-sm text-gray-500">{req.employeeId}</p>
-                        <p className="text-sm text-gray-500">{req.department}</p>
-                      </div>
-                    </td>
-                    <td className="p-3">{req.leaveType}</td>
-                    <td className="p-3">
-                      <div>
-                        <p>{new Date(req.startDate).toLocaleDateString()}</p>
-                        <p>to</p>
-                        <p>{new Date(req.endDate).toLocaleDateString()}</p>
-                      </div>
-                    </td>
-                    <td className="p-3">{calculateDays(req.startDate, req.endDate)} days</td>
-                    <td className="p-3">
-                      <Badge className={getStatusColor(req.status)}>{req.status}</Badge>
-                      {req.approvedBy && <p className="text-xs text-gray-500 mt-1">Approved by {req.approvedBy}</p>}
-                    </td>
-                    <td className="p-3">{new Date(req.appliedAt).toLocaleString()}</td>
-                    <td className="p-3">
-                      <div className="flex flex-col gap-2">
-                        {req.status === 'pending' && (
-                          <>
-                            <Button size="sm" onClick={() => handleApprove(req)} className="bg-green-600 hover:bg-green-700" disabled={loading}>
-                              <Check className="h-3 w-3 mr-1" /> Approve
-                            </Button>
-                            <Button size="sm" variant="outline" onClick={() => handleReject(req)} className="border-red-200 text-red-600 hover:bg-red-50" disabled={loading}>
-                              <X className="h-3 w-3 mr-1" /> Reject
-                            </Button>
-                          </>
-                        )}
-                        {(req.status === 'approved' || req.status === 'rejected') && role === 'admin' && (
-                          <Button size="sm" variant="outline" onClick={() => handleReapprove(req)} className="text-blue-600 hover:bg-blue-50" disabled={loading}>
-                            <RotateCcw className="h-3 w-3 mr-1" /> Re-open
-                          </Button>
-                        )}
-                        {role === 'admin' && (
-                          <Button size="sm" variant="outline" onClick={() => handleDelete(req)} className="text-red-600 hover:bg-red-50" disabled={loading}>
-                            <Trash2 className="h-3 w-3" /> Delete
-                          </Button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                {displayedRequests.map((req, idx) => {
+                  const balanceField = getBalanceField(req.leaveType);
+                  const currentBalance = balanceField ? (leaveBalances[req.employeeId]?.[balanceField] || 0) : 0;
+                  return (
+                    <tr key={`${req.id}-${idx}`} className="border-b hover:bg-gray-50">
+                      <td className="p-3"><div><p className="font-medium">{req.employeeName}</p><p className="text-sm text-gray-500">{req.employeeId}</p><p className="text-sm text-gray-500">{req.department}</p></div></td>
+                      <td className="p-3">{req.leaveType}</td>
+                      <td className="p-3"><div><p>{new Date(req.startDate).toLocaleDateString()}</p><p>to</p><p>{new Date(req.endDate).toLocaleDateString()}</p></div></td>
+                      <td className="p-3">{calculateDays(req.startDate, req.endDate)} days</td>
+                      <td className="p-3"><Badge className={getStatusColor(req.status)}>{req.status}</Badge>{req.approvedBy && <p className="text-xs text-gray-500 mt-1">Approved by {req.approvedBy}</p>}</td>
+                      <td className="p-3">{new Date(req.appliedAt).toLocaleString()}</td>
+                      <td className="p-3">
+                        <span className={`font-medium ${currentBalance < calculateDays(req.startDate, req.endDate) && req.status === 'pending' ? 'text-red-500' : 'text-green-600'}`}>
+                          {currentBalance} left
+                        </span>
+                        <Button variant="ghost" size="sm" className="ml-2" onClick={() => openBalanceModal(employees.find(e => e.id === req.employeeId)!)}>
+                          <Settings className="h-3 w-3" />
+                        </Button>
+                      </td>
+                      <td className="p-3">
+                        <div className="flex flex-col gap-2">
+                          {req.status === 'pending' && (
+                            <>
+                              <Button size="sm" onClick={() => handleApprove(req)} className="bg-green-600 hover:bg-green-700" disabled={loading}><Check className="h-3 w-3 mr-1" /> Approve</Button>
+                              <Button size="sm" variant="outline" onClick={() => handleReject(req)} className="border-red-200 text-red-600 hover:bg-red-50" disabled={loading}><X className="h-3 w-3 mr-1" /> Reject</Button>
+                            </>
+                          )}
+                          {(req.status === 'approved' || req.status === 'rejected') && role === 'admin' && (
+                            <Button size="sm" variant="outline" onClick={() => handleReapprove(req)} className="text-blue-600 hover:bg-blue-50" disabled={loading}><RotateCcw className="h-3 w-3 mr-1" /> Re-open</Button>
+                          )}
+                          {role === 'admin' && (
+                            <Button size="sm" variant="outline" onClick={() => handleDelete(req)} className="text-red-600 hover:bg-red-50" disabled={loading}><Trash2 className="h-3 w-3" /> Delete</Button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
-            {displayedRequests.length === 0 && (
-              <div className="text-center py-8 text-gray-500">
-                {allLeaveRequests.length === 0 ? "No leave requests found" : "No leave requests match the current filter"}
-              </div>
-            )}
+            {displayedRequests.length === 0 && <div className="text-center py-8 text-gray-500">{allLeaveRequests.length === 0 ? "No leave requests found" : "No leave requests match the current filter"}</div>}
           </div>
-          {hasMore && (
-            <div className="flex justify-center mt-4">
-              <Button onClick={loadMore} disabled={loadingMore} variant="outline">
-                {loadingMore ? 'Loading...' : 'Load More'}
-              </Button>
-            </div>
-          )}
+          {hasMore && <div className="flex justify-center mt-4"><Button onClick={loadMore} disabled={loadingMore} variant="outline">{loadingMore ? 'Loading...' : 'Load More'}</Button></div>}
         </CardContent>
       </Card>
+
+      {/* Balance Modal */}
+      <Dialog open={showBalanceModal} onOpenChange={setShowBalanceModal}>
+        <DialogContent><DialogHeader><DialogTitle>Set Leave Balance – {selectedEmployee?.name}</DialogTitle></DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div><Label>Casual Leave</Label><Input type="number" value={balanceForm.casual} onChange={e => setBalanceForm({...balanceForm, casual: parseInt(e.target.value) || 0})} /></div>
+              <div><Label>Sick Leave</Label><Input type="number" value={balanceForm.sick} onChange={e => setBalanceForm({...balanceForm, sick: parseInt(e.target.value) || 0})} /></div>
+              <div><Label>Annual Leave</Label><Input type="number" value={balanceForm.annual} onChange={e => setBalanceForm({...balanceForm, annual: parseInt(e.target.value) || 0})} /></div>
+              <div><Label>Comp‑Off</Label><Input type="number" value={balanceForm.compOff} onChange={e => setBalanceForm({...balanceForm, compOff: parseInt(e.target.value) || 0})} /></div>
+            </div>
+            <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowBalanceModal(false)}>Cancel</Button><Button onClick={saveBalance}>Save</Button></div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Settings Modal */}
+      <Dialog open={showSettingsModal} onOpenChange={setShowSettingsModal}>
+        <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Leave Settings</DialogTitle></DialogHeader>
+          <Tabs defaultValue="carryForward"><TabsList className="grid w-full grid-cols-2"><TabsTrigger value="carryForward">Carry‑Forward Rules</TabsTrigger><TabsTrigger value="yearEnd">Year‑End Action</TabsTrigger></TabsList>
+            <TabsContent value="carryForward" className="space-y-4 pt-4">
+              {['casual', 'sick', 'annual', 'compOff'].map(type => (
+                <div key={type} className="grid grid-cols-2 gap-3 border-b pb-3">
+                  <div><Label className="capitalize">{type}</Label></div>
+                  <div><Label>Percentage to carry</Label><Input type="number" value={carryForwardForm[type]?.percentage || 0} onChange={e => setCarryForwardForm({...carryForwardForm, [type]: {...carryForwardForm[type], percentage: parseInt(e.target.value) || 0}})} /></div>
+                  <div><Label>Max carry‑over</Label><Input type="number" value={carryForwardForm[type]?.max || 0} onChange={e => setCarryForwardForm({...carryForwardForm, [type]: {...carryForwardForm[type], max: parseInt(e.target.value) || 0}})} /></div>
+                </div>
+              ))}
+              <Button onClick={saveCarryForwardSettings} className="w-full">Save Rules</Button>
+            </TabsContent>
+            <TabsContent value="yearEnd" className="pt-4 space-y-4">
+              <p className="text-sm text-gray-600">Run this at the end of the financial year. Unused leave will be carried forward according to the rules above, and the remaining balance will be reset.</p>
+              <Button onClick={runCarryForward} className="w-full bg-orange-600 hover:bg-orange-700">Run Year‑End Carry‑Forward</Button>
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

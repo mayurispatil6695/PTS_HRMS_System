@@ -7,7 +7,7 @@ import LeavePopup from './popups/LeavePopup';
 import EmployeesPopup from './popups/EmployeesPopup';
 import ProjectsPopup from './popups/ProjectsPopup';
 import MarketingPostsPopup from './popups/MarketingPostsPopup';
-import { ref, onValue, off, query, orderByChild, DataSnapshot, update } from 'firebase/database';
+import { ref, onValue, off, query, orderByChild, DataSnapshot, update ,getDatabase, get,} from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
@@ -15,6 +15,7 @@ import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
 import { AttendanceRecord } from '@/types/attendance';
 import { Project, Task, ProjectUpdate } from '@/types/project';
+
 import {
   Employee,
   MarketingPost,
@@ -65,6 +66,7 @@ interface WorkSession {
 const AdminDashboardHome = () => {
   const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
   const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [idleUsers, setIdleUsers] = useState<IdleUser[]>([]);
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
@@ -106,6 +108,11 @@ const AdminDashboardHome = () => {
   // Keep previous work session states to detect changes
   const prevWorkSessionsRef = useRef<Map<string, WorkSession>>(new Map());
 
+ 
+
+  // 2. For each admin, update employees
+
+
   // Request notification permission
   useEffect(() => {
     if (!('Notification' in window)) {
@@ -123,46 +130,58 @@ const AdminDashboardHome = () => {
   }, []);
 
   // ========== ATTENDANCE EVENT NOTIFICATIONS ==========
-  useEffect(() => {
-    if (!employees.length) return;
+// ========== ATTENDANCE EVENT NOTIFICATIONS (Fixed) ==========
+useEffect(() => {
+  if (!employees.length) return;
 
-    const workSessionsRef = ref(database, 'workSessions');
-    const unsubscribe = onValue(workSessionsRef, (snapshot) => {
-      const data = snapshot.val() as Record<string, WorkSession> | null;
-      if (!data) return;
+  let isFirstRun = true;  // ✅ prevent notifications on initial load
 
-      // For each employee, compare with previous state
-      for (const [empId, current] of Object.entries(data)) {
-        const prev = prevWorkSessionsRef.current.get(empId);
-        const employee = employees.find(e => e.id === empId);
-        if (!employee) continue;
+  const workSessionsRef = ref(database, 'workSessions');
+  const unsubscribe = onValue(workSessionsRef, (snapshot) => {
+    const data = snapshot.val() as Record<string, WorkSession> | null;
+    if (!data) return;
 
-        // Detect punch in (was not punched in, now punched in)
-        if (!prev?.isPunchedIn && current.isPunchedIn) {
-          const message = `${employee.name} punched in.`;
-          showAttendanceNotification('Punched In', message, 'green');
-        }
-        // Detect punch out (was punched in, now not punched in)
-        if (prev?.isPunchedIn && !current.isPunchedIn) {
-          const message = `${employee.name} punched out.`;
-          showAttendanceNotification('Punched Out', message, 'blue');
-        }
-        // Detect break start (was not on break, now on break)
-        if (!prev?.isOnBreak && current.isOnBreak) {
-          const message = `${employee.name} started a break.`;
-          showAttendanceNotification('Break Started', message, 'yellow');
-        }
-        // Detect break end (was on break, now not on break)
-        if (prev?.isOnBreak && !current.isOnBreak) {
-          const message = `${employee.name} ended break.`;
-          showAttendanceNotification('Break Ended', message, 'purple');
-        }
-      }
+    // On first run, just store the state – no notifications
+    if (isFirstRun) {
       prevWorkSessionsRef.current = new Map(Object.entries(data));
-    });
+      isFirstRun = false;
+      return;
+    }
 
-    return () => off(workSessionsRef);
-  }, [employees]);
+    // Compare and notify only on actual changes
+    for (const [empId, current] of Object.entries(data)) {
+      const prev = prevWorkSessionsRef.current.get(empId);
+      const employee = employees.find(e => e.id === empId);
+      if (!employee) continue;
+
+      // Punch in
+      if (!prev?.isPunchedIn && current.isPunchedIn) {
+        const message = `${employee.name} punched in.`;
+        showAttendanceNotification('Punched In', message, 'green');
+      }
+      // Punch out
+      if (prev?.isPunchedIn && !current.isPunchedIn) {
+        const message = `${employee.name} punched out.`;
+        showAttendanceNotification('Punched Out', message, 'blue');
+      }
+      // Break start
+      if (!prev?.isOnBreak && current.isOnBreak) {
+        const message = `${employee.name} started a break.`;
+        showAttendanceNotification('Break Started', message, 'yellow');
+      }
+      // Break end
+      if (prev?.isOnBreak && !current.isOnBreak) {
+        const message = `${employee.name} ended break.`;
+        showAttendanceNotification('Break Ended', message, 'purple');
+      }
+    }
+
+    // Update stored state for next comparison
+    prevWorkSessionsRef.current = new Map(Object.entries(data));
+  });
+
+  return () => off(workSessionsRef);
+}, [employees]);
 
   // Helper to show toast + browser notification
   const showAttendanceNotification = (title: string, body: string, color: 'green' | 'blue' | 'yellow' | 'purple') => {
@@ -873,6 +892,7 @@ const AdminDashboardHome = () => {
         </motion.div>
       )}
       
+     
       {/* Centered Notification Popup */}
       {activeNotification && (
         <motion.div
@@ -958,7 +978,8 @@ const AdminDashboardHome = () => {
             delay={index * 0.1}
           />
         ))}
-        
+
+          
       </div>
       <div className="mt-6">
   

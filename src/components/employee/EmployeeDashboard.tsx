@@ -20,7 +20,7 @@ import NotificationSystem from '../ui/NotificationSystem';
 import EmployeeReview from './EmployeeReview';
 import EmployeeGoalSetting from './EmployeeGoalSetting';
 import { TrendingUp } from 'lucide-react';
-
+import { DarkModeToggle } from '../ui/DarkModeToggle';
 const EmployeeDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -64,6 +64,7 @@ const EmployeeDashboard = () => {
       </div>
     </div>
     <div className="flex items-center gap-4">
+<DarkModeToggle/>
       <NotificationSystem />
       <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">
         Logout

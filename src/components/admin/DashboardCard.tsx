@@ -1,28 +1,18 @@
-
+// src/components/admin/DashboardCard.tsx
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { LucideIcon } from 'lucide-react';
 
 interface DashboardCardProps {
   title: string;
-  value: number | string;
+  value: string | number;
   subtitle: string;
-  icon: LucideIcon;
-  color: string;
-  onClick: () => void;
+  icon: React.ElementType;
+  color?: string; // e.g., "bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+  onClick?: () => void;
   delay?: number;
 }
 
-const DashboardCard: React.FC<DashboardCardProps> = ({
-  title,
-  value,
-  subtitle,
-  icon: Icon,
-  color,
-  onClick,
-  delay = 0
-}) => {
+const DashboardCard: React.FC<DashboardCardProps> = ({ title, value, subtitle, icon: Icon, color, onClick, delay = 0 }) => {
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
@@ -31,16 +21,18 @@ const DashboardCard: React.FC<DashboardCardProps> = ({
       className="cursor-pointer"
       onClick={onClick}
     >
-      <Card className={`bg-gradient-to-br ${color} border-opacity-20 hover:shadow-lg transition-all duration-300 hover:scale-105`}>
-        <CardHeader className="flex flex-row items-center justify-between pb-2">
-          <CardTitle className="text-sm font-medium text-opacity-90">{title}</CardTitle>
-          <Icon className="h-4 w-4 opacity-80" />
-        </CardHeader>
-        <CardContent>
-          <div className="text-2xl font-bold">{value}</div>
-          <p className="text-xs opacity-70 mt-1">{subtitle}</p>
-        </CardContent>
-      </Card>
+      <div className="bg-card rounded-xl p-4 shadow-sm border border-border transition-all hover:shadow-md">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm font-medium text-muted-foreground">{title}</p>
+            <p className="text-2xl font-bold text-foreground mt-1">{value}</p>
+            <p className="text-xs text-muted-foreground mt-1">{subtitle}</p>
+          </div>
+          <div className={`p-2 rounded-full ${color || 'bg-primary/10 text-primary'}`}>
+            <Icon className="h-5 w-5" />
+          </div>
+        </div>
+      </div>
     </motion.div>
   );
 };

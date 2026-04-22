@@ -13,6 +13,19 @@ import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { toast } from '../../ui/use-toast';
 
+// ✅ TaskTemplate interface (matching Firebase structure)
+interface TaskTemplate {
+  id: string;
+  name: string;
+  title: string;
+  description: string;
+  priority: 'low' | 'medium' | 'high';
+  subtasks: string[];
+  dueDateOffsetDays: number;
+  createdBy: string;
+  createdAt: string;
+}
+
 interface Employee {
   id: string;
   name: string;
@@ -32,7 +45,7 @@ interface Task {
   status: string;
   createdAt: string;
   employeeName?: string;
-  dependsOn?: string[];   // ✅ added
+  dependsOn?: string[];
 }
 
 interface Subtask {
@@ -112,12 +125,12 @@ interface EnhancedProjectFormProps {
   department?: string;
 }
 
-const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({ 
-  onSuccess, 
-  onCancel, 
-  role = 'admin', 
-  userId = '', 
-  department = '' 
+const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
+  onSuccess,
+  onCancel,
+  role = 'admin',
+  userId = '',
+  department = ''
 }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
@@ -130,7 +143,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     assignedTo: '',
     priority: 'medium' as 'low' | 'medium' | 'high',
     dueDate: '',
-    dependsOn: [] as string[]   // ✅ added
+    dependsOn: [] as string[]
   });
 
   const [formData, setFormData] = useState<ProjectFormData>({
@@ -149,9 +162,13 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     specificDepartment: ''
   });
 
-  const departments = ['Software Development', 'Digital Marketing','Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', 'Artificial Intelligence'];
+  const departments = ['Software Development', 'Digital Marketing', 'Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', 'Artificial Intelligence'];
 
-  // Fetch all employees (non-admin) with role-based filtering
+  // Template state
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+
+  // Fetch all employees
   useEffect(() => {
     if (!user) return;
     setLoading(true);
@@ -166,16 +183,13 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
           const profile = userData.profile || userData.employee;
           if (!profile || !profile.name) return;
           if (profile.status !== 'active') return;
-          
-          // Role-based filtering
+
           if (role === 'team_manager' && department && profile.department !== department) return;
           if (role === 'team_leader') {
-            // Team leader can only see employees from their own department
             if (profile.department !== department) return;
-            // Team leader cannot assign to another team leader
             if (profile.designation === 'Team Lead') return;
           }
-          
+
           employeesData.push({
             id: uid || '',
             name: profile.name || '',
@@ -196,6 +210,40 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     return () => off(usersRef);
   }, [user, role, department]);
 
+  // Fetch task templates
+  useEffect(() => {
+    const templatesRef = ref(database, 'taskTemplates');
+    const unsubscribe = onValue(templatesRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const list = Object.entries(data).map(([id, val]) => ({
+          id,
+          ...(val as Omit<TaskTemplate, 'id'>)
+        })) as TaskTemplate[];
+        setTemplates(list);
+      } else {
+        setTemplates([]);
+      }
+    });
+    return () => off(templatesRef);
+  }, []);
+
+  // ✅ Apply template to the NEW TASK form (not to the whole project)
+  const applyTemplate = (templateId: string) => {
+    const template = templates.find(t => t.id === templateId);
+    if (!template) return;
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + template.dueDateOffsetDays);
+    setNewTask({
+      ...newTask,
+      title: template.title,
+      description: template.description,
+      priority: template.priority,
+      dueDate: dueDate.toISOString().split('T')[0],
+    });
+    // If you want to add subtasks, you can store them in a separate state
+  };
+
   // Auto-set team leader for team leader role
   useEffect(() => {
     if (role === 'team_leader' && userId) {
@@ -213,7 +261,6 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     }
   }, [employees, formData.projectType, formData.specificDepartment]);
 
-  // For team leader, only allow team members from their department (already filtered)
   const teamLeaders = filteredEmployees.filter(emp => emp.designation === 'Team Lead');
   const developers = filteredEmployees.filter(emp => emp.designation !== 'Team Lead');
 
@@ -237,10 +284,11 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
       dueDate: newTask.dueDate,
       status: 'todo',
       createdAt: new Date().toISOString(),
-      dependsOn: newTask.dependsOn   // ✅ save dependencies
+      dependsOn: newTask.dependsOn
     };
     setFormData(prev => ({ ...prev, tasks: [...prev.tasks, task] }));
     setNewTask({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '', dependsOn: [] });
+    setSelectedTemplate('');
   };
 
   const removeTask = (taskId: string) => {
@@ -302,7 +350,6 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
         }
       };
 
-      // Add tasks with extra fields
       formData.tasks.forEach(task => {
         const assignedEmployee = employees.find(e => e.id === task.assignedTo);
         projectData.tasks[task.id] = {
@@ -321,7 +368,6 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
 
       await set(ref(database, `projects/${projectId}`), projectData);
 
-      // After projectData is saved
       const employeesToNotify = [...formData.assignedEmployees];
       if (formData.assignedTeamLeader && !employeesToNotify.includes(formData.assignedTeamLeader)) {
         employeesToNotify.push(formData.assignedTeamLeader);
@@ -339,7 +385,6 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
         });
       }
 
-      // Assign to employees (for their personal dashboards)
       const employeesToAssign = [...(formData.assignedTeamLeader ? [formData.assignedTeamLeader] : []), ...formData.assignedEmployees];
       await Promise.all(employeesToAssign.map(async (empId) => {
         const empProjectData = {
@@ -363,7 +408,6 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
   if (loading) return <div>Loading employees...</div>;
   if (error) return <div className="text-red-500">{error}</div>;
 
-  // Determine if the team leader select should be disabled
   const isTeamLeaderSelectDisabled = role === 'team_leader';
 
   return (
@@ -372,8 +416,8 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
       <CardContent>
         <form onSubmit={handleSubmit} className="space-y-6">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><Label>Project Name</Label><Input value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} required /></div>
-            <div><Label>Client Name</Label><Input value={formData.clientName} onChange={e => setFormData({...formData, clientName: e.target.value})} /></div>
+            <div><Label>Project Name</Label><Input value={formData.name} onChange={e => setFormData({ ...formData, name: e.target.value })} required /></div>
+            <div><Label>Client Name</Label><Input value={formData.clientName} onChange={e => setFormData({ ...formData, clientName: e.target.value })} /></div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div><Label>Project Type</Label>
@@ -391,12 +435,12 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
               </div>
             )}
           </div>
-          <div><Label>Description</Label><Textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} required /></div>
+          <div><Label>Description</Label><Textarea value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} required /></div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div><Label>Team Leader</Label>
-              <Select 
-                value={formData.assignedTeamLeader} 
-                onValueChange={val => setFormData({...formData, assignedTeamLeader: val})}
+              <Select
+                value={formData.assignedTeamLeader}
+                onValueChange={val => setFormData({ ...formData, assignedTeamLeader: val })}
                 disabled={isTeamLeaderSelectDisabled}
               >
                 <SelectTrigger><SelectValue placeholder="Select team leader" /></SelectTrigger>
@@ -406,15 +450,15 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
               </Select>
             </div>
             <div><Label>Priority</Label>
-              <Select value={formData.priority} onValueChange={val => setFormData({...formData, priority: val as 'low' | 'medium' | 'high' | 'urgent'})}>
+              <Select value={formData.priority} onValueChange={val => setFormData({ ...formData, priority: val as 'low' | 'medium' | 'high' | 'urgent' })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem><SelectItem value="urgent">Urgent</SelectItem></SelectContent>
               </Select>
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><Label>Start Date</Label><Input type="date" value={formData.startDate} onChange={e => setFormData({...formData, startDate: e.target.value})} required /></div>
-            <div><Label>End Date</Label><Input type="date" value={formData.endDate} onChange={e => setFormData({...formData, endDate: e.target.value})} required /></div>
+            <div><Label>Start Date</Label><Input type="date" value={formData.startDate} onChange={e => setFormData({ ...formData, startDate: e.target.value })} required /></div>
+            <div><Label>End Date</Label><Input type="date" value={formData.endDate} onChange={e => setFormData({ ...formData, endDate: e.target.value })} required /></div>
           </div>
           <div><Label>Team Members</Label>
             <div className="border rounded p-2 max-h-40 overflow-auto">
@@ -426,14 +470,20 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
               ))}
             </div>
           </div>
-          
-          {/* TASKS SECTION WITH DEPENDENCIES */}
+
+          {/* TASKS SECTION WITH TEMPLATES & DEPENDENCIES */}
           <div className="border-t pt-4">
             <Label className="text-lg">Tasks</Label>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-gray-50 rounded">
-              <Input placeholder="Task title" value={newTask.title} onChange={e => setNewTask({...newTask, title: e.target.value})} />
-              <Input type="date" value={newTask.dueDate} onChange={e => setNewTask({...newTask, dueDate: e.target.value})} />
-              <Select value={newTask.assignedTo} onValueChange={val => setNewTask({...newTask, assignedTo: val})}>
+              <Select value={selectedTemplate} onValueChange={(val) => { setSelectedTemplate(val); applyTemplate(val); }}>
+                <SelectTrigger className="w-full"><SelectValue placeholder="Apply template" /></SelectTrigger>
+                <SelectContent>
+                  {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Input placeholder="Task title" value={newTask.title} onChange={e => setNewTask({ ...newTask, title: e.target.value })} />
+              <Input type="date" value={newTask.dueDate} onChange={e => setNewTask({ ...newTask, dueDate: e.target.value })} />
+              <Select value={newTask.assignedTo} onValueChange={val => setNewTask({ ...newTask, assignedTo: val })}>
                 <SelectTrigger><SelectValue placeholder="Assign to" /></SelectTrigger>
                 <SelectContent>
                   {formData.assignedEmployees.map(eid => {
@@ -442,12 +492,12 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
                   })}
                 </SelectContent>
               </Select>
-              <Select value={newTask.priority} onValueChange={val => setNewTask({...newTask, priority: val as 'low' | 'medium' | 'high'})}>
+              <Select value={newTask.priority} onValueChange={val => setNewTask({ ...newTask, priority: val as 'low' | 'medium' | 'high' })}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent>
               </Select>
 
-              {/* ✅ DEPENDENCIES MULTI-SELECT (spans both columns) */}
+              {/* DEPENDENCIES */}
               <div className="md:col-span-2">
                 <Label className="text-sm">Depends on (optional)</Label>
                 <div className="border rounded-md p-2 max-h-32 overflow-y-auto space-y-1 mt-1">
@@ -461,9 +511,9 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
                           checked={newTask.dependsOn.includes(t.id)}
                           onChange={(e) => {
                             if (e.target.checked) {
-                              setNewTask({...newTask, dependsOn: [...newTask.dependsOn, t.id]});
+                              setNewTask({ ...newTask, dependsOn: [...newTask.dependsOn, t.id] });
                             } else {
-                              setNewTask({...newTask, dependsOn: newTask.dependsOn.filter(id => id !== t.id)});
+                              setNewTask({ ...newTask, dependsOn: newTask.dependsOn.filter(id => id !== t.id) });
                             }
                           }}
                         />
@@ -481,7 +531,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
                           {depTask?.title || depId}
                           <button
                             className="ml-1 text-red-500 hover:text-red-700"
-                            onClick={() => setNewTask({...newTask, dependsOn: newTask.dependsOn.filter(id => id !== depId)})}
+                            onClick={() => setNewTask({ ...newTask, dependsOn: newTask.dependsOn.filter(id => id !== depId) })}
                           >
                             ×
                           </button>
@@ -493,14 +543,14 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
               </div>
 
               <div className="md:col-span-2">
-                <Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({...newTask, description: e.target.value})} />
+                <Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({ ...newTask, description: e.target.value })} />
               </div>
               <Button type="button" onClick={addTask} disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate} className="md:col-span-2">
                 <Plus className="h-4 w-4 mr-1" /> Add Task
               </Button>
             </div>
 
-            {/* List of added tasks with dependency display */}
+            {/* List of added tasks */}
             {formData.tasks.map(task => {
               const emp = employees.find(e => e.id === task.assignedTo);
               const dependsOnTasks = task.dependsOn?.map(depId => formData.tasks.find(t => t.id === depId)?.title).filter(Boolean).join(', ');

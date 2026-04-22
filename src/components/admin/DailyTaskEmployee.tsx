@@ -24,7 +24,7 @@ import { MessageSquare } from 'lucide-react';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
 /* ================= TYPES ================= */
-
+import { TaskTemplate } from './TaskTemplatesManager'; // ✅ IMPORT TASK TEMPLATE TYPE
 interface FirebaseEmployeeData {
   name: string;
   email: string;
@@ -151,6 +151,8 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   const [selectedProject, setSelectedProject] = useState('');
   const [taskType, setTaskType] = useState<'standalone' | 'project'>('standalone');
   const [loading, setLoading] = useState(true);
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -222,31 +224,63 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     return () => off(usersRef);
   }, []);
 
+
+  useEffect(() => {
+  const templatesRef = ref(database, 'taskTemplates');
+  const unsubscribe = onValue(templatesRef, (snapshot) => {
+    const data = snapshot.val() as Record<string, Omit<TaskTemplate, 'id'>> | null;
+    if (data && typeof data === 'object') {
+      const list: TaskTemplate[] = Object.entries(data).map(([id, val]) => ({
+        id,
+        ...val,
+      }));
+      setTemplates(list);
+    } else {
+      setTemplates([]);
+    }
+  });
+  return () => off(templatesRef);
+}, []);
+
+  const applyTemplate = (templateId: string) => {
+    const template = templates.find(t => t.id === templateId);
+    if (!template) return;
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + template.dueDateOffsetDays);
+    setFormData({
+      ...formData,
+      task: template.title,
+      description: template.description,
+      priority: template.priority,
+      date: dueDate.toISOString().split('T')[0],
+    });
+    // If your task creation supports subtasks, store them separately
+  };
   // Fetch all projects (for dropdown)
   useEffect(() => {
     const projectsRef = ref(database, 'projects');
-const unsubscribe = onValue(projectsRef, (snapshot) => {
-  const data = snapshot.val() as Record<string, { name: string; status?: string; department?: string }> | null;
-  if (!data) {
-    setProjects([]);
-    return;
-  }
-  let allProjects: Project[] = Object.entries(data).map(([id, proj]) => ({
-    id,
-    name: proj.name || '',
-    description: '',
-    status: proj.status || 'active',
-    adminId: '',
-    department: proj.department || '',  // ✅ add department field
-  }));
+    const unsubscribe = onValue(projectsRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, { name: string; status?: string; department?: string }> | null;
+      if (!data) {
+        setProjects([]);
+        return;
+      }
+      let allProjects: Project[] = Object.entries(data).map(([id, proj]) => ({
+        id,
+        name: proj.name || '',
+        description: '',
+        status: proj.status || 'active',
+        adminId: '',
+        department: proj.department || '',  // ✅ add department field
+      }));
 
-  // ✅ Filter by department for manager
-  if (isTeamManager && effectiveDepartment) {
-    allProjects = allProjects.filter(p => p.department === effectiveDepartment);
-  }
+      // ✅ Filter by department for manager
+      if (isTeamManager && effectiveDepartment) {
+        allProjects = allProjects.filter(p => p.department === effectiveDepartment);
+      }
 
-  setProjects(allProjects);
-});
+      setProjects(allProjects);
+    });
     return () => off(projectsRef);
   }, []);
 
@@ -474,7 +508,7 @@ const unsubscribe = onValue(projectsRef, (snapshot) => {
   };
 
   // Submit new task (only admin or manager)
-   // Submit new task (only admin or manager)
+  // Submit new task (only admin or manager)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canAssignTasks) {
@@ -640,6 +674,12 @@ const unsubscribe = onValue(projectsRef, (snapshot) => {
                     <SelectItem value="project">Project Task</SelectItem>
                   </SelectContent>
                 </Select>
+                <Select value={selectedTemplate} onValueChange={(val) => { setSelectedTemplate(val); applyTemplate(val); }}>
+                  <SelectTrigger className="w-64"><SelectValue placeholder="Apply template" /></SelectTrigger>
+                  <SelectContent>
+                    {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
+                  </SelectContent>
+                </Select>
                 {taskType === 'project' && (
                   <Select value={selectedProject} onValueChange={setSelectedProject}>
                     <SelectTrigger><SelectValue placeholder="Select project" /></SelectTrigger>
@@ -687,7 +727,7 @@ const unsubscribe = onValue(projectsRef, (snapshot) => {
                       <Input type="time" value={formData.time} onChange={e => setFormData({ ...formData, time: e.target.value })} />
                     </div>
                   </div>
-                                  </div>
+                </div>
                 <Button type="submit" className="w-full">Assign Task</Button>
               </form>
             </CardContent>
@@ -848,7 +888,7 @@ const unsubscribe = onValue(projectsRef, (snapshot) => {
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Image Preview</DialogTitle>
-             <DialogDescription className="sr-only">
+            <DialogDescription className="sr-only">
               Preview of the uploaded image attachment.
             </DialogDescription>
           </DialogHeader>

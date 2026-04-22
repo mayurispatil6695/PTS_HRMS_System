@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Plane, Plus, Calendar, Clock, Bell } from 'lucide-react';
+import { Plane, Plus, Calendar, Clock, Bell, AlertCircle, Users } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -40,7 +40,13 @@ interface Notification {
   read: boolean;
 }
 
-// Interface for user data from Firebase
+interface LeaveBalance {
+  casual: number;
+  sick: number;
+  annual: number;
+  compOff: number;
+}
+
 interface FirebaseUserData {
   role?: string;
   name?: string;
@@ -64,10 +70,42 @@ const EmployeeLeaves = () => {
   const [currentNotification, setCurrentNotification] = useState<Notification | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   
+  const [leaveBalances, setLeaveBalances] = useState<LeaveBalance>({
+    casual: 0,
+    sick: 0,
+    annual: 0,
+    compOff: 0
+  });
+  
   const previousRequestsRef = useRef<LeaveRequest[]>([]);
   const notificationTimeoutRef = useRef<NodeJS.Timeout>();
 
-  const leaveTypes = ['Casual Leave', 'Sick Leave', 'Earned Leave', 'Maternity Leave', 'Paternity Leave', 'Emergency Leave'];
+  const leaveTypes = [
+    'Casual Leave',
+    'Sick Leave',
+    'Annual Leave',
+    'Comp-off Leave',
+    'Maternity Leave',
+    'Paternity Leave',
+    'Emergency Leave'
+  ];
+
+  const getBalanceKey = (leaveType: string): keyof LeaveBalance | null => {
+    const mapping: Record<string, keyof LeaveBalance> = {
+      'Casual Leave': 'casual',
+      'Sick Leave': 'sick',
+      'Annual Leave': 'annual',
+      'Comp-off Leave': 'compOff'
+    };
+    return mapping[leaveType] || null;
+  };
+
+  const calculateDays = (startDate: string, endDate: string) => {
+    const start = new Date(startDate);
+    const end = new Date(endDate);
+    const diffTime = Math.abs(end.getTime() - start.getTime());
+    return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+  };
 
   useEffect(() => {
     if ('Notification' in window) {
@@ -137,6 +175,23 @@ const EmployeeLeaves = () => {
         };
     }
   };
+
+  useEffect(() => {
+    if (!user?.id) return;
+    const balanceRef = ref(database, `leaveBalances/${user.id}`);
+    const unsubscribe = onValue(balanceRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        setLeaveBalances({
+          casual: data.casual || 0,
+          sick: data.sick || 0,
+          annual: data.annual || 0,
+          compOff: data.compOff || 0
+        });
+      }
+    });
+    return () => off(balanceRef);
+  }, [user?.id]);
 
   useEffect(() => {
     if (!user?.id || !user?.adminUid) {
@@ -215,6 +270,21 @@ const EmployeeLeaves = () => {
       return;
     }
 
+    const balanceKey = getBalanceKey(formData.leaveType);
+    if (balanceKey) {
+      const days = calculateDays(formData.startDate, formData.endDate);
+      const currentBalance = leaveBalances[balanceKey];
+      if (currentBalance < days) {
+        // ✅ FIXED: replaced toast.error with proper toast call
+        toast({ 
+          title: "Insufficient Balance", 
+          description: `Insufficient balance for ${formData.leaveType}. Available: ${currentBalance} days`, 
+          variant: "destructive" 
+        });
+        return;
+      }
+    }
+
     try {
       setLoading(true);
       const newRequest: Omit<LeaveRequest, 'id'> = {
@@ -234,11 +304,9 @@ const EmployeeLeaves = () => {
       const newLeaveRef = push(leavesRef);
       await set(newLeaveRef, newRequest);
 
-      // ✅ Notify all admins about new leave request
       const usersSnapshot = await get(ref(database, 'users'));
       const adminNotifications: Promise<void>[] = [];
 
-      // Iterate over snapshot using forEach (no await inside)
       usersSnapshot.forEach((childSnap) => {
         const userData = childSnap.val() as FirebaseUserData;
         if (userData.role === 'admin') {
@@ -274,14 +342,6 @@ const EmployeeLeaves = () => {
       case 'rejected': return 'bg-red-100 text-red-700';
       default: return 'bg-gray-100 text-gray-700';
     }
-  };
-
-  const calculateDays = (startDate: string, endDate: string) => {
-    const start = new Date(startDate);
-    const end = new Date(endDate);
-    const diffTime = Math.abs(end.getTime() - start.getTime());
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    return diffDays;
   };
 
   const getLeaveStats = () => {
@@ -342,6 +402,34 @@ const EmployeeLeaves = () => {
         <Button onClick={() => setShowApplyForm(true)}><Plus className="h-4 w-4 mr-2" /> Apply Leave</Button>
       </motion.div>
 
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+        <Card>
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base"><Users className="h-4 w-4" /> My Leave Balances</CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="p-2 bg-blue-50 rounded-lg text-center">
+                <p className="text-xs text-gray-600">Casual</p>
+                <p className="text-xl font-bold text-blue-700">{leaveBalances.casual}</p>
+              </div>
+              <div className="p-2 bg-green-50 rounded-lg text-center">
+                <p className="text-xs text-gray-600">Sick</p>
+                <p className="text-xl font-bold text-green-700">{leaveBalances.sick}</p>
+              </div>
+              <div className="p-2 bg-purple-50 rounded-lg text-center">
+                <p className="text-xs text-gray-600">Annual</p>
+                <p className="text-xl font-bold text-purple-700">{leaveBalances.annual}</p>
+              </div>
+              <div className="p-2 bg-orange-50 rounded-lg text-center">
+                <p className="text-xs text-gray-600">Comp‑off</p>
+                <p className="text-xl font-bold text-orange-700">{leaveBalances.compOff}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         {[
           { icon: Plane, label: 'Total Requests', value: stats.total, color: 'text-blue-600', delay: 0.1 },
@@ -362,13 +450,38 @@ const EmployeeLeaves = () => {
             <form onSubmit={handleSubmit} className="space-y-4">
               <Select value={formData.leaveType} onValueChange={(value) => setFormData({...formData, leaveType: value})} required>
                 <SelectTrigger><SelectValue placeholder="Select Leave Type" /></SelectTrigger>
-                <SelectContent>{leaveTypes.map(type => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
+                <SelectContent>
+                  {leaveTypes.map(type => {
+                    const balanceKey = getBalanceKey(type);
+                    const balance = balanceKey ? leaveBalances[balanceKey] : null;
+                    return (
+                      <SelectItem key={type} value={type}>
+                        {type} {balance !== null && `(Available: ${balance})`}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
               </Select>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div><label className="text-sm font-medium mb-1 block">Start Date</label><Input type="date" value={formData.startDate} onChange={(e) => setFormData({...formData, startDate: e.target.value})} required min={new Date().toISOString().split('T')[0]} /></div>
                 <div><label className="text-sm font-medium mb-1 block">End Date</label><Input type="date" value={formData.endDate} onChange={(e) => setFormData({...formData, endDate: e.target.value})} required min={formData.startDate || new Date().toISOString().split('T')[0]} /></div>
               </div>
-              {formData.startDate && formData.endDate && <div className="p-3 bg-blue-50 rounded-lg"><p className="text-sm text-blue-700">Duration: {calculateDays(formData.startDate, formData.endDate)} day(s)</p></div>}
+              {formData.startDate && formData.endDate && (
+                <div className="p-3 bg-blue-50 rounded-lg flex justify-between items-center">
+                  <p className="text-sm text-blue-700">Duration: {calculateDays(formData.startDate, formData.endDate)} day(s)</p>
+                  {(() => {
+                    const balanceKey = getBalanceKey(formData.leaveType);
+                    if (balanceKey) {
+                      const days = calculateDays(formData.startDate, formData.endDate);
+                      const available = leaveBalances[balanceKey];
+                      if (available < days) {
+                        return <p className="text-xs text-red-600 flex items-center gap-1"><AlertCircle className="h-3 w-3" /> Insufficient balance</p>;
+                      }
+                    }
+                    return null;
+                  })()}
+                </div>
+              )}
               <Textarea placeholder="Reason for leave..." value={formData.reason} onChange={(e) => setFormData({...formData, reason: e.target.value})} required minLength={10} />
               <div className="flex gap-2"><Button type="submit" disabled={loading}>{loading ? "Submitting..." : "Apply Leave"}</Button><Button type="button" variant="outline" onClick={() => setShowApplyForm(false)} disabled={loading}>Cancel</Button></div>
             </form>

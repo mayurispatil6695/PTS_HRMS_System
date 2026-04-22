@@ -110,3 +110,88 @@ All colors MUST be HSL.
 .ql-editor {
   overflow-y: auto !important;
 }
+/* Professional dark mode – softer than pure black */
+.dark {
+  --bg-primary: #0f172a;    /* slate-900 */
+  --bg-secondary: #1e293b;  /* slate-800 */
+  --bg-tertiary: #334155;    /* slate-700 */
+  --text-primary: #f1f5f9;   /* slate-100 */
+  --text-secondary: #cbd5e1; /* slate-300 */
+  --border-color: #334155;   /* slate-700 */
+}
+
+/* Apply to body and main containers */
+.dark body,
+.dark .bg-white,
+.dark .bg-gray-50,
+.dark .bg-gray-100 {
+  background-color: var(--bg-primary) !important;
+}
+
+.dark .bg-gray-50 {
+  background-color: var(--bg-primary);
+}
+
+.dark .bg-white {
+  background-color: var(--bg-secondary);
+}
+
+.dark .text-gray-900,
+.dark .text-gray-800,
+.dark .text-gray-700 {
+  color: var(--text-primary) !important;
+}
+
+.dark .text-gray-600,
+.dark .text-gray-500,
+.dark .text-gray-400 {
+  color: var(--text-secondary) !important;
+}
+
+.dark .border,
+.dark .border-gray-200,
+.dark .border-gray-100 {
+  border-color: var(--border-color) !important;
+}
+
+/* Cards */
+.dark .rounded-lg,
+.dark .rounded-xl,
+.dark .shadow-sm {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+/* Sidebar */
+.dark .bg-white,
+.dark .shadow-lg {
+  background-color: var(--bg-secondary);
+}
+
+/* Table rows */
+.dark .border-b {
+  border-bottom-color: var(--border-color);
+}
+
+.dark .hover\:bg-gray-50:hover {
+  background-color: var(--bg-tertiary);
+}
+
+/* Inputs */
+.dark input,
+.dark textarea,
+.dark select {
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+/* Buttons – outline variant */
+.dark .btn-outline {
+  border-color: var(--border-color);
+  color: var(--text-primary);
+}
+
+.dark .btn-outline:hover {
+  background-color: var(--bg-tertiary);
+}

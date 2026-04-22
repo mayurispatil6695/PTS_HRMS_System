@@ -13,6 +13,7 @@ interface EmployeeProfile {
   name: string;
   email?: string;
   department?: string;
+  firebaseUid?: string;   // optional override
 }
 
 interface ActivityData {
@@ -54,11 +55,11 @@ interface AttendanceRecord {
   breaks?: Record<string, BreakData>;
 }
 
-// ========== PROPS ==========
 interface IdleDetectionPageProps {
   role?: 'admin' | 'manager' | 'team_leader' | 'client';
   department?: string;
 }
+
 // ========== HELPERS ==========
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
@@ -71,31 +72,28 @@ const formatIdleDuration = (ms: number): string => {
   return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 };
 
-// Reads from root‑level idleLogs
-const fetchTotalIdleToday = async (firebaseUid: string): Promise<number> => {
+// Read total idle time from root‑level idleLogs using the correct UID
+// Read total idle time from root‑level idleLogs using the correct UID
+const fetchTotalIdleToday = async (uid: string): Promise<number> => {
   const today = getTodayStr();
-  const totalRef = ref(database, `idleLogs/${firebaseUid}/${today}/totalIdleMs`);
+  const totalRef = ref(database, `idleLogs/${uid}/${today}/totalIdleMs`);
   const snapshot = await get(totalRef);
   const value = snapshot.val();
-  return typeof value === 'number' ? value : 0;
-};
 
-// Cache for email → Firebase UID
-let emailToUidCache: Record<string, string> | null = null;
-
-const getFirebaseUidByEmail = async (email: string): Promise<string | null> => {
-  if (!email) return null;
-  if (!emailToUidCache) {
-    const usersSnap = await get(ref(database, 'users'));
-    const users = usersSnap.val() as Record<string, { email?: string }> | null;
-    emailToUidCache = {};
-    if (users) {
-      for (const [uid, user] of Object.entries(users)) {
-        if (user.email) emailToUidCache[user.email] = uid;
-      }
-    }
+  // The value can be:
+  // - a number (if stored as a simple number)
+  // - an object with a `totalIdleMs` property (if updated via increment)
+  if (typeof value === 'number') {
+    console.log(`📊 fetchTotalIdleToday(${uid}) → value =`, value);
+    return value;
   }
-  return emailToUidCache[email] || null;
+  if (value && typeof value === 'object' && 'totalIdleMs' in value) {
+    const ms = value.totalIdleMs;
+    console.log(`📊 fetchTotalIdleToday(${uid}) → totalIdleMs =`, ms);
+    return typeof ms === 'number' ? ms : 0;
+  }
+  console.log(`📊 fetchTotalIdleToday(${uid}) → value = null/undefined`);
+  return 0;
 };
 
 // Get today's punch status from attendance records
@@ -200,7 +198,7 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
 
       const employeeMap = new Map<
         string,
-        { name: string; department: string; email: string; adminId: string }
+        { name: string; department: string; email: string; adminId: string; firebaseUid?: string }
       >();
 
       for (const [adminId, adminData] of Object.entries(allUsers)) {
@@ -214,12 +212,13 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
               department: profile.department || 'No Department',
               email: profile.email || '',
               adminId,
+              firebaseUid: profile.firebaseUid,
             });
           }
         }
       }
 
-      // ✅ Filter by department if manager
+      // Filter by department if manager
       let filteredEntries = Array.from(employeeMap.entries());
       if (isManager && effectiveDepartment) {
         filteredEntries = filteredEntries.filter(([, info]) => info.department === effectiveDepartment);
@@ -230,8 +229,11 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
         employeePromises.push(
           (async () => {
             const punchStatus = await getTodayPunchStatus(info.adminId, empKey);
-            const firebaseUid = await getFirebaseUidByEmail(info.email);
-            const uidForIdle = firebaseUid || empKey;
+            // Use employee key directly – it's already the Firebase UID
+            const uidForIdle = empKey; // simplified: no firebaseUid fallback
+            if (process.env.NODE_ENV !== 'production') {
+              console.log(`🔍 ${info.name} (${info.email}) → using UID: ${uidForIdle}`);
+            }
             const totalIdleMs = await fetchTotalIdleToday(uidForIdle);
             return {
               id: empKey,

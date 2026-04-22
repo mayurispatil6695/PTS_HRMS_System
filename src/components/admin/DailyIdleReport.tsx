@@ -7,7 +7,7 @@ import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 
 interface IdleSummary {
-  employeeId: string;   // employee record key (not necessarily Firebase UID)
+  employeeId: string;   // employee record key (Firebase UID)
   employeeName: string;
   totalIdleMs: number;
   isLive?: boolean;
@@ -23,25 +23,8 @@ interface ActivityData {
 interface EmployeeData {
   name?: string;
   email?: string;
+  firebaseUid?: string;   // optional override
 }
-
-// ✅ Cache for email → Firebase UID
-let emailToUidCache: Record<string, string> | null = null;
-
-const getFirebaseUidByEmail = async (email: string): Promise<string | null> => {
-  if (!email) return null;
-  if (!emailToUidCache) {
-    const usersSnap = await get(ref(database, 'users'));
-    const users = usersSnap.val() as Record<string, { email?: string }> | null;
-    emailToUidCache = {};
-    if (users) {
-      for (const [uid, user] of Object.entries(users)) {
-        if (user.email) emailToUidCache[user.email] = uid;
-      }
-    }
-  }
-  return emailToUidCache[email] || null;
-};
 
 export const DailyIdleReport = () => {
   const { user } = useAuth();
@@ -96,9 +79,9 @@ export const DailyIdleReport = () => {
       const results: IdleSummary[] = [];
 
       for (const [empKey, empData] of Object.entries(employees)) {
-        // ✅ Get Firebase UID from email
-        const firebaseUid = await getFirebaseUidByEmail(empData.email || '');
-        const uidForIdle = firebaseUid || empKey; // fallback to empKey if not found
+        // ✅ CRITICAL FIX: Use the employee key (which is already the Firebase UID) directly.
+        // If a `firebaseUid` field exists, use it for backward compatibility.
+        const uidForIdle = empData.firebaseUid || empKey;
         const totalRef = ref(database, `idleLogs/${uidForIdle}/${selectedDate}/totalIdleMs`);
         const totalSnap = await get(totalRef);
         const totalIdleMs = (totalSnap.val() as number) || 0;
