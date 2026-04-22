@@ -41,6 +41,19 @@ interface FirebaseUserData {
   [key: string]: unknown;
 }
 
+interface BreakData {
+  breakIn: string;
+  breakOut?: string;
+  duration?: string;
+}
+
+interface AttendanceRecord {
+  date: string;
+  punchIn: string;
+  punchOut?: string | null;
+  breaks?: Record<string, BreakData>;
+}
+
 // ========== HELPERS ==========
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
@@ -53,29 +66,57 @@ const formatIdleDuration = (ms: number): string => {
   return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 };
 
-const fetchTotalIdleToday = async (empId: string): Promise<number> => {
+// ✅ Reads from root‑level idleLogs (matches useIdleDetection hook)
+const fetchTotalIdleToday = async (firebaseUid: string): Promise<number> => {
   const today = getTodayStr();
-  const totalRef = ref(database, `idleLogs/${empId}/${today}/totalIdleMs`);
+  const totalRef = ref(database, `idleLogs/${firebaseUid}/${today}/totalIdleMs`);
   const snapshot = await get(totalRef);
-  return snapshot.val() || 0;
+  const value = snapshot.val();
+  return typeof value === 'number' ? value : 0;
+};
+
+// ✅ Cache for email → Firebase UID
+let emailToUidCache: Record<string, string> | null = null;
+
+const getFirebaseUidByEmail = async (email: string): Promise<string | null> => {
+  if (!email) return null;
+  if (!emailToUidCache) {
+    const usersSnap = await get(ref(database, 'users'));
+    const users = usersSnap.val() as Record<string, { email?: string }> | null;
+    emailToUidCache = {};
+    if (users) {
+      for (const [uid, user] of Object.entries(users)) {
+        if (user.email) emailToUidCache[user.email] = uid;
+      }
+    }
+  }
+  return emailToUidCache[email] || null;
 };
 
 // Get today's punch status (punched in/out and on break) from attendance records
 const getTodayPunchStatus = async (
   adminId: string,
-  empId: string
+  empKey: string // the key under employees node
 ): Promise<{ isPunchedIn: boolean; isOnBreak: boolean }> => {
-  const sessionRef = ref(database, `workSessions/${empId}`);
-  const snapshot = await get(sessionRef);
-  const data = snapshot.val();
-  if (data) {
-    return {
-      isPunchedIn: data.isPunchedIn || false,
-      isOnBreak: data.isOnBreak || false,
-    };
+  const today = getTodayStr();
+  const punchingRef = ref(database, `users/${adminId}/employees/${empKey}/punching`);
+  const snapshot = await get(punchingRef);
+  const records = snapshot.val() as Record<string, AttendanceRecord> | null;
+  if (!records) return { isPunchedIn: false, isOnBreak: false };
+
+  for (const record of Object.values(records)) {
+    if (record.date && record.date.startsWith(today)) {
+      const isPunchedIn = !!record.punchIn && !record.punchOut;
+      let isOnBreak = false;
+      if (record.breaks) {
+        isOnBreak = Object.values(record.breaks).some((brk) => brk.breakIn && !brk.breakOut);
+      }
+      return { isPunchedIn, isOnBreak };
+    }
   }
   return { isPunchedIn: false, isOnBreak: false };
 };
+
 // ========== MAIN COMPONENT ==========
 const IdleDetectionPage = () => {
   const { user } = useAuth();
@@ -153,11 +194,11 @@ const IdleDetectionPage = () => {
       for (const [adminId, adminData] of Object.entries(allUsers)) {
         const employeesNode = adminData?.employees;
         if (!employeesNode || typeof employeesNode !== 'object') continue;
-        for (const [empId, empData] of Object.entries(employeesNode)) {
+        for (const [empKey, empData] of Object.entries(employeesNode)) {
           const profile = empData as EmployeeProfile;
-          if (!employeeMap.has(empId)) {
-            employeeMap.set(empId, {
-              name: profile.name || empId,
+          if (!employeeMap.has(empKey)) {
+            employeeMap.set(empKey, {
+              name: profile.name || empKey,
               department: profile.department || 'No Department',
               email: profile.email || '',
               adminId,
@@ -167,13 +208,16 @@ const IdleDetectionPage = () => {
       }
 
       const employeePromises: Promise<IdleEmployee>[] = [];
-      for (const [empId, info] of employeeMap.entries()) {
+      for (const [empKey, info] of employeeMap.entries()) {
         employeePromises.push(
           (async () => {
-            const punchStatus = await getTodayPunchStatus(info.adminId, empId);
-            const totalIdleMs = await fetchTotalIdleToday(empId);
+            const punchStatus = await getTodayPunchStatus(info.adminId, empKey);
+            // ✅ Get Firebase UID from email (to match idleLogs path)
+            const firebaseUid = await getFirebaseUidByEmail(info.email);
+            const uidForIdle = firebaseUid || empKey; // fallback to empKey if not found
+            const totalIdleMs = await fetchTotalIdleToday(uidForIdle);
             return {
-              id: empId,
+              id: empKey,
               name: info.name,
               email: info.email,
               department: info.department,
@@ -188,7 +232,6 @@ const IdleDetectionPage = () => {
           })()
         );
       }
-
       const allEmployees = await Promise.all(employeePromises);
       setEmployees(allEmployees);
       setLoading(false);

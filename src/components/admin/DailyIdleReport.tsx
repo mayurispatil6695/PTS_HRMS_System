@@ -7,7 +7,7 @@ import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 
 interface IdleSummary {
-  employeeId: string;
+  employeeId: string;   // employee record key (not necessarily Firebase UID)
   employeeName: string;
   totalIdleMs: number;
   isLive?: boolean;
@@ -24,6 +24,24 @@ interface EmployeeData {
   name?: string;
   email?: string;
 }
+
+// ✅ Cache for email → Firebase UID
+let emailToUidCache: Record<string, string> | null = null;
+
+const getFirebaseUidByEmail = async (email: string): Promise<string | null> => {
+  if (!email) return null;
+  if (!emailToUidCache) {
+    const usersSnap = await get(ref(database, 'users'));
+    const users = usersSnap.val() as Record<string, { email?: string }> | null;
+    emailToUidCache = {};
+    if (users) {
+      for (const [uid, user] of Object.entries(users)) {
+        if (user.email) emailToUidCache[user.email] = uid;
+      }
+    }
+  }
+  return emailToUidCache[email] || null;
+};
 
 export const DailyIdleReport = () => {
   const { user } = useAuth();
@@ -64,7 +82,7 @@ export const DailyIdleReport = () => {
     if (!user?.id) return;
     setLoading(true);
     try {
-      // Get all employees under the current admin (user.id is the admin ID)
+      // Get all employees under the current admin (user.id is the admin UID)
       const employeesRef = ref(database, `users/${user.id}/employees`);
       const snapshot = await get(employeesRef);
       const employees = snapshot.val() as Record<string, EmployeeData> | null;
@@ -77,17 +95,17 @@ export const DailyIdleReport = () => {
 
       const results: IdleSummary[] = [];
 
-      for (const [empId, empData] of Object.entries(employees)) {
-       const totalRef = ref(
-  database,
-  `idleLogs/${empId}/${selectedDate}/totalIdleMs`
-);
+      for (const [empKey, empData] of Object.entries(employees)) {
+        // ✅ Get Firebase UID from email
+        const firebaseUid = await getFirebaseUidByEmail(empData.email || '');
+        const uidForIdle = firebaseUid || empKey; // fallback to empKey if not found
+        const totalRef = ref(database, `idleLogs/${uidForIdle}/${selectedDate}/totalIdleMs`);
         const totalSnap = await get(totalRef);
         const totalIdleMs = (totalSnap.val() as number) || 0;
 
         results.push({
-          employeeId: empId,
-          employeeName: empData.name || empId,
+          employeeId: empKey,
+          employeeName: empData.name || empKey,
           totalIdleMs,
         });
       }

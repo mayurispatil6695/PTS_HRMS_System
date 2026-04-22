@@ -27,14 +27,14 @@ import { Badge } from '../ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, push, set, onValue, update, get, query, orderByChild, DataSnapshot, increment } from 'firebase/database';
+import { ref, push, set, onValue, update, get, query, orderByChild, DataSnapshot } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 import SelfieCapture from '../attendance/SelfieCapture';
 import { useWorkSession } from '../../contexts/WorkSessionContext';
 import { useIdleDetection } from '../../hooks/useIdleDetection';
 import ProjectsPopup from '../admin/popups/ProjectsPopup';
-import { Project } from '@/types/project';
+import { Project ,Task} from '@/types/project';
 
 // ==================== TYPES ====================
 interface AttendanceRecord {
@@ -135,8 +135,30 @@ interface FirebasePostData {
   status?: string;
 }
 
-interface FirebaseProjectData {
+// Extended Project interface to include fields from Firebase
+interface ExtendedProject extends Project {
+  projectType?: string;
+  specificDepartment?: string;
+  clientId?: string;
+}
+
+interface FirebaseProject {
+  name?: string;
+  description?: string;
+  department?: string;
   assignedTeamLeader?: string;
+  assignedEmployees?: string[];
+  tasks?: Record<string, unknown>;
+  startDate?: string;
+  endDate?: string;
+  priority?: string;
+  status?: string;
+  projectType?: string;
+  specificDepartment?: string;
+  createdAt?: string;
+  createdBy?: string;
+  progress?: number;
+  clientId?: string;
   [key: string]: unknown;
 }
 
@@ -187,7 +209,7 @@ const EmployeeDashboardHome = () => {
   const [isTeamLead, setIsTeamLead] = useState(false);
   const [isManager, setIsManager] = useState(false);
   const [showProjectsPopup, setShowProjectsPopup] = useState(false);
-  const [employeeProjects, setEmployeeProjects] = useState<Project[]>([]);
+  const [employeeProjects, setEmployeeProjects] = useState<ExtendedProject[]>([]);
   const navigate = useNavigate();
   const lastNotifiedStatusRef = useRef<string | null>(null);
 
@@ -215,6 +237,7 @@ const EmployeeDashboardHome = () => {
   };
 
   const parseDurationToMinutes = (durationStr: string): number => {
+    if (!durationStr) return 0;
     const colonMatch = durationStr.match(/^(\d+):(\d+)$/);
     if (colonMatch) return parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
     const hoursMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*h/i);
@@ -222,7 +245,7 @@ const EmployeeDashboardHome = () => {
     let total = 0;
     if (hoursMatch) total += parseFloat(hoursMatch[1]) * 60;
     if (minutesMatch) total += parseFloat(minutesMatch[1]);
-    return Math.round(total);
+    return Math.round(total) || 0;
   };
 
   const calculateTotalWorkedMinutes = (
@@ -230,6 +253,7 @@ const EmployeeDashboardHome = () => {
     punchOutTime: string, 
     breaks?: Record<string, { breakOut?: string; duration?: string }>
   ): number => {
+    if (!punchInTime || !punchOutTime) return 0;
     const punchInMinutes = convertTimeToMinutes(punchInTime);
     const punchOutMinutes = convertTimeToMinutes(punchOutTime);
     let totalMinutes = punchOutMinutes - punchInMinutes;
@@ -345,21 +369,21 @@ const EmployeeDashboardHome = () => {
     return () => unsubscribe();
   }, [user]);
 
-  // Fetch project stats and full list (NEW)
+  // Fetch project stats and full list
   useEffect(() => {
     if (!user?.id) return;
     const fetchProjectStats = async () => {
       try {
         const projectsRef = ref(database, 'projects');
         const snapshot = await get(projectsRef);
-        const allProjects = snapshot.val() as Record<string, any> | null;
+        const allProjects = snapshot.val() as Record<string, FirebaseProject> | null;
         if (!allProjects) {
           setStats(prev => ({ ...prev, totalProjects: 0, activeProjects: 0, completedProjects: 0, pausedProjects: 0 }));
           setEmployeeProjects([]);
           return;
         }
         let total = 0, active = 0, completed = 0, paused = 0;
-        const projectsList: Project[] = [];
+        const projectsList: ExtendedProject[] = [];
         for (const [projId, proj] of Object.entries(allProjects)) {
           const isAssigned = proj.assignedTeamLeader === user.id || (proj.assignedEmployees && proj.assignedEmployees.includes(user.id));
           if (!isAssigned) continue;
@@ -368,25 +392,27 @@ const EmployeeDashboardHome = () => {
           if (status === 'in_progress' || status === 'active') active++;
           else if (status === 'completed') completed++;
           else if (status === 'on_hold') paused++;
-          projectsList.push({
-            id: projId,
-            name: proj.name || '',
-            description: proj.description || '',
-            department: proj.department || '',
-            assignedTeamLeader: proj.assignedTeamLeader || '',
-            assignedEmployees: proj.assignedEmployees || [],
-            tasks: proj.tasks || {},
-            startDate: proj.startDate || '',
-            endDate: proj.endDate || '',
-            priority: proj.priority || 'medium',
-            status: status || 'not_started',
-            projectType: proj.projectType || 'common',
-            specificDepartment: proj.specificDepartment,
-            createdAt: proj.createdAt || '',
-            createdBy: proj.createdBy || '',
-            progress: proj.progress || 0,
-            clientId: proj.clientId,
-          });
+      // Add import at top (if not already present)
+// Inside the fetchProjectStats useEffect, replace the tasks assignment:
+projectsList.push({
+  id: projId,
+  name: proj.name || '',
+  description: proj.description || '',
+  department: proj.department || '',
+  assignedTeamLeader: proj.assignedTeamLeader || '',
+  assignedEmployees: proj.assignedEmployees || [],
+  tasks: proj.tasks ? Object.values(proj.tasks) as Task[] : [],  // ✅ cast to Task[]
+  startDate: proj.startDate || '',
+  endDate: proj.endDate || '',
+  priority: (proj.priority as 'low' | 'medium' | 'high' | 'urgent') || 'medium',
+  status: (status as 'not_started' | 'in_progress' | 'on_hold' | 'completed' | 'active') || 'not_started',
+  progress: proj.progress || 0,
+  createdAt: proj.createdAt || '',
+  createdBy: proj.createdBy || '',
+  projectType: proj.projectType || 'common',
+  specificDepartment: proj.specificDepartment,
+  clientId: proj.clientId,
+});
         }
         setStats(prev => ({ ...prev, totalProjects: total, activeProjects: active, completedProjects: completed, pausedProjects: paused }));
         setEmployeeProjects(projectsList);
@@ -436,7 +462,7 @@ const EmployeeDashboardHome = () => {
             const postData = value as FirebasePostData;
             return {
               id: key,
-              type: 'social_media',
+              type: 'social_media' as const,
               action: `Scheduled ${postData.platform || 'social media'} post`,
               platform: postData.platform || '',
               timestamp: postData.createdAt ? new Date(postData.createdAt).getTime() : Date.now(),
@@ -595,70 +621,70 @@ const EmployeeDashboardHome = () => {
   };
 
   // ========== AUTO PUNCH‑OUT & REMINDERS ==========
-const performAutoPunchOut = async () => {
-  if (!todayAttendance || todayAttendance.punchOut || !user?.id || !user?.adminUid) return;
-  const now = new Date();
-  const punchOutTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  const updates = {
-    punchOut: punchOutTime,
-    timestamp: now.getTime(),
-    status: 'auto-punched-out',
-    markedBy: 'System',
-    updatedAt: new Date().toISOString(),
-  };
-  const recordRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`);
-  await update(recordRef, updates);
-  toast.info(`Auto punched out at ${punchOutTime}`);
-  if (Notification.permission === 'granted') {
-    new Notification('Auto Punch‑out', { body: `You were automatically punched out at ${punchOutTime}.`, icon: '/logo.png' });
-  }
-  // Notify admin
-  const adminNotifRef = push(ref(database, `notifications/${user.adminUid}`));
-  await set(adminNotifRef, {
-    title: 'Auto Punch‑out',
-    body: `${user.name} was auto‑punched out at ${punchOutTime}.`,
-    type: 'auto_punchout',
-    read: false,
-    createdAt: Date.now(),
-  });
-};
-
-// Auto punch‑out check (every hour after 8 PM)
-useEffect(() => {
-  const interval = setInterval(async () => {
-    if (!todayAttendance || todayAttendance.punchOut) return;
+  const performAutoPunchOut = async () => {
+    if (!todayAttendance || todayAttendance.punchOut || !user?.id || !user?.adminUid) return;
     const now = new Date();
-    const currentHour = now.getHours();
-    const END_OF_DAY_HOUR = 20; // 8 PM
-    if (currentHour >= END_OF_DAY_HOUR) {
-      await performAutoPunchOut();
+    const punchOutTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const updates = {
+      punchOut: punchOutTime,
+      timestamp: now.getTime(),
+      status: 'auto-punched-out',
+      markedBy: 'System',
+      updatedAt: new Date().toISOString(),
+    };
+    const recordRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`);
+    await update(recordRef, updates);
+    toast(`Auto punched out at ${punchOutTime}`, { icon: '🕒' });
+    if (Notification.permission === 'granted') {
+      new Notification('Auto Punch‑out', { body: `You were automatically punched out at ${punchOutTime}.`, icon: '/logo.png' });
     }
-  }, 60 * 60 * 1000); // every hour
-  return () => clearInterval(interval);
-}, [todayAttendance, user?.id]);
+    // Notify admin
+    const adminNotifRef = push(ref(database, `notifications/${user.adminUid}`));
+    await set(adminNotifRef, {
+      title: 'Auto Punch‑out',
+      body: `${user.name} was auto‑punched out at ${punchOutTime}.`,
+      type: 'auto_punchout',
+      read: false,
+      createdAt: Date.now(),
+    });
+  };
 
-// Reminder notifications (every 15 minutes after 6 PM)
-useEffect(() => {
-  const reminderInterval = setInterval(async () => {
-    if (!todayAttendance || todayAttendance.punchOut) return;
-    const now = new Date();
-    const currentHour = now.getHours();
-    const REMINDER_START_HOUR = 18; // 6 PM
-    const END_OF_DAY_HOUR = 20;     // 8 PM
-    if (currentHour >= REMINDER_START_HOUR && currentHour < END_OF_DAY_HOUR) {
-      const lastReminder = localStorage.getItem(`lastPunchOutReminder_${user?.id}`);
-      const nowTime = now.getTime();
-      if (!lastReminder || nowTime - parseInt(lastReminder) > 60 * 60 * 1000) {
-        localStorage.setItem(`lastPunchOutReminder_${user?.id}`, nowTime.toString());
-        toast.warning('You are still punched in. Please punch out before 8:00 PM.', { duration: 10000 });
-        if (Notification.permission === 'granted') {
-          new Notification('Punch‑out Reminder', { body: 'You have not punched out yet. Please do so before 8:00 PM.', icon: '/logo.png' });
+  // Auto punch‑out check (every hour after 8 PM)
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (!todayAttendance || todayAttendance.punchOut) return;
+      const now = new Date();
+      const currentHour = now.getHours();
+      const END_OF_DAY_HOUR = 20; // 8 PM
+      if (currentHour >= END_OF_DAY_HOUR) {
+        await performAutoPunchOut();
+      }
+    }, 60 * 60 * 1000); // every hour
+    return () => clearInterval(interval);
+  }, [todayAttendance, user?.id]);
+
+  // Reminder notifications (every 15 minutes after 6 PM)
+  useEffect(() => {
+    const reminderInterval = setInterval(async () => {
+      if (!todayAttendance || todayAttendance.punchOut) return;
+      const now = new Date();
+      const currentHour = now.getHours();
+      const REMINDER_START_HOUR = 18; // 6 PM
+      const END_OF_DAY_HOUR = 20;     // 8 PM
+      if (currentHour >= REMINDER_START_HOUR && currentHour < END_OF_DAY_HOUR) {
+        const lastReminder = localStorage.getItem(`lastPunchOutReminder_${user?.id}`);
+        const nowTime = now.getTime();
+        if (!lastReminder || nowTime - parseInt(lastReminder) > 60 * 60 * 1000) {
+          localStorage.setItem(`lastPunchOutReminder_${user?.id}`, nowTime.toString());
+          toast('You are still punched in. Please punch out before 8:00 PM.', { icon: '⚠️', duration: 10000 });
+          if (Notification.permission === 'granted') {
+            new Notification('Punch‑out Reminder', { body: 'You have not punched out yet. Please do so before 8:00 PM.', icon: '/logo.png' });
+          }
         }
       }
-    }
-  }, 15 * 60 * 1000); // every 15 minutes
-  return () => clearInterval(reminderInterval);
-}, [todayAttendance, user?.id]);
+    }, 15 * 60 * 1000); // every 15 minutes
+    return () => clearInterval(reminderInterval);
+  }, [todayAttendance, user?.id]);
 
   // Automated Late/Half-day Notifications
   useEffect(() => {
@@ -667,7 +693,6 @@ useEffect(() => {
     const previousStatus = lastNotifiedStatusRef.current;
     if (currentStatus !== previousStatus && (currentStatus === 'late' || currentStatus === 'half-day')) {
       let markedBy = 'System';
-      let markedAt = '';
       if (currentStatus === 'late' && todayAttendance.markedLateBy) markedBy = todayAttendance.markedLateBy;
       if (currentStatus === 'half-day' && todayAttendance.markedHalfDayBy) markedBy = todayAttendance.markedHalfDayBy;
       const statusText = currentStatus === 'late' ? 'Late' : 'Half Day';
@@ -687,15 +712,24 @@ useEffect(() => {
     fetchData();
     return () => { if (unsubscribe) unsubscribe(); };
   }, [user]);
-useIdleDetection({
-  idleTimeout: 10000, // 10 seconds
-  userId: user?.id,
-  adminId: user?.adminUid,
-  employeeName: user?.name,
-  employeeEmail: user?.email,
-  department: user?.department,
-  isActive: isPunchedIn && !isOnBreak, // from useWorkSession
-});
+
+  console.log('🔍 Idle Detection Debug:', {
+    isActive,
+    isPunchedIn,
+    isOnBreak,
+    userId: user?.id,
+    adminId: user?.adminUid,
+    employeeName: user?.name,
+  });
+  useIdleDetection({
+    idleTimeout: 10000,
+    userId: user?.id,
+    adminId: user?.adminUid,
+    employeeName: user?.name,
+    employeeEmail: user?.email,
+    department: user?.department,
+    isActive: isPunchedIn && !isOnBreak,
+  });
 
   const handleSelfieCapture = async (imageData: string): Promise<void> => {
     const location = await getCurrentLocation();
