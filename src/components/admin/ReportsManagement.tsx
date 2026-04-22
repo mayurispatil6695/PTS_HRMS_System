@@ -8,11 +8,17 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, query, orderByChild, get, orderByKey } from 'firebase/database';
+import { ref, get } from 'firebase/database';
 import { toast } from '../ui/use-toast';
-import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
-import { Table, TableBody, TableCaption, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 
+// ========== PROPS ==========
+interface ReportsManagementProps {
+  role?: 'admin' | 'manager' | 'team_leader' | 'client';
+  department?: string;
+}
+
+// ========== TYPES ==========
 interface Employee {
   id: string;
   name: string;
@@ -75,10 +81,89 @@ interface DailyTask {
   date: string;
 }
 
-const ReportsManagement = () => {
+// Firebase user structure (from global `users` node)
+interface FirebaseUserRecord {
+  role?: string;
+  name?: string;
+  email?: string;
+  department?: string;
+  designation?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
+// Raw attendance record from DB
+interface RawAttendanceRecord {
+  date: string;
+  punchIn: string;
+  punchOut?: string | null;
+  status?: string;
+  workMode?: string;
+  timestamp?: number;
+  [key: string]: unknown;
+}
+
+// Raw leave request from DB
+interface RawLeaveRequest {
+  employeeId?: string;
+  employeeName?: string;
+  department?: string;
+  leaveType?: string;
+  startDate?: string;
+  endDate?: string;
+  reason?: string;
+  status?: 'pending' | 'approved' | 'rejected';
+  appliedAt?: string;
+  approvedAt?: string;
+  rejectedAt?: string;
+  approvedBy?: string;
+  [key: string]: unknown;
+}
+
+// Raw daily task from DB
+interface RawDailyTask {
+  taskTitle?: string;
+  taskType?: string;
+  priority?: string;
+  assignedBy?: string;
+  assignedDate?: string;
+  startTime?: string;
+  endTime?: string;
+  totalDuration?: string;
+  status?: string;
+  workSummary?: string;
+  pendingWork?: string;
+  challenges?: string;
+  verifiedBy?: string;
+  managerRemarks?: string;
+  employeeRemarks?: string;
+  attachments?: string[];
+  date?: string;
+  [key: string]: unknown;
+}
+
+// Helper to safely extract a string field
+const safeString = (obj: Record<string, unknown>, key: string, defaultValue = ''): string => {
+  const val = obj[key];
+  return typeof val === 'string' ? val : defaultValue;
+};
+
+// Helper to safely extract a number
+const safeNumber = (obj: Record<string, unknown>, key: string, defaultValue = 0): number => {
+  const val = obj[key];
+  return typeof val === 'number' ? val : defaultValue;
+};
+
+const ReportsManagement: React.FC<ReportsManagementProps> = ({ 
+  role = 'admin', 
+  department: propDepartment 
+}) => {
   const { user } = useAuth();
-  const userRole = user?.role;
-  
+  const effectiveRole = role;
+  const effectiveDepartment = propDepartment || user?.department || '';
+  const isAdmin = effectiveRole === 'admin';
+  const isManager = effectiveRole === 'manager';
+
   const [reportType, setReportType] = useState<'attendance' | 'leaves' | 'dailyTasks'>('attendance');
   const [dateRange, setDateRange] = useState('thisMonth');
   const [customStartDate, setCustomStartDate] = useState('');
@@ -96,81 +181,62 @@ const ReportsManagement = () => {
     dailyTasks: false
   });
   const [showAllData, setShowAllData] = useState(false);
-  const [showAllDataModal, setShowAllDataModal] = useState(false);
-  const [modalDateFilter, setModalDateFilter] = useState<string>('');
+  const [modalDateFilter, setModalDateFilter] = useState('');
   const [selectedTask, setSelectedTask] = useState<DailyTask | null>(null);
   const [showTaskDetails, setShowTaskDetails] = useState(false);
 
-  /* ================= CHECK IF USER IS ADMIN ================= */
-  const isAdmin = userRole === 'admin' || userRole === 'super_admin' || userRole === 'Administrator';
+  useEffect(() => {
+    if (isManager && effectiveDepartment) {
+      setDepartmentFilter(effectiveDepartment);
+    }
+  }, [isManager, effectiveDepartment]);
 
-  /* ================= FETCH ALL EMPLOYEES (FOR ADMIN) ================= */
+  // ================= FETCH ALL EMPLOYEES =================
   useEffect(() => {
     if (!user?.id) return;
 
     const fetchEmployees = async () => {
       try {
-        if (isAdmin) {
-          // ADMIN: Fetch ALL employees from the entire database
-          const usersRef = ref(database, `users`);
-          const snapshot = await get(usersRef);
+        const usersRef = ref(database, `users`);
+        const snapshot = await get(usersRef);
+        
+        if (snapshot.exists()) {
+          const usersData = snapshot.val() as Record<string, FirebaseUserRecord>;
+          const employeesList: Employee[] = [];
           
-          if (snapshot.exists()) {
-            const usersData = snapshot.val();
-            const employeesList: Employee[] = [];
-            
-            // Loop through all users and collect employees (skip admins if needed)
-            Object.entries(usersData).forEach(([uid, userData]: [string, any]) => {
-              // Only add users who are employees (not admins)
-              if (userData.role !== 'admin' && userData.role !== 'super_admin') {
-                employeesList.push({
-                  id: uid,
-                  name: userData.name || userData.email || `Employee ${uid.slice(0, 6)}`,
-                  email: userData.email || '',
-                  department: userData.department,
-                  designation: userData.designation,
-                  status: userData.status || 'active'
-                });
-              }
-            });
-            
-            setEmployees(employeesList);
-            console.log(`✅ Loaded ${employeesList.length} employees from all users`);
-          } else {
-            setEmployees([]);
+          for (const [uid, userData] of Object.entries(usersData)) {
+            const roleField = userData.role;
+            if (roleField !== 'admin' && roleField !== 'super_admin') {
+              const isInDepartment = !isManager || (userData.department === effectiveDepartment);
+              if (isManager && !isInDepartment) continue;
+              
+              employeesList.push({
+                id: uid,
+                name: safeString(userData, 'name', userData.email || `Employee ${uid.slice(0, 6)}`),
+                email: safeString(userData, 'email'),
+                department: safeString(userData, 'department'),
+                designation: safeString(userData, 'designation'),
+                status: safeString(userData, 'status', 'active')
+              });
+            }
           }
+          setEmployees(employeesList);
+          console.log(`✅ Loaded ${employeesList.length} employees`);
         } else {
-          // REGULAR USER: Fetch only their employees
-          const employeesRef = ref(database, `users/${user.id}/employees`);
-          const snapshot = await get(employeesRef);
-          
-          if (snapshot.exists()) {
-            const employeesData = snapshot.val();
-            const employeesList: Employee[] = Object.entries(employeesData).map(([key, value]) => ({
-              id: key,
-              ...(value as Omit<Employee, 'id'>)
-            }));
-            setEmployees(employeesList);
-          } else {
-            setEmployees([]);
-          }
+          setEmployees([]);
         }
       } catch (error) {
         console.error('Error fetching employees:', error);
-        toast({
-          title: 'Error',
-          description: 'Failed to load employee data',
-          variant: 'destructive'
-        });
+        toast({ title: 'Error', description: 'Failed to load employee data', variant: 'destructive' });
       } finally {
         setDataLoaded(prev => ({ ...prev, employees: true }));
       }
     };
 
     fetchEmployees();
-  }, [user, isAdmin]);
+  }, [user, isAdmin, isManager, effectiveDepartment]);
 
-  /* ================= FETCH ATTENDANCE DATA ================= */
+  // ================= FETCH ATTENDANCE DATA =================
   useEffect(() => {
     if (!user?.id || employees.length === 0 || reportType !== 'attendance') return;
 
@@ -179,70 +245,23 @@ const ReportsManagement = () => {
       try {
         const allRecords: AttendanceRecord[] = [];
         
-        if (isAdmin) {
-          // ADMIN: Fetch attendance for ALL employees from the entire database
-          const usersRef = ref(database, `users`);
-          const snapshot = await get(usersRef);
-          
-          if (snapshot.exists()) {
-            const usersData = snapshot.val();
-            
-            // Loop through all users
-            for (const [uid, userData] of Object.entries(usersData)) {
-              const employee = employees.find(emp => emp.id === uid);
-              if (!employee) continue; // Skip if not in our employee list
-              
-              const attendanceRef = ref(database, `users/${uid}/punching`);
-              const attendanceSnapshot = await get(attendanceRef);
-              
-              if (attendanceSnapshot.exists()) {
-                const data = attendanceSnapshot.val();
-                const records: AttendanceRecord[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: uid,
-                  employeeName: employee.name,
-                  ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>)
-                }));
-                allRecords.push(...records);
-              }
-            }
-          }
-        } else {
-          // REGULAR USER: Fetch attendance for their employees
-          for (const employee of employees) {
-            const attendanceRef = ref(database, `users/${user.id}/employees/${employee.id}/punching`);
-            let attendanceQuery;
-            
-            try {
-              attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
-              const snapshot = await get(attendanceQuery);
-              
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                const records: AttendanceRecord[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: employee.id,
-                  employeeName: employee.name,
-                  ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>)
-                }));
-                allRecords.push(...records);
-              }
-            } catch (error) {
-              console.warn('Timestamp index not available, falling back to key ordering:', error);
-              const snapshot = await get(query(attendanceRef, orderByKey()));
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                const records: AttendanceRecord[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: employee.id,
-                  employeeName: employee.name,
-                  ...(value as Omit<AttendanceRecord, 'id' | 'employeeId' | 'employeeName'>)
-                }));
-                if (records[0]?.timestamp) {
-                  records.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
-                }
-                allRecords.push(...records);
-              }
+        for (const employee of employees) {
+          const attendanceRef = ref(database, `users/${employee.id}/punching`);
+          const attendanceSnapshot = await get(attendanceRef);
+          if (attendanceSnapshot.exists()) {
+            const data = attendanceSnapshot.val() as Record<string, RawAttendanceRecord>;
+            for (const [key, value] of Object.entries(data)) {
+              allRecords.push({
+                id: key,
+                employeeId: employee.id,
+                employeeName: employee.name,
+                date: safeString(value, 'date'),
+                punchIn: safeString(value, 'punchIn'),
+                punchOut: value.punchOut !== undefined ? (typeof value.punchOut === 'string' ? value.punchOut : null) : null,
+                status: safeString(value, 'status', 'present'),
+                workMode: safeString(value, 'workMode', 'office'),
+                timestamp: safeNumber(value, 'timestamp'),
+              });
             }
           }
         }
@@ -251,11 +270,7 @@ const ReportsManagement = () => {
         console.log(`✅ Loaded ${allRecords.length} attendance records`);
       } catch (error) {
         console.error('Error fetching attendance records:', error);
-        toast({
-          title: 'Error',
-          description: 'Failed to load attendance data',
-          variant: 'destructive'
-        });
+        toast({ title: 'Error', description: 'Failed to load attendance data', variant: 'destructive' });
       } finally {
         setDataLoaded(prev => ({ ...prev, attendance: true }));
         setLoading(false);
@@ -263,9 +278,9 @@ const ReportsManagement = () => {
     };
 
     fetchAttendanceData();
-  }, [user, employees, reportType, isAdmin]);
+  }, [user, employees, reportType, isAdmin, isManager, effectiveDepartment]);
 
-  /* ================= FETCH LEAVE DATA ================= */
+  // ================= FETCH LEAVE DATA =================
   useEffect(() => {
     if (!user?.id || employees.length === 0 || reportType !== 'leaves') return;
 
@@ -274,75 +289,27 @@ const ReportsManagement = () => {
       try {
         const allRequests: LeaveRequest[] = [];
         
-        if (isAdmin) {
-          // ADMIN: Fetch leaves for ALL employees from the entire database
-          const usersRef = ref(database, `users`);
-          const snapshot = await get(usersRef);
-          
-          if (snapshot.exists()) {
-            const usersData = snapshot.val();
-            
-            // Loop through all users
-            for (const [uid, userData] of Object.entries(usersData)) {
-              const employee = employees.find(emp => emp.id === uid);
-              if (!employee) continue;
-              
-              const leavesRef = ref(database, `users/${uid}/leaves`);
-              const leavesSnapshot = await get(leavesRef);
-              
-              if (leavesSnapshot.exists()) {
-                const data = leavesSnapshot.val();
-                const requests: LeaveRequest[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: uid,
-                  employeeName: employee.name,
-                  department: employee.department || 'No Department',
-                  ...(value as Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'department'>)
-                }));
-                allRequests.push(...requests);
-              }
-            }
-          }
-        } else {
-          // REGULAR USER: Fetch leaves for their employees
-          for (const employee of employees) {
-            const leavesRef = ref(database, `users/${user.id}/employees/${employee.id}/leaves`);
-            let leavesQuery;
-            
-            try {
-              leavesQuery = query(leavesRef, orderByChild('appliedAt'));
-              const snapshot = await get(leavesQuery);
-              
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                const requests: LeaveRequest[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: employee.id,
-                  employeeName: employee.name,
-                  department: employee.department || 'No Department',
-                  ...(value as Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'department'>)
-                }));
-                allRequests.push(...requests);
-              }
-            } catch (error) {
-              console.warn('appliedAt index not available, falling back to key ordering:', error);
-              const snapshot = await get(query(leavesRef, orderByKey()));
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                const requests: LeaveRequest[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: employee.id,
-                  employeeName: employee.name,
-                  department: employee.department || 'No Department',
-                  ...(value as Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'department'>)
-                }));
-                if (requests[0]?.appliedAt) {
-                  requests.sort((a, b) => 
-                    new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
-                  );
-                }
-                allRequests.push(...requests);
-              }
+        for (const employee of employees) {
+          const leavesRef = ref(database, `users/${employee.id}/leaves`);
+          const leavesSnapshot = await get(leavesRef);
+          if (leavesSnapshot.exists()) {
+            const data = leavesSnapshot.val() as Record<string, RawLeaveRequest>;
+            for (const [key, value] of Object.entries(data)) {
+              allRequests.push({
+                id: key,
+                employeeId: employee.id,
+                employeeName: employee.name,
+                department: employee.department || 'No Department',
+                leaveType: safeString(value, 'leaveType'),
+                startDate: safeString(value, 'startDate'),
+                endDate: safeString(value, 'endDate'),
+                reason: safeString(value, 'reason'),
+                status: (value.status as 'pending' | 'approved' | 'rejected') || 'pending',
+                appliedAt: safeString(value, 'appliedAt'),
+                approvedAt: safeString(value, 'approvedAt'),
+                rejectedAt: safeString(value, 'rejectedAt'),
+                approvedBy: safeString(value, 'approvedBy'),
+              });
             }
           }
         }
@@ -351,11 +318,7 @@ const ReportsManagement = () => {
         console.log(`✅ Loaded ${allRequests.length} leave requests`);
       } catch (error) {
         console.error('Error fetching leave requests:', error);
-        toast({
-          title: 'Error',
-          description: 'Failed to load leave data',
-          variant: 'destructive'
-        });
+        toast({ title: 'Error', description: 'Failed to load leave data', variant: 'destructive' });
       } finally {
         setDataLoaded(prev => ({ ...prev, leaves: true }));
         setLoading(false);
@@ -363,9 +326,9 @@ const ReportsManagement = () => {
     };
 
     fetchLeaveData();
-  }, [user, employees, reportType, isAdmin]);
+  }, [user, employees, reportType, isAdmin, isManager, effectiveDepartment]);
 
-  /* ================= FETCH DAILY TASKS DATA ================= */
+  // ================= FETCH DAILY TASKS DATA =================
   useEffect(() => {
     if (!user?.id || employees.length === 0 || reportType !== 'dailyTasks') return;
 
@@ -374,78 +337,36 @@ const ReportsManagement = () => {
       try {
         const allTasks: DailyTask[] = [];
         
-        if (isAdmin) {
-          // ADMIN: Fetch daily tasks for ALL employees from the entire database
-          const usersRef = ref(database, `users`);
-          const snapshot = await get(usersRef);
-          
-          if (snapshot.exists()) {
-            const usersData = snapshot.val();
-            
-            // Loop through all users
-            for (const [uid, userData] of Object.entries(usersData)) {
-              const employee = employees.find(emp => emp.id === uid);
-              if (!employee) continue;
-              
-              const tasksRef = ref(database, `users/${uid}/dailytask`);
-              const tasksSnapshot = await get(tasksRef);
-              
-              if (tasksSnapshot.exists()) {
-                const data = tasksSnapshot.val();
-                const tasks: DailyTask[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: uid,
-                  employeeName: employee.name,
-                  department: employee.department || 'No Department',
-                  designation: employee.designation || 'No Designation',
-                  ...(value as Omit<DailyTask, 'id' | 'employeeId' | 'employeeName' | 'department' | 'designation'>)
-                }));
-                allTasks.push(...tasks);
-              }
-            }
-          }
-        } else {
-          // REGULAR USER: Fetch daily tasks for their employees
-          for (const employee of employees) {
-            const tasksRef = ref(database, `users/${user.id}/employees/${employee.id}/dailytask`);
-            let tasksQuery;
-            
-            try {
-              tasksQuery = query(tasksRef, orderByChild('date'));
-              const snapshot = await get(tasksQuery);
-              
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                const tasks: DailyTask[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: employee.id,
-                  employeeName: employee.name,
-                  department: employee.department || 'No Department',
-                  designation: employee.designation || 'No Designation',
-                  ...(value as Omit<DailyTask, 'id' | 'employeeId' | 'employeeName' | 'department' | 'designation'>)
-                }));
-                allTasks.push(...tasks);
-              }
-            } catch (error) {
-              console.warn('date index not available, falling back to key ordering:', error);
-              const snapshot = await get(query(tasksRef, orderByKey()));
-              if (snapshot.exists()) {
-                const data = snapshot.val();
-                const tasks: DailyTask[] = Object.entries(data).map(([key, value]) => ({
-                  id: key,
-                  employeeId: employee.id,
-                  employeeName: employee.name,
-                  department: employee.department || 'No Department',
-                  designation: employee.designation || 'No Designation',
-                  ...(value as Omit<DailyTask, 'id' | 'employeeId' | 'employeeName' | 'department' | 'designation'>)
-                }));
-                if (tasks[0]?.date) {
-                  tasks.sort((a, b) => 
-                    new Date(b.date).getTime() - new Date(a.date).getTime()
-                  );
-                }
-                allTasks.push(...tasks);
-              }
+        for (const employee of employees) {
+          const tasksRef = ref(database, `users/${employee.id}/dailytask`);
+          const tasksSnapshot = await get(tasksRef);
+          if (tasksSnapshot.exists()) {
+            const data = tasksSnapshot.val() as Record<string, RawDailyTask>;
+            for (const [key, value] of Object.entries(data)) {
+              allTasks.push({
+                id: key,
+                employeeId: employee.id,
+                employeeName: employee.name,
+                department: employee.department || 'No Department',
+                designation: employee.designation || 'No Designation',
+                taskTitle: safeString(value, 'taskTitle'),
+                taskType: safeString(value, 'taskType'),
+                priority: safeString(value, 'priority'),
+                assignedBy: safeString(value, 'assignedBy'),
+                assignedDate: safeString(value, 'assignedDate'),
+                startTime: safeString(value, 'startTime'),
+                endTime: safeString(value, 'endTime'),
+                totalDuration: safeString(value, 'totalDuration'),
+                status: safeString(value, 'status'),
+                workSummary: safeString(value, 'workSummary'),
+                pendingWork: safeString(value, 'pendingWork'),
+                challenges: safeString(value, 'challenges'),
+                verifiedBy: safeString(value, 'verifiedBy'),
+                managerRemarks: safeString(value, 'managerRemarks'),
+                employeeRemarks: safeString(value, 'employeeRemarks'),
+                attachments: Array.isArray(value.attachments) ? value.attachments : [],
+                date: safeString(value, 'date'),
+              });
             }
           }
         }
@@ -454,11 +375,7 @@ const ReportsManagement = () => {
         console.log(`✅ Loaded ${allTasks.length} daily tasks`);
       } catch (error) {
         console.error('Error fetching daily tasks:', error);
-        toast({
-          title: 'Error',
-          description: 'Failed to load daily tasks data',
-          variant: 'destructive'
-        });
+        toast({ title: 'Error', description: 'Failed to load daily tasks data', variant: 'destructive' });
       } finally {
         setDataLoaded(prev => ({ ...prev, dailyTasks: true }));
         setLoading(false);
@@ -466,9 +383,9 @@ const ReportsManagement = () => {
     };
 
     fetchDailyTasks();
-  }, [user, employees, reportType, isAdmin]);
+  }, [user, employees, reportType, isAdmin, isManager, effectiveDepartment]);
 
-  // Get filtered data based on date range and department
+  // ================= FILTERING LOGIC =================
   const getFilteredData = () => {
     let filteredAttendance: AttendanceRecord[] = [];
     let filteredLeaves: LeaveRequest[] = [];
@@ -477,7 +394,6 @@ const ReportsManagement = () => {
     const now = new Date();
     let startDate: Date, endDate: Date;
     
-    // Set date range based on selection
     switch (dateRange) {
       case 'thisMonth':
         startDate = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -505,7 +421,6 @@ const ReportsManagement = () => {
         endDate = new Date();
     }
     
-    // Filter attendance records
     if (reportType === 'attendance' && dataLoaded.attendance) {
       filteredAttendance = attendanceRecords.filter(record => {
         try {
@@ -514,15 +429,11 @@ const ReportsManagement = () => {
           const matchesDepartment = departmentFilter === 'all' || 
             (employee?.department === departmentFilter) ||
             (departmentFilter === 'No Department' && !employee?.department);
-          
           return recordDate >= startDate && recordDate <= endDate && matchesDepartment;
-        } catch {
-          return false;
-        }
+        } catch { return false; }
       });
     }
     
-    // Filter leave requests
     if (reportType === 'leaves' && dataLoaded.leaves) {
       filteredLeaves = leaveRequests.filter(request => {
         try {
@@ -531,15 +442,11 @@ const ReportsManagement = () => {
           const matchesDepartment = departmentFilter === 'all' || 
             (employee?.department === departmentFilter) ||
             (departmentFilter === 'No Department' && !employee?.department);
-          
           return appliedDate >= startDate && appliedDate <= endDate && matchesDepartment;
-        } catch {
-          return false;
-        }
+        } catch { return false; }
       });
     }
     
-    // Filter daily tasks
     if (reportType === 'dailyTasks' && dataLoaded.dailyTasks) {
       filteredDailyTasks = dailyTasks.filter(task => {
         try {
@@ -548,11 +455,8 @@ const ReportsManagement = () => {
           const matchesDepartment = departmentFilter === 'all' || 
             (employee?.department === departmentFilter) ||
             (departmentFilter === 'No Department' && !employee?.department);
-          
           return taskDate >= startDate && taskDate <= endDate && matchesDepartment;
-        } catch {
-          return false;
-        }
+        } catch { return false; }
       });
     }
     
@@ -561,11 +465,11 @@ const ReportsManagement = () => {
 
   const { filteredAttendance, filteredLeaves, filteredDailyTasks } = getFilteredData();
 
-  // Get department-wise data for the report
   const getDepartmentWiseData = () => {
-    const departments = Array.from(
-      new Set(employees.map(emp => emp.department || 'No Department'))
-    );
+    let departments = Array.from(new Set(employees.map(emp => emp.department || 'No Department')));
+    if (isManager && effectiveDepartment) {
+      departments = [effectiveDepartment];
+    }
     
     if (reportType === 'attendance') {
       return departments.map(dept => {
@@ -573,7 +477,6 @@ const ReportsManagement = () => {
         const deptRecords = filteredAttendance.filter(record => 
           deptEmployees.some(emp => emp.id === record.employeeId)
         );
-        
         return {
           department: dept,
           present: deptRecords.filter(record => record.status === 'present').length,
@@ -581,10 +484,7 @@ const ReportsManagement = () => {
           late: deptRecords.filter(record => record.status === 'late').length,
           total: deptRecords.length,
           percentage: deptRecords.length > 0 
-            ? Math.round(
-                (deptRecords.filter(record => record.status === 'present').length / 
-                deptRecords.length * 100
-              ))
+            ? Math.round((deptRecords.filter(record => record.status === 'present').length / deptRecords.length * 100))
             : 0
         };
       });
@@ -594,7 +494,6 @@ const ReportsManagement = () => {
         const deptLeaves = filteredLeaves.filter(leave => 
           deptEmployees.some(emp => emp.id === leave.employeeId)
         );
-        
         return {
           department: dept,
           approved: deptLeaves.filter(leave => leave.status === 'approved').length,
@@ -609,7 +508,6 @@ const ReportsManagement = () => {
         const deptTasks = filteredDailyTasks.filter(task => 
           deptEmployees.some(emp => emp.id === task.employeeId)
         );
-        
         return {
           department: dept,
           completed: deptTasks.filter(task => task.status === 'completed').length,
@@ -623,7 +521,7 @@ const ReportsManagement = () => {
 
   const departmentData = getDepartmentWiseData();
 
-  // Export report to CSV
+  // ================= EXPORT REPORT =================
   const exportReport = () => {
     let csvContent = '';
     const timestamp = new Date().toISOString().split('T')[0];
@@ -696,43 +594,26 @@ const ReportsManagement = () => {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      
-      toast({
-        title: 'Report Exported',
-        description: `The ${reportType} report has been downloaded successfully.`
-      });
+      toast({ title: 'Report Exported', description: `The ${reportType} report has been downloaded successfully.` });
     } catch (error) {
       console.error('Error exporting report:', error);
-      toast({
-        title: 'Export Failed',
-        description: 'Failed to export the report',
-        variant: 'destructive'
-      });
+      toast({ title: 'Export Failed', description: 'Failed to export the report', variant: 'destructive' });
     }
   };
 
-  // Calculate duration between two dates
   const calculateDays = (startDate: string, endDate: string) => {
     try {
       const start = new Date(startDate);
       const end = new Date(endDate);
       const diffTime = Math.abs(end.getTime() - start.getTime());
       return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
-    } catch {
-      return 0;
-    }
+    } catch { return 0; }
   };
 
-  // Format date for display
   const formatDate = (dateString: string) => {
-    try {
-      return new Date(dateString).toLocaleDateString();
-    } catch {
-      return dateString;
-    }
+    try { return new Date(dateString).toLocaleDateString(); } catch { return dateString; }
   };
 
-  // Get status badge for tasks
   const getTaskStatusBadge = (status: string) => {
     switch (status) {
       case 'completed': return <Badge className="bg-green-100 text-green-700">Completed</Badge>;
@@ -743,7 +624,6 @@ const ReportsManagement = () => {
     }
   };
 
-  // Get priority badge for tasks
   const getTaskPriorityBadge = (priority: string) => {
     switch (priority) {
       case 'high': return <Badge variant="destructive">High</Badge>;
@@ -753,37 +633,29 @@ const ReportsManagement = () => {
     }
   };
 
-  // Get departments for filter dropdown
   const getDepartments = () => {
-    const departments = Array.from(
-      new Set(employees.map(emp => emp.department || 'No Department'))
-    );
+    if (isManager && effectiveDepartment) return ['all', effectiveDepartment];
+    const departments = Array.from(new Set(employees.map(emp => emp.department || 'No Department')));
     return ['all', ...departments];
   };
 
-  // Filter daily tasks for modal based on date filter
   const getFilteredDailyTasksForModal = () => {
     if (!modalDateFilter) return filteredDailyTasks;
-    
     return filteredDailyTasks.filter(task => {
       try {
         const taskDate = new Date(task.date).toISOString().split('T')[0];
         return taskDate === modalDateFilter;
-      } catch {
-        return false;
-      }
+      } catch { return false; }
     });
   };
 
   const filteredModalTasks = getFilteredDailyTasksForModal();
 
-  // View task details
   const handleViewTask = (task: DailyTask) => {
     setSelectedTask(task);
     setShowTaskDetails(true);
   };
 
-  // Loading state
   if (loading || !dataLoaded.employees || 
       (reportType === 'attendance' && !dataLoaded.attendance) || 
       (reportType === 'leaves' && !dataLoaded.leaves) ||
@@ -798,17 +670,15 @@ const ReportsManagement = () => {
 
   return (
     <div className="space-y-6">
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex items-center justify-between"
-      >
+      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Reports Management</h1>
           <p className="text-gray-600">
             {isAdmin 
               ? `Viewing all data across the organization (${employees.length} total employees)` 
-              : "Generate and export detailed reports"}
+              : isManager 
+                ? `Viewing data for ${effectiveDepartment} department (${employees.length} employees)`
+                : "Generate and export detailed reports"}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -819,11 +689,7 @@ const ReportsManagement = () => {
       </motion.div>
 
       {/* Report Configuration */}
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-      >
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2">
@@ -835,48 +701,25 @@ const ReportsManagement = () => {
             <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
               <div className="space-y-1">
                 <label className="text-sm font-medium text-gray-700">Report Type</label>
-                <Select 
-                  value={reportType} 
-                  onValueChange={(value: 'attendance' | 'leaves' | 'dailyTasks') => {
-                    setReportType(value);
-                    setLoading(true);
-                  }}
-                >
+                <Select value={reportType} onValueChange={(value: 'attendance' | 'leaves' | 'dailyTasks') => {
+                  setReportType(value);
+                  setLoading(true);
+                }}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select report type" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="attendance">
-                      <div className="flex items-center gap-2">
-                        <Clock className="h-4 w-4" />
-                        Attendance
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="leaves">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="h-4 w-4" />
-                        Leave
-                      </div>
-                    </SelectItem>
-                    <SelectItem value="dailyTasks">
-                      <div className="flex items-center gap-2">
-                        <FileText className="h-4 w-4" />
-                        Daily Tasks
-                      </div>
-                    </SelectItem>
+                    <SelectItem value="attendance"><div className="flex items-center gap-2"><Clock className="h-4 w-4" />Attendance</div></SelectItem>
+                    <SelectItem value="leaves"><div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4" />Leave</div></SelectItem>
+                    <SelectItem value="dailyTasks"><div className="flex items-center gap-2"><FileText className="h-4 w-4" />Daily Tasks</div></SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               
               <div className="space-y-1">
                 <label className="text-sm font-medium text-gray-700">Date Range</label>
-                <Select 
-                  value={dateRange} 
-                  onValueChange={setDateRange}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select date range" />
-                  </SelectTrigger>
+                <Select value={dateRange} onValueChange={setDateRange}>
+                  <SelectTrigger><SelectValue placeholder="Select date range" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="thisMonth">This Month</SelectItem>
                     <SelectItem value="lastMonth">Last Month</SelectItem>
@@ -890,56 +733,34 @@ const ReportsManagement = () => {
                 <>
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-gray-700">Start Date</label>
-                    <Input
-                      type="date"
-                      value={customStartDate}
-                      onChange={(e) => setCustomStartDate(e.target.value)}
-                      placeholder="Select start date"
-                    />
+                    <Input type="date" value={customStartDate} onChange={(e) => setCustomStartDate(e.target.value)} />
                   </div>
                   <div className="space-y-1">
                     <label className="text-sm font-medium text-gray-700">End Date</label>
-                    <Input
-                      type="date"
-                      value={customEndDate}
-                      onChange={(e) => setCustomEndDate(e.target.value)}
-                      placeholder="Select end date"
-                    />
+                    <Input type="date" value={customEndDate} onChange={(e) => setCustomEndDate(e.target.value)} />
                   </div>
                 </>
               )}
               
               <div className="space-y-1">
                 <label className="text-sm font-medium text-gray-700">Department</label>
-                <Select 
-                  value={departmentFilter} 
-                  onValueChange={setDepartmentFilter}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Filter by department" />
-                  </SelectTrigger>
+                <Select value={departmentFilter} onValueChange={setDepartmentFilter} disabled={isManager}>
+                  <SelectTrigger><SelectValue placeholder="Filter by department" /></SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all">All Departments</SelectItem>
                     {getDepartments().filter(dept => dept !== 'all').map((dept, index) => (
-                      <SelectItem key={index} value={dept}>
-                        {dept}
-                      </SelectItem>
+                      <SelectItem key={index} value={dept}>{dept}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               
               <div className="flex items-end">
-                <Button 
-                  onClick={exportReport}
-                  disabled={loading || 
-                    (reportType === 'attendance' && filteredAttendance.length === 0) ||
-                    (reportType === 'leaves' && filteredLeaves.length === 0) ||
-                    (reportType === 'dailyTasks' && filteredDailyTasks.length === 0)}
-                  className="w-full"
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  Export Report
+                <Button onClick={exportReport} disabled={loading || 
+                  (reportType === 'attendance' && filteredAttendance.length === 0) ||
+                  (reportType === 'leaves' && filteredLeaves.length === 0) ||
+                  (reportType === 'dailyTasks' && filteredDailyTasks.length === 0)} className="w-full">
+                  <Download className="h-4 w-4 mr-2" /> Export Report
                 </Button>
               </div>
             </div>
@@ -947,8 +768,286 @@ const ReportsManagement = () => {
         </Card>
       </motion.div>
 
-      {/* Rest of the component remains exactly the same */}
-      {/* ... (all the summary cards, department wise data, data preview, modals remain unchanged) ... */}
+      {/* Summary Cards */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">Total {reportType === 'attendance' ? 'Records' : reportType === 'leaves' ? 'Requests' : 'Tasks'}</p>
+                  <p className="text-2xl font-bold">{reportType === 'attendance' ? filteredAttendance.length : reportType === 'leaves' ? filteredLeaves.length : filteredDailyTasks.length}</p>
+                </div>
+                <div className="w-10 h-10 bg-blue-100 rounded-full flex items-center justify-center">
+                  <FileText className="h-5 w-5 text-blue-600" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">Employees Covered</p>
+                  <p className="text-2xl font-bold">
+                    {reportType === 'attendance' 
+                      ? new Set(filteredAttendance.map(r => r.employeeId)).size
+                      : reportType === 'leaves'
+                        ? new Set(filteredLeaves.map(r => r.employeeId)).size
+                        : new Set(filteredDailyTasks.map(r => r.employeeId)).size}
+                  </p>
+                </div>
+                <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                  <Users className="h-5 w-5 text-green-600" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm text-gray-500">Departments</p>
+                  <p className="text-2xl font-bold">
+                    {reportType === 'attendance'
+                      ? new Set(filteredAttendance.map(r => employees.find(e => e.id === r.employeeId)?.department || 'No Department')).size
+                      : reportType === 'leaves'
+                        ? new Set(filteredLeaves.map(r => r.department)).size
+                        : new Set(filteredDailyTasks.map(r => r.department)).size}
+                  </p>
+                </div>
+                <div className="w-10 h-10 bg-purple-100 rounded-full flex items-center justify-center">
+                  <BarChart3 className="h-5 w-5 text-purple-600" />
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      </motion.div>
+
+      {/* Department-wise Data */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingUp className="h-5 w-5" />
+              Department-wise {reportType === 'attendance' ? 'Attendance' : reportType === 'leaves' ? 'Leave Summary' : 'Task Summary'}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {departmentData.map((dept, idx) => (
+                <Card key={idx} className="border">
+                  <CardContent className="p-4">
+                    <h3 className="font-semibold text-lg mb-2">{dept.department}</h3>
+                    {reportType === 'attendance' && (
+                      <div className="space-y-1 text-sm">
+                        <p>Present: {dept.present} / {dept.total}</p>
+                        <div className="w-full bg-gray-200 rounded-full h-2">
+                          <div className="bg-green-500 h-2 rounded-full" style={{ width: `${dept.percentage}%` }} />
+                        </div>
+                        <p>Attendance Rate: {dept.percentage}%</p>
+                        <p>Late: {dept.late} | Absent: {dept.absent}</p>
+                      </div>
+                    )}
+                    {reportType === 'leaves' && (
+                      <div className="space-y-1 text-sm">
+                        <p>Approved: {dept.approved}</p>
+                        <p>Pending: {dept.pending}</p>
+                        <p>Rejected: {dept.rejected}</p>
+                        <p>Total Requests: {dept.total}</p>
+                      </div>
+                    )}
+                    {reportType === 'dailyTasks' && (
+                      <div className="space-y-1 text-sm">
+                        <p>Completed: {dept.completed}</p>
+                        <p>In Progress: {dept.inProgress}</p>
+                        <p>Pending: {dept.pending}</p>
+                        <p>Total Tasks: {dept.total}</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* Data Preview Table */}
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.4 }}>
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="flex items-center gap-2">
+              <Calendar className="h-5 w-5" />
+              Data Preview
+            </CardTitle>
+            <Button variant="outline" size="sm" onClick={() => setShowAllData(true)}>
+              View All Data
+            </Button>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {reportType === 'attendance' && (
+                      <>
+                        <TableHead>Employee</TableHead>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Punch In</TableHead>
+                        <TableHead>Punch Out</TableHead>
+                        <TableHead>Status</TableHead>
+                      </>
+                    )}
+                    {reportType === 'leaves' && (
+                      <>
+                        <TableHead>Employee</TableHead>
+                        <TableHead>Leave Type</TableHead>
+                        <TableHead>Start Date</TableHead>
+                        <TableHead>End Date</TableHead>
+                        <TableHead>Status</TableHead>
+                      </>
+                    )}
+                    {reportType === 'dailyTasks' && (
+                      <>
+                        <TableHead>Employee</TableHead>
+                        <TableHead>Task Title</TableHead>
+                        <TableHead>Date</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Priority</TableHead>
+                        <TableHead>Actions</TableHead>
+                      </>
+                    )}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {reportType === 'attendance' && filteredAttendance.slice(0, 5).map(record => (
+                    <TableRow key={record.id}>
+                      <TableCell>{record.employeeName}</TableCell>
+                      <TableCell>{formatDate(record.date)}</TableCell>
+                      <TableCell>{record.punchIn || '-'}</TableCell>
+                      <TableCell>{record.punchOut || '-'}</TableCell>
+                      <TableCell><Badge className={record.status === 'present' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}>{record.status}</Badge></TableCell>
+                    </TableRow>
+                  ))}
+                  {reportType === 'leaves' && filteredLeaves.slice(0, 5).map(request => (
+                    <TableRow key={request.id}>
+                      <TableCell>{request.employeeName}</TableCell>
+                      <TableCell>{request.leaveType}</TableCell>
+                      <TableCell>{formatDate(request.startDate)}</TableCell>
+                      <TableCell>{formatDate(request.endDate)}</TableCell>
+                      <TableCell><Badge className={request.status === 'approved' ? 'bg-green-100 text-green-700' : request.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}>{request.status}</Badge></TableCell>
+                    </TableRow>
+                  ))}
+                  {reportType === 'dailyTasks' && filteredDailyTasks.slice(0, 5).map(task => (
+                    <TableRow key={task.id}>
+                      <TableCell>{task.employeeName}</TableCell>
+                      <TableCell className="max-w-xs truncate">{task.taskTitle}</TableCell>
+                      <TableCell>{formatDate(task.date)}</TableCell>
+                      <TableCell>{getTaskStatusBadge(task.status)}</TableCell>
+                      <TableCell>{getTaskPriorityBadge(task.priority)}</TableCell>
+                      <TableCell>
+                        <Button variant="ghost" size="sm" onClick={() => handleViewTask(task)}>
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                  {(reportType === 'attendance' && filteredAttendance.length === 0) ||
+                   (reportType === 'leaves' && filteredLeaves.length === 0) ||
+                   (reportType === 'dailyTasks' && filteredDailyTasks.length === 0) ? (
+                    <TableRow><TableCell colSpan={5} className="text-center py-4 text-gray-500">No data available for the selected filters</TableCell></TableRow>
+                  ) : null}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* View All Data Modal */}
+      {showAllData && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
+            <div className="flex justify-between items-center p-4 border-b">
+              <h2 className="text-xl font-semibold">All Data - {reportType.charAt(0).toUpperCase() + reportType.slice(1)}</h2>
+              <Button variant="ghost" size="icon" onClick={() => setShowAllData(false)}><X className="h-5 w-5" /></Button>
+            </div>
+            <div className="p-4 border-b">
+              <Input type="date" value={modalDateFilter} onChange={(e) => setModalDateFilter(e.target.value)} placeholder="Filter by date" className="w-64" />
+            </div>
+            <div className="flex-1 overflow-auto p-4">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    {reportType === 'attendance' && (
+                      <>
+                        <TableHead>Employee</TableHead><TableHead>Date</TableHead><TableHead>Punch In</TableHead><TableHead>Punch Out</TableHead><TableHead>Status</TableHead>
+                      </>
+                    )}
+                    {reportType === 'leaves' && (
+                      <>
+                        <TableHead>Employee</TableHead><TableHead>Leave Type</TableHead><TableHead>Start Date</TableHead><TableHead>End Date</TableHead><TableHead>Status</TableHead>
+                      </>
+                    )}
+                    {reportType === 'dailyTasks' && (
+                      <>
+                        <TableHead>Employee</TableHead><TableHead>Task Title</TableHead><TableHead>Date</TableHead><TableHead>Status</TableHead><TableHead>Priority</TableHead><TableHead>Actions</TableHead>
+                      </>
+                    )}
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {reportType === 'attendance' && (modalDateFilter ? filteredAttendance.filter(r => r.date === modalDateFilter) : filteredAttendance).map(record => (
+                    <TableRow key={record.id}>
+                      <TableCell>{record.employeeName}</TableCell><TableCell>{formatDate(record.date)}</TableCell><TableCell>{record.punchIn || '-'}</TableCell><TableCell>{record.punchOut || '-'}</TableCell>
+                      <TableCell><Badge className={record.status === 'present' ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}>{record.status}</Badge></TableCell>
+                    </TableRow>
+                  ))}
+                  {reportType === 'leaves' && (modalDateFilter ? filteredLeaves.filter(r => r.startDate === modalDateFilter || r.endDate === modalDateFilter) : filteredLeaves).map(request => (
+                    <TableRow key={request.id}>
+                      <TableCell>{request.employeeName}</TableCell><TableCell>{request.leaveType}</TableCell><TableCell>{formatDate(request.startDate)}</TableCell><TableCell>{formatDate(request.endDate)}</TableCell>
+                      <TableCell><Badge className={request.status === 'approved' ? 'bg-green-100 text-green-700' : request.status === 'pending' ? 'bg-yellow-100 text-yellow-700' : 'bg-red-100 text-red-700'}>{request.status}</Badge></TableCell>
+                    </TableRow>
+                  ))}
+                  {reportType === 'dailyTasks' && filteredModalTasks.map(task => (
+                    <TableRow key={task.id}>
+                      <TableCell>{task.employeeName}</TableCell><TableCell className="max-w-xs truncate">{task.taskTitle}</TableCell><TableCell>{formatDate(task.date)}</TableCell>
+                      <TableCell>{getTaskStatusBadge(task.status)}</TableCell><TableCell>{getTaskPriorityBadge(task.priority)}</TableCell>
+                      <TableCell><Button variant="ghost" size="sm" onClick={() => handleViewTask(task)}><Eye className="h-4 w-4" /></Button></TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Task Details Modal */}
+      {showTaskDetails && selectedTask && (
+        <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg w-full max-w-2xl max-h-[80vh] overflow-auto">
+            <div className="flex justify-between items-center p-4 border-b sticky top-0 bg-white">
+              <h2 className="text-xl font-semibold">Task Details</h2>
+              <Button variant="ghost" size="icon" onClick={() => setShowTaskDetails(false)}><X className="h-5 w-5" /></Button>
+            </div>
+            <div className="p-4 space-y-4">
+              <div><h3 className="font-medium text-gray-500">Task Title</h3><p>{selectedTask.taskTitle}</p></div>
+              <div><h3 className="font-medium text-gray-500">Description</h3><p>{selectedTask.workSummary || 'No description'}</p></div>
+              <div><h3 className="font-medium text-gray-500">Employee</h3><p>{selectedTask.employeeName} ({selectedTask.department})</p></div>
+              <div><h3 className="font-medium text-gray-500">Status</h3>{getTaskStatusBadge(selectedTask.status)}</div>
+              <div><h3 className="font-medium text-gray-500">Priority</h3>{getTaskPriorityBadge(selectedTask.priority)}</div>
+              <div><h3 className="font-medium text-gray-500">Date</h3><p>{formatDate(selectedTask.date)}</p></div>
+              <div><h3 className="font-medium text-gray-500">Duration</h3><p>{selectedTask.totalDuration}</p></div>
+              {selectedTask.pendingWork && <div><h3 className="font-medium text-gray-500">Pending Work</h3><p>{selectedTask.pendingWork}</p></div>}
+              {selectedTask.challenges && <div><h3 className="font-medium text-gray-500">Challenges</h3><p>{selectedTask.challenges}</p></div>}
+              {selectedTask.managerRemarks && <div><h3 className="font-medium text-gray-500">Manager Remarks</h3><p>{selectedTask.managerRemarks}</p></div>}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -13,6 +13,16 @@ import { ref, onValue, query, orderByChild, update, remove, off, get } from 'fir
 import { AttendanceRecord } from '@/types/attendance';
 
 // ==================== TYPES ====================
+
+
+
+
+interface AttendanceManagementProps {
+  role?: 'admin' | 'manager' | 'team_leader' | 'client';
+}
+
+
+  
 interface Employee {
   id: string;
   name: string;
@@ -128,7 +138,7 @@ interface AbsentEmployee {
 }
 
 // ==================== COMPONENT ====================
-const AttendanceManagement = () => {
+const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'admin' }) =>{
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [allRecords, setAllRecords] = useState<AttendanceRecordWithAdmin[]>([]);

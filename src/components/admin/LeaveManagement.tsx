@@ -11,6 +11,10 @@ import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
 import { ref, onValue, query, orderByChild, update, remove, off, push, set } from 'firebase/database';
 
+interface LeaveManagementProps {
+  role?: 'admin' | 'manager' | 'team_leader' | 'client';
+}
+
 interface Employee {
   id: string;
   name: string;
@@ -53,7 +57,18 @@ interface Notification {
   adminId?: string;
 }
 
-const LeaveManagement = () => {
+interface RawEmployeeData {
+  name?: string;
+  email?: string;
+  department?: string;
+  designation?: string;
+  status?: string;
+  employeeId?: string;
+  createdAt?: string;
+  [key: string]: unknown;
+}
+
+const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [allLeaveRequests, setAllLeaveRequests] = useState<LeaveRequest[]>([]);
@@ -75,7 +90,6 @@ const LeaveManagement = () => {
     if ('Notification' in window) Notification.requestPermission().then(p => setNotificationPermission(p));
   }, []);
 
-  // Fetch all employees
   useEffect(() => {
     if (!user) return;
     const usersRef = ref(database, "users");
@@ -83,10 +97,10 @@ const LeaveManagement = () => {
       const empList: Employee[] = [];
       snapshot.forEach((adminSnap) => {
         const adminId = adminSnap.key;
-        const employeesData = adminSnap.child("employees").val();
+        const employeesData = adminSnap.child("employees").val() as Record<string, RawEmployeeData> | null;
         if (employeesData && typeof employeesData === 'object') {
           Object.entries(employeesData).forEach(([key, value]) => {
-            const emp = value as any;
+            const emp = value;
             if (emp.status === 'active') {
               empList.push({
                 id: key,
@@ -106,7 +120,6 @@ const LeaveManagement = () => {
     return () => off(usersRef);
   }, [user]);
 
-  // Fetch all leave requests
   useEffect(() => {
     if (!user || employees.length === 0) {
       setLoading(false);
@@ -127,7 +140,7 @@ const LeaveManagement = () => {
         const leavesRef = ref(database, `users/${adminId}/employees/${employee.id}/leaves`);
         const leavesQuery = query(leavesRef, orderByChild('appliedAt'));
         const unsubscribe = onValue(leavesQuery, (snapshot) => {
-          const data = snapshot.val();
+          const data = snapshot.val() as Record<string, Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'employeeEmail' | 'department' | 'adminId'>> | null;
           const idx = allRequests.findIndex(r => r.employeeId === employee.id);
           if (idx !== -1) allRequests.splice(idx, 1);
           if (data && typeof data === 'object') {
@@ -138,7 +151,7 @@ const LeaveManagement = () => {
               employeeEmail: employee.email,
               department: employee.department || 'No Department',
               adminId,
-              ...(value as Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'employeeEmail' | 'department' | 'adminId'>)
+              ...value
             }));
             allRequests.push(...requests);
             requests.forEach(req => {
@@ -169,7 +182,6 @@ const LeaveManagement = () => {
     return () => unsubscribes.forEach(u => u());
   }, [user, employees]);
 
-  // Apply filters and paginate
   useEffect(() => {
     let filtered = allLeaveRequests;
     if (searchTerm) {
@@ -315,17 +327,159 @@ const LeaveManagement = () => {
   return (
     <div className="space-y-6 relative">
       {showNotification && currentNotification && (
-        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} transition={{ duration: 0.3 }}
-          className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg max-w-sm w-full ${getNotificationDetails(currentNotification.type).color} border-l-4`}>
-          <div className="flex items-start"><div className="flex-shrink-0"><Bell className="h-5 w-5" /></div><div className="ml-3 w-0 flex-1 pt-0.5"><p className="text-sm font-medium">{getNotificationDetails(currentNotification.type).title}</p><p className="mt-1 text-sm">{getNotificationDetails(currentNotification.type).description.replace('{employee}', currentNotification.employeeName).replace('{leaveType}', currentNotification.leaveType).replace('{startDate}', new Date(currentNotification.startDate).toLocaleDateString()).replace('{endDate}', new Date(currentNotification.endDate).toLocaleDateString())}</p><p className="mt-1 text-xs text-gray-600">{new Date(currentNotification.timestamp).toLocaleTimeString()}</p></div><div className="ml-4 flex-shrink-0 flex"><button onClick={() => setShowNotification(false)} className="rounded-md inline-flex text-gray-400 hover:text-gray-500"><svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" /></svg></button></div></div>
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -20 }}
+          transition={{ duration: 0.3 }}
+          className={`fixed top-4 right-4 z-50 p-4 rounded-lg shadow-lg max-w-sm w-full ${getNotificationDetails(currentNotification.type).color} border-l-4`}
+        >
+          <div className="flex items-start">
+            <div className="flex-shrink-0"><Bell className="h-5 w-5" /></div>
+            <div className="ml-3 w-0 flex-1 pt-0.5">
+              <p className="text-sm font-medium">{getNotificationDetails(currentNotification.type).title}</p>
+              <p className="mt-1 text-sm">
+                {getNotificationDetails(currentNotification.type).description
+                  .replace('{employee}', currentNotification.employeeName)
+                  .replace('{leaveType}', currentNotification.leaveType)
+                  .replace('{startDate}', new Date(currentNotification.startDate).toLocaleDateString())
+                  .replace('{endDate}', new Date(currentNotification.endDate).toLocaleDateString())}
+              </p>
+              <p className="mt-1 text-xs text-gray-600">{new Date(currentNotification.timestamp).toLocaleTimeString()}</p>
+            </div>
+            <div className="ml-4 flex-shrink-0 flex">
+              <button onClick={() => setShowNotification(false)} className="rounded-md inline-flex text-gray-400 hover:text-gray-500">
+                <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
+                </svg>
+              </button>
+            </div>
+          </div>
         </motion.div>
       )}
 
-      <div className="flex items-center justify-between"><div><h1 className="text-2xl font-bold text-gray-800">Leave Management</h1><p className="text-gray-600">Manage all employee leave requests across the organization</p></div><div className="flex gap-2"><Badge variant="outline" className="bg-yellow-50">Pending: {pendingCount}</Badge><Badge variant="outline" className="bg-green-50">Approved: {approvedCount}</Badge><Badge variant="outline" className="bg-red-50">Rejected: {rejectedCount}</Badge></div></div>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-800">Leave Management</h1>
+          <p className="text-gray-600">Manage all employee leave requests across the organization</p>
+        </div>
+        <div className="flex gap-2">
+          <Badge variant="outline" className="bg-yellow-50">Pending: {pendingCount}</Badge>
+          <Badge variant="outline" className="bg-green-50">Approved: {approvedCount}</Badge>
+          <Badge variant="outline" className="bg-red-50">Rejected: {rejectedCount}</Badge>
+        </div>
+      </div>
 
-      <Card><CardHeader><CardTitle className="flex items-center gap-2"><Filter className="h-4 w-4" /> Filters</CardTitle></CardHeader><CardContent><div className="grid grid-cols-1 md:grid-cols-4 gap-4"><div className="relative"><Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" /><Input placeholder="Search employee..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10" /></div><Input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} /><Select value={filterStatus} onValueChange={setFilterStatus}><SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger><SelectContent><SelectItem value="all">All Status</SelectItem><SelectItem value="pending">Pending</SelectItem><SelectItem value="approved">Approved</SelectItem><SelectItem value="rejected">Rejected</SelectItem></SelectContent></Select><Button onClick={exportLeaves} className="w-full"><Download className="h-4 w-4 mr-2" /> Export</Button></div></CardContent></Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Filter className="h-4 w-4" /> Filters</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div className="relative">
+              <Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
+              <Input placeholder="Search employee..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10" />
+            </div>
+            <Input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="approved">Approved</SelectItem>
+                <SelectItem value="rejected">Rejected</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button onClick={exportLeaves} className="w-full"><Download className="h-4 w-4 mr-2" /> Export</Button>
+          </div>
+        </CardContent>
+      </Card>
 
-      <Card><CardHeader><CardTitle className="flex items-center gap-2"><Calendar className="h-4 w-4" /> Leave Requests ({filteredRequests.length})</CardTitle></CardHeader><CardContent><div className="overflow-x-auto"><table className="w-full border-collapse"><thead><tr className="border-b"><th className="text-left p-3">Employee</th><th className="text-left p-3">Leave Type</th><th className="text-left p-3">Dates</th><th className="text-left p-3">Duration</th><th className="text-left p-3">Status</th><th className="text-left p-3">Applied On</th><th className="text-left p-3">Actions</th></tr></thead><tbody>{displayedRequests.map((req, idx) => (<tr key={`${req.id}-${idx}`} className="border-b hover:bg-gray-50"><td className="p-3"><div><p className="font-medium">{req.employeeName}</p><p className="text-sm text-gray-500">{req.employeeId}</p><p className="text-sm text-gray-500">{req.department}</p></div></td><td className="p-3">{req.leaveType}</td><td className="p-3"><div><p>{new Date(req.startDate).toLocaleDateString()}</p><p>to</p><p>{new Date(req.endDate).toLocaleDateString()}</p></div></td><td className="p-3">{calculateDays(req.startDate, req.endDate)} days</td><td className="p-3"><Badge className={getStatusColor(req.status)}>{req.status}</Badge>{req.approvedBy && <p className="text-xs text-gray-500 mt-1">Approved by {req.approvedBy}</p>}</td><td className="p-3">{new Date(req.appliedAt).toLocaleString()}</td><td className="p-3"><div className="flex flex-col gap-2">{req.status === 'pending' && (<><Button size="sm" onClick={() => handleApprove(req)} className="bg-green-600 hover:bg-green-700" disabled={loading}><Check className="h-3 w-3 mr-1" /> Approve</Button><Button size="sm" variant="outline" onClick={() => handleReject(req)} className="border-red-200 text-red-600 hover:bg-red-50" disabled={loading}><X className="h-3 w-3 mr-1" /> Reject</Button></>)}{(req.status === 'approved' || req.status === 'rejected') && (<Button size="sm" variant="outline" onClick={() => handleReapprove(req)} className="text-blue-600 hover:bg-blue-50" disabled={loading}><RotateCcw className="h-3 w-3 mr-1" /> Re-open</Button>)}<Button size="sm" variant="outline" onClick={() => handleDelete(req)} className="text-red-600 hover:bg-red-50" disabled={loading}><Trash2 className="h-3 w-3" /> Delete</Button></div></td></tr>))}</tbody></table>{displayedRequests.length === 0 && <div className="text-center py-8 text-gray-500">{allLeaveRequests.length === 0 ? "No leave requests found" : "No leave requests match the current filter"}</div>}</div>{hasMore && <div className="flex justify-center mt-4"><Button onClick={loadMore} disabled={loadingMore} variant="outline">{loadingMore ? 'Loading...' : 'Load More'}</Button></div>}</CardContent></Card>
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2"><Calendar className="h-4 w-4" /> Leave Requests ({filteredRequests.length})</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse">
+              <thead>
+                <tr className="border-b">
+                  <th className="text-left p-3">Employee</th>
+                  <th className="text-left p-3">Leave Type</th>
+                  <th className="text-left p-3">Dates</th>
+                  <th className="text-left p-3">Duration</th>
+                  <th className="text-left p-3">Status</th>
+                  <th className="text-left p-3">Applied On</th>
+                  <th className="text-left p-3">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {displayedRequests.map((req, idx) => (
+                  <tr key={`${req.id}-${idx}`} className="border-b hover:bg-gray-50">
+                    <td className="p-3">
+                      <div>
+                        <p className="font-medium">{req.employeeName}</p>
+                        <p className="text-sm text-gray-500">{req.employeeId}</p>
+                        <p className="text-sm text-gray-500">{req.department}</p>
+                      </div>
+                    </td>
+                    <td className="p-3">{req.leaveType}</td>
+                    <td className="p-3">
+                      <div>
+                        <p>{new Date(req.startDate).toLocaleDateString()}</p>
+                        <p>to</p>
+                        <p>{new Date(req.endDate).toLocaleDateString()}</p>
+                      </div>
+                    </td>
+                    <td className="p-3">{calculateDays(req.startDate, req.endDate)} days</td>
+                    <td className="p-3">
+                      <Badge className={getStatusColor(req.status)}>{req.status}</Badge>
+                      {req.approvedBy && <p className="text-xs text-gray-500 mt-1">Approved by {req.approvedBy}</p>}
+                    </td>
+                    <td className="p-3">{new Date(req.appliedAt).toLocaleString()}</td>
+                    <td className="p-3">
+                      <div className="flex flex-col gap-2">
+                        {req.status === 'pending' && (
+                          <>
+                            <Button size="sm" onClick={() => handleApprove(req)} className="bg-green-600 hover:bg-green-700" disabled={loading}>
+                              <Check className="h-3 w-3 mr-1" /> Approve
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => handleReject(req)} className="border-red-200 text-red-600 hover:bg-red-50" disabled={loading}>
+                              <X className="h-3 w-3 mr-1" /> Reject
+                            </Button>
+                          </>
+                        )}
+                        {(req.status === 'approved' || req.status === 'rejected') && role === 'admin' && (
+                          <Button size="sm" variant="outline" onClick={() => handleReapprove(req)} className="text-blue-600 hover:bg-blue-50" disabled={loading}>
+                            <RotateCcw className="h-3 w-3 mr-1" /> Re-open
+                          </Button>
+                        )}
+                        {role === 'admin' && (
+                          <Button size="sm" variant="outline" onClick={() => handleDelete(req)} className="text-red-600 hover:bg-red-50" disabled={loading}>
+                            <Trash2 className="h-3 w-3" /> Delete
+                          </Button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {displayedRequests.length === 0 && (
+              <div className="text-center py-8 text-gray-500">
+                {allLeaveRequests.length === 0 ? "No leave requests found" : "No leave requests match the current filter"}
+              </div>
+            )}
+          </div>
+          {hasMore && (
+            <div className="flex justify-center mt-4">
+              <Button onClick={loadMore} disabled={loadingMore} variant="outline">
+                {loadingMore ? 'Loading...' : 'Load More'}
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 };

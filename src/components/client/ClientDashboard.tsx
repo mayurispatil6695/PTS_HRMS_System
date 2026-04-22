@@ -1,11 +1,14 @@
-// src/components/client/ClientDashboard.tsx
 import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import ClientSidebar from './ClientSidebar';
-import ProjectManagement from '../admin/ProjectManagement';   // read‑only view
+
+// Reuse admin components with role="client" and readOnly
+import ProjectManagement from '../admin/ProjectManagement';
+import ChatManagement from '../admin/ChatManagement';
+import ClientHome from './ClientHome'; // create simple overview
 
 const ClientDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -45,8 +48,9 @@ const ClientDashboard = () => {
         <main className="flex-1 overflow-auto">
           <div className="p-6">
             <Routes>
-              <Route path="/" element={<ProjectManagement role="client" userId={user?.id} readOnly />} />
+              <Route path="/" element={<ClientHome />} />
               <Route path="/projects" element={<ProjectManagement role="client" userId={user?.id} readOnly />} />
+              <Route path="/chat" element={<ChatManagement role="client" />} />
             </Routes>
           </div>
         </main>

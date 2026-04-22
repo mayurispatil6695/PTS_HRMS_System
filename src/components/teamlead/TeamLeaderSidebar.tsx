@@ -8,6 +8,8 @@ import {
   Clock, 
   Calendar, 
   Users,
+  MessageCircle,
+  FileText,
   X,
   Building2
 } from 'lucide-react';
@@ -29,7 +31,10 @@ const TeamLeaderSidebar: React.FC<TeamLeaderSidebarProps> = ({ onClose, isMobile
     { icon: CheckSquare, label: 'Tasks', path: '/leader/tasks' },
     { icon: Clock, label: 'Attendance', path: '/leader/attendance' },
     { icon: Calendar, label: 'Leaves', path: '/leader/leaves' },
+    { icon: Calendar, label: 'Meetings', path: '/leader/meetings' },
     { icon: Users, label: 'Team', path: '/leader/team' },
+    { icon: MessageCircle, label: 'Chat', path: '/leader/chat' },
+    { icon: FileText, label: 'Reports', path: '/leader/reports' },
   ];
 
   const isActive = (path: string) => {

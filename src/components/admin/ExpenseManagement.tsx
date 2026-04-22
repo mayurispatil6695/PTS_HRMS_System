@@ -22,6 +22,7 @@ import { toast } from '../ui/use-toast';
 import { generateInvoice } from '../../utils/invoiceGenerator';
 import { format, parseISO, subMonths } from 'date-fns';
 
+// ========== TYPES ==========
 interface Expense {
   id: string;
   title: string;
@@ -69,6 +70,69 @@ interface ClientPayment {
   createdBy: string;
   adminId?: string;
 }
+
+// Firebase raw data types
+interface RawExpense {
+  title?: string;
+  amount?: number | string;
+  paidTo?: string;
+  department?: string;
+  category?: string;
+  paymentMethod?: string;
+  description?: string;
+  date?: string;
+  createdAt?: string;
+  createdBy?: string;
+  type?: string;
+  [key: string]: unknown;
+}
+
+interface RawClient {
+  name?: string;
+  contact?: string;
+  email?: string;
+  address?: string;
+  packageAmount?: number | string;
+  packageType?: string;
+  startDate?: string;
+  description?: string;
+  createdAt?: string;
+  createdBy?: string;
+  status?: string;
+  lastPaymentDate?: string;
+  lastPaymentAmount?: number | string;
+  [key: string]: unknown;
+}
+
+interface RawClientPayment {
+  clientId?: string;
+  clientName?: string;
+  amount?: number | string;
+  date?: string;
+  paymentMethod?: string;
+  reference?: string;
+  description?: string;
+  createdAt?: string;
+  createdBy?: string;
+  [key: string]: unknown;
+}
+
+// Helper to safely get number from unknown
+const toNumber = (val: unknown, defaultValue = 0): number => {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+    const parsed = parseFloat(val);
+    return isNaN(parsed) ? defaultValue : parsed;
+  }
+  return defaultValue;
+};
+
+// Helper to safely get string
+const toString = (val: unknown, defaultValue = ''): string => {
+  if (typeof val === 'string') return val;
+  if (typeof val === 'number') return val.toString();
+  return defaultValue;
+};
 
 const ExpenseManagement = () => {
   const { user } = useAuth();
@@ -164,14 +228,23 @@ const ExpenseManagement = () => {
       if (snapshot.exists()) {
         snapshot.forEach((adminSnap) => {
           const adminId = adminSnap.key;
-          const expensesData = adminSnap.child("expenses").val();
+          const expensesData = adminSnap.child("expenses").val() as Record<string, RawExpense> | null;
 
           if (expensesData && typeof expensesData === 'object') {
             Object.entries(expensesData).forEach(([key, value]) => {
-              const expense = value as any;
               allExpenses.push({
                 id: key,
-                ...expense,
+                title: toString(value.title),
+                amount: toNumber(value.amount),
+                paidTo: toString(value.paidTo),
+                department: toString(value.department),
+                category: toString(value.category),
+                paymentMethod: toString(value.paymentMethod),
+                description: toString(value.description),
+                date: toString(value.date),
+                createdAt: toString(value.createdAt),
+                createdBy: toString(value.createdBy),
+                type: toString(value.type, 'office'),
                 adminId: adminId || ''
               });
             });
@@ -206,14 +279,25 @@ const ExpenseManagement = () => {
       if (snapshot.exists()) {
         snapshot.forEach((adminSnap) => {
           const adminId = adminSnap.key;
-          const clientsData = adminSnap.child("clients").val();
+          const clientsData = adminSnap.child("clients").val() as Record<string, RawClient> | null;
 
           if (clientsData && typeof clientsData === 'object') {
             Object.entries(clientsData).forEach(([key, value]) => {
-              const client = value as any;
               allClients.push({
                 id: key,
-                ...client,
+                name: toString(value.name),
+                contact: toString(value.contact),
+                email: toString(value.email),
+                address: toString(value.address),
+                packageAmount: toNumber(value.packageAmount),
+                packageType: toString(value.packageType, 'monthly'),
+                startDate: toString(value.startDate),
+                description: toString(value.description),
+                createdAt: toString(value.createdAt),
+                createdBy: toString(value.createdBy),
+                status: toString(value.status, 'active'),
+                lastPaymentDate: toString(value.lastPaymentDate),
+                lastPaymentAmount: toNumber(value.lastPaymentAmount),
                 adminId: adminId || ''
               });
             });
@@ -244,14 +328,21 @@ const ExpenseManagement = () => {
       if (snapshot.exists()) {
         snapshot.forEach((adminSnap) => {
           const adminId = adminSnap.key;
-          const paymentsData = adminSnap.child("clientPayments").val();
+          const paymentsData = adminSnap.child("clientPayments").val() as Record<string, RawClientPayment> | null;
 
           if (paymentsData && typeof paymentsData === 'object') {
             Object.entries(paymentsData).forEach(([key, value]) => {
-              const payment = value as any;
               allPayments.push({
                 id: key,
-                ...payment,
+                clientId: toString(value.clientId),
+                clientName: toString(value.clientName),
+                amount: toNumber(value.amount),
+                date: toString(value.date),
+                paymentMethod: toString(value.paymentMethod, 'Bank Transfer'),
+                reference: toString(value.reference),
+                description: toString(value.description),
+                createdAt: toString(value.createdAt),
+                createdBy: toString(value.createdBy),
                 adminId: adminId || ''
               });
             });
@@ -347,15 +438,20 @@ const ExpenseManagement = () => {
     if (!user) return;
 
     try {
-      const newExpense = {
-        ...formData,
+      const newExpense: Omit<Expense, 'id'> = {
+        title: formData.title,
         amount: parseFloat(formData.amount),
+        paidTo: formData.paidTo,
+        department: formData.department,
+        category: formData.category,
+        paymentMethod: formData.paymentMethod,
+        description: formData.description,
+        date: formData.date,
         createdAt: new Date().toISOString(),
         createdBy: user.id,
         type: 'office'
       };
 
-      // Push new expense to current user's expenses
       const newExpenseRef = push(ref(database, `users/${user.id}/expenses`));
       await set(newExpenseRef, newExpense);
 
@@ -390,16 +486,20 @@ const ExpenseManagement = () => {
     if (!user) return;
 
     try {
-      const newClient = {
-        ...clientForm,
+      const newClient: Omit<Client, 'id'> = {
+        name: clientForm.name,
+        contact: clientForm.contact,
+        email: clientForm.email,
+        address: clientForm.address,
         packageAmount: parseFloat(clientForm.packageAmount),
+        packageType: clientForm.packageType,
         startDate: clientForm.startDate,
+        description: clientForm.description,
         createdAt: new Date().toISOString(),
         createdBy: user.id,
         status: 'active'
       };
 
-      // Push new client to current user's clients
       const newClientRef = push(ref(database, `users/${user.id}/clients`));
       await set(newClientRef, newClient);
 
@@ -435,25 +535,24 @@ const ExpenseManagement = () => {
 
     try {
       const paymentAmount = parseFloat(paymentForm.amount);
-      const newPayment = {
-        ...paymentForm,
-        amount: paymentAmount,
-        date: paymentForm.date,
+      const newPayment: Omit<ClientPayment, 'id'> = {
         clientId: selectedClient.id,
         clientName: selectedClient.name,
+        amount: paymentAmount,
+        date: paymentForm.date,
+        paymentMethod: paymentForm.paymentMethod,
+        reference: paymentForm.reference,
+        description: paymentForm.description,
         createdAt: new Date().toISOString(),
         createdBy: user.id
       };
 
-      // Find which admin this client belongs to
       const clientAdmin = clients.find(c => c.id === selectedClient.id)?.adminId;
       const targetAdmin = clientAdmin || user.id;
 
-      // Push new payment to the appropriate admin's clientPayments
       const newPaymentRef = push(ref(database, `users/${targetAdmin}/clientPayments`));
       await set(newPaymentRef, newPayment);
 
-      // Update client's last payment date
       const clientRef = ref(database, `users/${targetAdmin}/clients/${selectedClient.id}`);
       await update(clientRef, {
         lastPaymentDate: paymentForm.date,
@@ -507,24 +606,24 @@ const ExpenseManagement = () => {
   };
 
   const getTotalExpenses = () => {
-    return filteredExpenses.reduce((total, expense) => total + parseFloat(expense.amount || 0), 0);
+    return filteredExpenses.reduce((total, expense) => total + expense.amount, 0);
   };
 
   const getCategoryTotal = (category: string) => {
     return expenses
       .filter(expense => expense.category === category)
-      .reduce((total, expense) => total + parseFloat(expense.amount || 0), 0);
+      .reduce((total, expense) => total + expense.amount, 0);
   };
 
   const getClientTotalPayments = (clientId: string) => {
     return clientPayments
       .filter(payment => payment.clientId === clientId)
-      .reduce((total, payment) => total + parseFloat(payment.amount || 0), 0);
+      .reduce((total, payment) => total + payment.amount, 0);
   };
 
   const getClientPendingAmount = (client: Client) => {
     const totalPaid = getClientTotalPayments(client.id);
-    return parseFloat(client.packageAmount as any) - totalPaid;
+    return client.packageAmount - totalPaid;
   };
 
   const formatCurrency = (amount: number) => {
@@ -567,7 +666,7 @@ const ExpenseManagement = () => {
       ['Client Name', 'Contact', 'Package Amount', 'Package Type', 'Total Paid', 'Pending Amount', 'Status'],
       ...clients.map(client => {
         const totalPaid = getClientTotalPayments(client.id);
-        const pending = parseFloat(client.packageAmount as any) - totalPaid;
+        const pending = client.packageAmount - totalPaid;
         return [
           client.name,
           client.contact,
@@ -654,7 +753,7 @@ const ExpenseManagement = () => {
                           return expenseDate.getMonth() === now.getMonth() && 
                                  expenseDate.getFullYear() === now.getFullYear();
                         })
-                        .reduce((total, e) => total + parseFloat(e.amount || 0), 0)
+                        .reduce((total, e) => total + e.amount, 0)
                     )}</p>
                   </div>
                 </div>
@@ -1006,7 +1105,7 @@ const ExpenseManagement = () => {
                   <div>
                     <p className="text-sm text-gray-600">Total Package Value</p>
                     <p className="text-lg font-bold">{formatCurrency(
-                      clients.reduce((total, client) => total + parseFloat(client.packageAmount as any || 0), 0)
+                      clients.reduce((total, client) => total + client.packageAmount, 0)
                     )}</p>
                   </div>
                 </div>
@@ -1019,7 +1118,7 @@ const ExpenseManagement = () => {
                   <div>
                     <p className="text-sm text-gray-600">Total Received</p>
                     <p className="text-lg font-bold">{formatCurrency(
-                      clientPayments.reduce((total, payment) => total + parseFloat(payment.amount || 0), 0)
+                      clientPayments.reduce((total, payment) => total + payment.amount, 0)
                     )}</p>
                   </div>
                 </div>
@@ -1034,7 +1133,7 @@ const ExpenseManagement = () => {
                     <p className="text-lg font-bold">{formatCurrency(
                       clients.reduce((total, client) => {
                         const paid = getClientTotalPayments(client.id);
-                        return total + (parseFloat(client.packageAmount as any) - paid);
+                        return total + (client.packageAmount - paid);
                       }, 0)
                     )}</p>
                   </div>
@@ -1272,7 +1371,7 @@ const ExpenseManagement = () => {
                     {clients.map(client => {
                       const totalPaid = getClientTotalPayments(client.id);
                       const pendingAmount = getClientPendingAmount(client);
-                      const paymentPercentage = (totalPaid / parseFloat(client.packageAmount as any)) * 100;
+                      const paymentPercentage = (totalPaid / client.packageAmount) * 100;
                       
                       return (
                         <TableRow key={client.id}>

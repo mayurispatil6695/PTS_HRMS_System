@@ -69,6 +69,7 @@ interface Project {
   description?: string;
   status?: string;
   adminId: string;
+  department?: string;
 }
 
 interface Comment {
@@ -224,21 +225,28 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   // Fetch all projects (for dropdown)
   useEffect(() => {
     const projectsRef = ref(database, 'projects');
-    const unsubscribe = onValue(projectsRef, (snapshot) => {
-      const data = snapshot.val() as Record<string, { name: string; status?: string }> | null;
-      if (!data) {
-        setProjects([]);
-        return;
-      }
-      const allProjects: Project[] = Object.entries(data).map(([id, proj]) => ({
-        id,
-        name: proj.name || '',
-        description: '',
-        status: proj.status || 'active',
-        adminId: '',
-      }));
-      setProjects(allProjects);
-    });
+const unsubscribe = onValue(projectsRef, (snapshot) => {
+  const data = snapshot.val() as Record<string, { name: string; status?: string; department?: string }> | null;
+  if (!data) {
+    setProjects([]);
+    return;
+  }
+  let allProjects: Project[] = Object.entries(data).map(([id, proj]) => ({
+    id,
+    name: proj.name || '',
+    description: '',
+    status: proj.status || 'active',
+    adminId: '',
+    department: proj.department || '',  // ✅ add department field
+  }));
+
+  // ✅ Filter by department for manager
+  if (isTeamManager && effectiveDepartment) {
+    allProjects = allProjects.filter(p => p.department === effectiveDepartment);
+  }
+
+  setProjects(allProjects);
+});
     return () => off(projectsRef);
   }, []);
 

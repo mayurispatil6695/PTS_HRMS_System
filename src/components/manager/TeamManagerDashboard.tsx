@@ -1,16 +1,24 @@
 import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import ManagerSidebar from './TeamManagerSidebar';
+
+// Import all required components
+import ManagerDashboardHome from './ManagerDashboardHome';
+import AttendanceManagement from '../admin/AttendanceManagement';
+import LeaveManagement from '../admin/LeaveManagement';
 import ProjectManagement from '../admin/ProjectManagement';
 import DailyTaskEmployee from '../admin/DailyTaskEmployee';
+import PerformanceReviews from '../admin/PerformanceReviews';
+import MeetingManagement from '../admin/MeetingManagement';
+import IdleDetectionPage from '../admin/IdleDetectionPage';
+import ReportsManagement from '../admin/ReportsManagement';
+import ChatManagement from '../admin/ChatManagement';
 import ManagerReviews from './ManagerReviews';
 import TeamDashboard from './TeamDashboard';
 import LeaveCalendar from './LeaveCalendar';
-import TaskReminder from './TaskReminder'; // optional, create if needed
 
 const TeamManagerDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -54,21 +62,25 @@ const TeamManagerDashboard = () => {
         <main className="flex-1 overflow-auto">
           <div className="p-6">
             <Routes>
-              <Route path="/" element={
-                <div className="space-y-6">
-                  {/* Optional: <TaskReminder /> */}
-                  <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }}>
-                    <h2 className="text-2xl font-bold">Manager Overview</h2>
-                    <p className="text-gray-600">Manage projects and tasks for your department.</p>
-                  </motion.div>
-                  <ProjectManagement role="team_manager" userId={user?.id} department={user?.department} />
-                </div>
-              } />
-              <Route path="/projects" element={<ProjectManagement role="team_manager" userId={user?.id} department={user?.department} />} />
-              <Route path="/tasks" element={<DailyTaskEmployee role="team_manager" userId={user?.id} department={user?.department} />} />
-              <Route path="/reviews" element={<ManagerReviews />} />
+              <Route path="/" element={<ManagerDashboardHome />} />
+
+              {/* Components that expect role="manager" */}
+              <Route path="/attendance" element={<AttendanceManagement role="manager" />} />
+              <Route path="/leaves" element={<LeaveManagement role="manager" />} />
+              <Route path="/reviews" element={<PerformanceReviews role="manager" />} />
+              <Route path="/meetings" element={<MeetingManagement role="manager" />} />
+              <Route path="/idle-detection" element={<IdleDetectionPage role="manager" />} />
+              <Route path="/reports" element={<ReportsManagement role="manager" />} />
+
+              {/* Components that expect role="team_manager" */}
+              <Route path="/projects" element={<ProjectManagement role="team_manager" />} />
+              <Route path="/tasks" element={<DailyTaskEmployee role="team_manager" />} />
+              <Route path="/chat" element={<ChatManagement role="team_manager" />} />
+
+              {/* Other manager‑specific components (no role prop needed) */}
               <Route path="/team-dashboard" element={<TeamDashboard />} />
               <Route path="/leave-calendar" element={<LeaveCalendar />} />
+              <Route path="/manager-reviews" element={<ManagerReviews />} />
             </Routes>
           </div>
         </main>

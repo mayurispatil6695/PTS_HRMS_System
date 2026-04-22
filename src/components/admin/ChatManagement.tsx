@@ -1,11 +1,14 @@
-
 import React from 'react';
 import { motion } from 'framer-motion';
 import { MessageCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import ChatInterface from '../chat/ChatInterface';
 
-const ChatManagement = () => {
+interface ChatManagementProps {
+  role?: 'admin' | 'employee' | 'team_manager' | 'team_leader' | 'client';
+}
+
+const ChatManagement: React.FC<ChatManagementProps> = ({ role = 'admin' }) => {
   return (
     <div className="space-y-6">
       <motion.div
@@ -18,7 +21,13 @@ const ChatManagement = () => {
         </div>
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Messages</h1>
-          <p className="text-gray-600">Chat with employees and team members</p>
+          <p className="text-gray-600">
+            {role === 'team_manager' 
+              ? 'Chat with your team members' 
+              : role === 'admin' 
+                ? 'Chat with all employees' 
+                : 'Chat with your team'}
+          </p>
         </div>
       </motion.div>
 

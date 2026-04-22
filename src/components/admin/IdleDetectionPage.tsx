@@ -54,6 +54,11 @@ interface AttendanceRecord {
   breaks?: Record<string, BreakData>;
 }
 
+// ========== PROPS ==========
+interface IdleDetectionPageProps {
+  role?: 'admin' | 'manager' | 'team_leader' | 'client';
+  department?: string;
+}
 // ========== HELPERS ==========
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
@@ -66,7 +71,7 @@ const formatIdleDuration = (ms: number): string => {
   return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 };
 
-// ✅ Reads from root‑level idleLogs (matches useIdleDetection hook)
+// Reads from root‑level idleLogs
 const fetchTotalIdleToday = async (firebaseUid: string): Promise<number> => {
   const today = getTodayStr();
   const totalRef = ref(database, `idleLogs/${firebaseUid}/${today}/totalIdleMs`);
@@ -75,7 +80,7 @@ const fetchTotalIdleToday = async (firebaseUid: string): Promise<number> => {
   return typeof value === 'number' ? value : 0;
 };
 
-// ✅ Cache for email → Firebase UID
+// Cache for email → Firebase UID
 let emailToUidCache: Record<string, string> | null = null;
 
 const getFirebaseUidByEmail = async (email: string): Promise<string | null> => {
@@ -93,10 +98,10 @@ const getFirebaseUidByEmail = async (email: string): Promise<string | null> => {
   return emailToUidCache[email] || null;
 };
 
-// Get today's punch status (punched in/out and on break) from attendance records
+// Get today's punch status from attendance records
 const getTodayPunchStatus = async (
   adminId: string,
-  empKey: string // the key under employees node
+  empKey: string
 ): Promise<{ isPunchedIn: boolean; isOnBreak: boolean }> => {
   const today = getTodayStr();
   const punchingRef = ref(database, `users/${adminId}/employees/${empKey}/punching`);
@@ -118,8 +123,15 @@ const getTodayPunchStatus = async (
 };
 
 // ========== MAIN COMPONENT ==========
-const IdleDetectionPage = () => {
+const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({ 
+  role = 'admin', 
+  department: propDepartment 
+}) => {
   const { user } = useAuth();
+  const effectiveRole = role;
+  const effectiveDepartment = propDepartment || user?.department || '';
+  const isManager = effectiveRole === 'manager';
+
   const [employees, setEmployees] = useState<IdleEmployee[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -207,14 +219,19 @@ const IdleDetectionPage = () => {
         }
       }
 
+      // ✅ Filter by department if manager
+      let filteredEntries = Array.from(employeeMap.entries());
+      if (isManager && effectiveDepartment) {
+        filteredEntries = filteredEntries.filter(([, info]) => info.department === effectiveDepartment);
+      }
+
       const employeePromises: Promise<IdleEmployee>[] = [];
-      for (const [empKey, info] of employeeMap.entries()) {
+      for (const [empKey, info] of filteredEntries) {
         employeePromises.push(
           (async () => {
             const punchStatus = await getTodayPunchStatus(info.adminId, empKey);
-            // ✅ Get Firebase UID from email (to match idleLogs path)
             const firebaseUid = await getFirebaseUidByEmail(info.email);
-            const uidForIdle = firebaseUid || empKey; // fallback to empKey if not found
+            const uidForIdle = firebaseUid || empKey;
             const totalIdleMs = await fetchTotalIdleToday(uidForIdle);
             return {
               id: empKey,
@@ -257,7 +274,7 @@ const IdleDetectionPage = () => {
     };
 
     loadData();
-  }, [user?.id, refreshKey]);
+  }, [user?.id, refreshKey, isManager, effectiveDepartment]);
 
   useEffect(() => {
     const punchedIn = employees.filter(e => e.isPunchedIn);
@@ -280,12 +297,13 @@ const IdleDetectionPage = () => {
 
   return (
     <div className="space-y-6">
-      {/* Header with buttons */}
       <div className="flex flex-wrap justify-between items-center gap-4">
         <div>
           <h1 className="text-2xl font-semibold">Idle Detection</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            Real‑time idle monitoring for employees currently punched in
+            {isManager && effectiveDepartment 
+              ? `Real‑time idle monitoring for ${effectiveDepartment} department` 
+              : 'Real‑time idle monitoring for employees currently punched in'}
           </p>
         </div>
         <div className="flex gap-2">
@@ -298,7 +316,6 @@ const IdleDetectionPage = () => {
         </div>
       </div>
 
-      {/* Stats cards */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <Card>
           <CardContent className="p-4">
@@ -335,7 +352,6 @@ const IdleDetectionPage = () => {
         </Card>
       </div>
 
-      {/* Employees table */}
       <div className="rounded-xl border bg-white overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">

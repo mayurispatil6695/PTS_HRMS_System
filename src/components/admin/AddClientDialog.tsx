@@ -1,4 +1,3 @@
-// src/components/admin/AddClientDialog.tsx
 import React, { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../ui/dialog';
 import { Button } from '../ui/button';
@@ -94,9 +93,17 @@ const AddClientDialog: React.FC<AddClientDialogProps> = ({ onSuccess }) => {
       setOpen(false);
       setFormData({ name: '', email: '', phone: '', companyName: '', address: '', password: '' });
       onSuccess?.();
-    } catch (err: any) {
+    } catch (err: unknown) {
       console.error(err);
-      setError(err.message || 'Failed to create client');
+      let errorMessage = 'Failed to create client';
+      if (err instanceof Error) {
+        errorMessage = err.message;
+      } else if (typeof err === 'string') {
+        errorMessage = err;
+      } else if (err && typeof err === 'object' && 'message' in err && typeof err.message === 'string') {
+        errorMessage = err.message;
+      }
+      setError(errorMessage);
     } finally {
       setLoading(false);
     }

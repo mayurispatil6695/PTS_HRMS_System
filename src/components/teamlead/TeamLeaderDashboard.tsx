@@ -1,12 +1,21 @@
-// src/components/teamlead/TeamLeaderDashboard.tsx
 import React, { useState } from 'react';
 import { Routes, Route, useNavigate } from 'react-router-dom';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import TeamLeaderSidebar from './TeamLeaderSidebar';
+
+// Reuse admin components with role="team_leader"
 import ProjectManagement from '../admin/ProjectManagement';
 import DailyTaskEmployee from '../admin/DailyTaskEmployee';
+import AttendanceManagement from '../admin/AttendanceManagement';
+import LeaveManagement from '../admin/LeaveManagement';
+import MeetingManagement from '../admin/MeetingManagement';
+import IdleDetectionPage from '../admin/IdleDetectionPage';
+import ReportsManagement from '../admin/ReportsManagement';
+import ChatManagement from '../admin/ChatManagement';
+import TeamDashboard from '../manager/TeamDashboard'; // reuse manager's team dashboard (or create a simple one)
+import TeamLeaderHome from './TeamLeaderHome';
 
 const TeamLeaderDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -46,9 +55,16 @@ const TeamLeaderDashboard = () => {
         <main className="flex-1 overflow-auto">
           <div className="p-6">
             <Routes>
-              <Route path="/" element={<ProjectManagement role="team_leader" userId={user?.id} department={user?.department} />} />
+              <Route path="/" element={<TeamLeaderHome />} />
               <Route path="/projects" element={<ProjectManagement role="team_leader" userId={user?.id} department={user?.department} />} />
               <Route path="/tasks" element={<DailyTaskEmployee role="team_leader" userId={user?.id} department={user?.department} />} />
+              <Route path="/attendance" element={<AttendanceManagement role="team_leader" />} />
+              <Route path="/leaves" element={<LeaveManagement role="team_leader" />} />
+              <Route path="/meetings" element={<MeetingManagement role="team_leader" />} />
+              <Route path="/idle-detection" element={<IdleDetectionPage role="team_leader" />} />
+              <Route path="/reports" element={<ReportsManagement role="team_leader" />} />
+              <Route path="/chat" element={<ChatManagement role="team_leader" />} />
+              <Route path="/team" element={<TeamDashboard />} />
             </Routes>
           </div>
         </main>

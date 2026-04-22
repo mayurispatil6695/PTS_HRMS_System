@@ -15,6 +15,8 @@ import { format, addMinutes, isBefore, differenceInMinutes } from 'date-fns';
 
 const JitsiMeeting = lazy(() => import('@jitsi/react-sdk').then(mod => ({ default: mod.JitsiMeeting })));
 
+// ==================== TYPES ====================
+
 interface Employee {
   id: string;
   name: string;
@@ -52,8 +54,53 @@ interface MeetingParticipant {
   notifiedAtStart: boolean;
 }
 
-const MeetingManagement = () => {
-  const { user } = useAuth();
+// Firebase data structures
+interface FirebaseMeetingData {
+  title: string;
+  description: string;
+  date: string;
+  time: string;
+  duration: string;
+  meetingLink: string;
+  agenda?: string;
+  status: string;
+  createdAt: string;
+  createdBy: string;
+  createdByName?: string;
+  type: string;
+  department?: string | null;
+  participantCount?: number;
+}
+
+interface FirebaseEmployeeData {
+  name?: string;
+  email?: string;
+  department?: string;
+  status?: string;
+  adminUid?: string;
+}
+
+interface MeetingManagementProps {
+  role?: 'admin' | 'manager' | 'team_leader' | 'client';
+  userId?: string;
+  department?: string;
+}
+
+// ==================== COMPONENT ====================
+
+const MeetingManagement: React.FC<MeetingManagementProps> = ({
+  role: propRole,
+  userId: propUserId,
+  department: propDepartment,
+}) => {
+  const { user: authUser } = useAuth();
+  const effectiveRole = propRole || authUser?.role || 'admin';
+  const effectiveUserId = propUserId || authUser?.id || '';
+  const effectiveDepartment = propDepartment || authUser?.department || '';
+
+  const isAdmin = effectiveRole === 'admin';
+  const isManager = effectiveRole === 'manager';
+
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [showAddForm, setShowAddForm] = useState(false);
@@ -67,7 +114,7 @@ const MeetingManagement = () => {
     date: format(new Date(), 'yyyy-MM-dd'),
     time: format(new Date(new Date().getTime() + 30 * 60000), 'HH:mm'),
     duration: '30',
-    type: 'common',
+    type: 'common' as 'common' | 'department',
     department: '',
     agenda: ''
   });
@@ -84,9 +131,9 @@ const MeetingManagement = () => {
     }
   }, []);
 
-  // Fetch ALL employees from all admins
+  // Fetch ALL employees (for admin) or only department employees (for manager) – needed for creating meetings
   useEffect(() => {
-    if (!user) return;
+    if (!authUser) return;
 
     const usersRef = ref(database, "users");
     const allEmployees: Employee[] = [];
@@ -97,11 +144,10 @@ const MeetingManagement = () => {
       if (snapshot.exists()) {
         snapshot.forEach((adminSnap) => {
           const adminId = adminSnap.key;
-          const employeesData = adminSnap.child("employees").val();
+          const employeesData = adminSnap.child("employees").val() as Record<string, FirebaseEmployeeData> | null;
 
           if (employeesData && typeof employeesData === 'object') {
-            Object.entries(employeesData).forEach(([key, value]) => {
-              const emp = value as any;
+            Object.entries(employeesData).forEach(([key, emp]) => {
               if (emp.status === 'active') {
                 allEmployees.push({
                   id: key,
@@ -117,53 +163,69 @@ const MeetingManagement = () => {
         });
       }
 
-      setEmployees([...allEmployees]);
+      // For manager, filter only employees in their department
+      if (isManager && effectiveDepartment) {
+        setEmployees(allEmployees.filter(emp => emp.department === effectiveDepartment));
+      } else {
+        setEmployees(allEmployees);
+      }
     }, (error) => {
       console.error('Error fetching employees:', error);
     });
 
     return () => off(usersRef);
-  }, [user]);
+  }, [authUser, isManager, effectiveDepartment]);
 
-  // Fetch all meetings (single records, not per employee)
+  // Fetch meetings and filter by role
   useEffect(() => {
-    if (!user) return;
+    if (!authUser) return;
 
     const meetingsRef = ref(database, 'meetings');
     const unsubscribe = onValue(meetingsRef, (snapshot) => {
-      const data = snapshot.val();
+      const data = snapshot.val() as Record<string, FirebaseMeetingData> | null;
       const meetingsList: Meeting[] = [];
       if (data) {
         Object.entries(data).forEach(([id, meeting]) => {
-          const meetingData = meeting as any;
           meetingsList.push({
             id,
-            title: meetingData.title,
-            description: meetingData.description,
-            date: meetingData.date,
-            time: meetingData.time,
-            duration: meetingData.duration,
-            meetingLink: meetingData.meetingLink,
-            agenda: meetingData.agenda,
-            status: meetingData.status,
-            createdAt: meetingData.createdAt,
-            createdBy: meetingData.createdBy,
-            createdByName: meetingData.createdByName,
-            type: meetingData.type,
-            department: meetingData.department,
-            participantCount: meetingData.participantCount || 0,
+            title: meeting.title,
+            description: meeting.description,
+            date: meeting.date,
+            time: meeting.time,
+            duration: meeting.duration,
+            meetingLink: meeting.meetingLink,
+            agenda: meeting.agenda,
+            status: meeting.status as 'scheduled' | 'completed' | 'cancelled',
+            createdAt: meeting.createdAt,
+            createdBy: meeting.createdBy,
+            createdByName: meeting.createdByName,
+            type: meeting.type as 'common' | 'department',
+            department: meeting.department || undefined,
+            participantCount: meeting.participantCount || 0,
           });
         });
       }
+
+      // ✅ Filter meetings based on role
+      let filteredMeetings = meetingsList;
+      if (isManager && effectiveDepartment) {
+        filteredMeetings = meetingsList.filter(meeting =>
+          meeting.type === 'common' ||
+          (meeting.type === 'department' && meeting.department === effectiveDepartment)
+        );
+      }
+
       // Sort by date (soonest first)
-      meetingsList.sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime());
-      setMeetings(meetingsList);
+      filteredMeetings.sort((a, b) =>
+        new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime()
+      );
+      setMeetings(filteredMeetings);
       setLoading(false);
     });
     return () => off(meetingsRef);
-  }, [user]);
+  }, [authUser, isManager, effectiveDepartment]);
 
-  // Notification functions (unchanged)
+  // Meeting notification helper (unchanged)
   const showMeetingNotification = useCallback((meeting: Meeting, message: string) => {
     if (notificationPermission === 'granted') {
       new Notification(`Meeting Reminder: ${meeting.title}`, {
@@ -187,9 +249,9 @@ const MeetingManagement = () => {
     );
   }, [notificationPermission]);
 
-  // Meeting time checker (now uses single meeting record)
+  // Meeting time checker (simplified – no per‑employee reminders for admin/manager)
   useEffect(() => {
-    if (!user || meetings.length === 0) return;
+    if (!authUser || meetings.length === 0) return;
 
     const checkMeetingTimes = () => {
       const now = new Date();
@@ -197,27 +259,31 @@ const MeetingManagement = () => {
         if (meeting.status !== 'scheduled') return;
 
         const meetingDateTime = new Date(`${meeting.date}T${meeting.time}`);
-        const meetingEndTime = addMinutes(meetingDateTime, parseInt(meeting.duration));
         const fiveMinutesBefore = addMinutes(meetingDateTime, -5);
 
-        if (isBefore(now, meetingEndTime) && isBefore(meetingDateTime, now)) {
-          // Meeting is active – would need to fetch participant status, but for admin we skip per‑user notifications
-        } else if (isBefore(now, meetingDateTime) && differenceInMinutes(meetingDateTime, now) <= 5) {
-          // 5‑min reminder – admin doesn't need per‑user reminders
+        if (isBefore(now, meetingDateTime) && differenceInMinutes(meetingDateTime, now) <= 5) {
+          // 5‑min reminder – for simplicity, notify the current user (admin/manager)
+          if (notificationPermission === 'granted') {
+            showMeetingNotification(meeting, 'Meeting starts in 5 minutes');
+          }
         }
       });
     };
     const interval = setInterval(checkMeetingTimes, 60000);
     checkMeetingTimes();
     return () => clearInterval(interval);
-  }, [meetings, user]);
+  }, [meetings, notificationPermission, showMeetingNotification]);
 
   const generateMeetingLink = (meetingId: string) => `hrms-meeting-${meetingId}`;
 
-  // NEW handleSubmit – creates single meeting + participant records
+  // Submit meeting (only admin)
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user || isProcessing) return;
+    if (!isAdmin) {
+      toast.error('Only admin can schedule meetings');
+      return;
+    }
+    if (!authUser || isProcessing) return;
 
     setIsProcessing(true);
     try {
@@ -243,8 +309,8 @@ const MeetingManagement = () => {
         duration: formData.duration,
         meetingLink,
         agenda: formData.agenda,
-        createdBy: user.id,
-        createdByName: user.name || 'Admin',
+        createdBy: authUser.id,
+        createdByName: authUser.name || 'Admin',
         createdAt: new Date().toISOString(),
         status: 'scheduled',
         type: formData.type,
@@ -270,19 +336,20 @@ const MeetingManagement = () => {
         }));
       });
       await Promise.all(participantUpdates);
+
       // Send in‑app notifications to all invited employees
-const notificationPromises = targetEmployees.map(async (employee) => {
-  const notifRef = push(ref(database, `notifications/${employee.id}`));
-  await set(notifRef, {
-    title: 'New Meeting Scheduled',
-    body: `${meetingData.createdByName} scheduled a meeting: "${meetingData.title}" on ${format(new Date(meetingData.date), 'MMM dd, yyyy')} at ${meetingData.time}`,
-    type: 'meeting_scheduled',
-    read: false,
-    createdAt: Date.now(),
-    meetingId: meetingId,
-  });
-});
-await Promise.all(notificationPromises);
+      const notificationPromises = targetEmployees.map(async (employee) => {
+        const notifRef = push(ref(database, `notifications/${employee.id}`));
+        await set(notifRef, {
+          title: 'New Meeting Scheduled',
+          body: `${meetingData.createdByName} scheduled a meeting: "${meetingData.title}" on ${format(new Date(meetingData.date), 'MMM dd, yyyy')} at ${meetingData.time}`,
+          type: 'meeting_scheduled',
+          read: false,
+          createdAt: Date.now(),
+          meetingId: meetingId,
+        });
+      });
+      await Promise.all(notificationPromises);
 
       toast.success(editingMeeting ? 'Meeting updated successfully' : 'Meeting scheduled successfully');
       resetForm();
@@ -310,6 +377,10 @@ await Promise.all(notificationPromises);
   };
 
   const editMeeting = (meeting: Meeting) => {
+    if (!isAdmin) {
+      toast.error('Only admin can edit meetings');
+      return;
+    }
     setEditingMeeting(meeting);
     setFormData({
       title: meeting.title,
@@ -325,13 +396,15 @@ await Promise.all(notificationPromises);
   };
 
   const deleteMeeting = async (meeting: Meeting) => {
-    if (!window.confirm('Delete this meeting? This action cannot be undone.') || !user || isProcessing) return;
+    if (!isAdmin) {
+      toast.error('Only admin can delete meetings');
+      return;
+    }
+    if (!window.confirm('Delete this meeting? This action cannot be undone.') || !authUser || isProcessing) return;
 
     setIsProcessing(true);
     try {
-      // Remove meeting record
       await remove(ref(database, `meetings/${meeting.id}`));
-      // Remove all participant records
       await remove(ref(database, `meetingParticipants/${meeting.id}`));
       toast.success('Meeting deleted successfully');
     } catch (error) {
@@ -399,7 +472,9 @@ await Promise.all(notificationPromises);
       <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-xl sm:text-2xl font-bold text-gray-800">Meeting Management</h1>
-          <p className="text-sm sm:text-base text-gray-600">Schedule and manage meetings across all departments</p>
+          <p className="text-sm sm:text-base text-gray-600">
+            {isAdmin ? 'Schedule and manage meetings across all departments' : `View meetings for ${effectiveDepartment} department`}
+          </p>
         </div>
         <div className="flex flex-wrap gap-2 w-full sm:w-auto">
           {notificationPermission !== 'granted' && (
@@ -407,14 +482,17 @@ await Promise.all(notificationPromises);
               <Bell className="h-3 w-3 sm:h-4 sm:w-4" /> Enable Notifications
             </Button>
           )}
-          <Button onClick={() => setShowAddForm(true)} disabled={isProcessing} size="sm" className="text-xs sm:text-sm">
-            <Plus className="h-3 w-3 sm:h-4 sm:w-4 mr-1" /> Schedule Meeting
-          </Button>
+          {/* ✅ Schedule button only for admin */}
+          {isAdmin && (
+            <Button onClick={() => setShowAddForm(true)} disabled={isProcessing} size="sm" className="text-xs sm:text-sm">
+              <Plus className="h-3 w-3 sm:h-4 sm:w-4 mr-1" /> Schedule Meeting
+            </Button>
+          )}
         </div>
       </motion.div>
 
-      {/* Add/Edit Form (unchanged) */}
-      {showAddForm && (
+      {/* Add/Edit Form – only admin can see */}
+      {isAdmin && showAddForm && (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <Card>
             <CardHeader><CardTitle className="text-lg sm:text-xl">{editingMeeting ? 'Edit Meeting' : 'Schedule New Meeting'}</CardTitle><p className="text-sm text-gray-500">Meeting will be sent to all relevant employees across the organization</p></CardHeader>
@@ -455,12 +533,14 @@ await Promise.all(notificationPromises);
         </motion.div>
       )}
 
-      {/* Meetings List – now shows each meeting only once */}
+      {/* Meetings List – filtered for manager */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
         <Card>
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg sm:text-xl"><Calendar className="h-4 w-4" /> Scheduled Meetings ({meetings.length})</CardTitle>
-            <p className="text-sm text-gray-500">Showing meetings from across the organization</p>
+            <p className="text-sm text-gray-500">
+              {isAdmin ? 'Showing meetings from across the organization' : `Showing meetings for ${effectiveDepartment} department (including common meetings)`}
+            </p>
           </CardHeader>
           <CardContent>
             <div className="space-y-4">
@@ -496,9 +576,14 @@ await Promise.all(notificationPromises);
                           )}
                         </div>
                         <div className="flex flex-wrap gap-2 w-full sm:w-auto justify-end">
-                          <Button size="sm" variant="outline" onClick={() => editMeeting(meeting)} disabled={isProcessing} className="text-xs"><Edit className="h-3 w-3 mr-1" /> Edit</Button>
-                          <Button size="sm" variant="outline" onClick={() => deleteMeeting(meeting)} className="text-red-600 hover:bg-red-50 text-xs" disabled={isProcessing}><Trash2 className="h-3 w-3 mr-1" /> Delete</Button>
-                          {meeting.meetingLink && (isActive || user?.role === 'admin') && (
+                          {/* ✅ Edit/Delete only for admin */}
+                          {isAdmin && (
+                            <>
+                              <Button size="sm" variant="outline" onClick={() => editMeeting(meeting)} disabled={isProcessing} className="text-xs"><Edit className="h-3 w-3 mr-1" /> Edit</Button>
+                              <Button size="sm" variant="outline" onClick={() => deleteMeeting(meeting)} className="text-red-600 hover:bg-red-50 text-xs" disabled={isProcessing}><Trash2 className="h-3 w-3 mr-1" /> Delete</Button>
+                            </>
+                          )}
+                          {meeting.meetingLink && (isActive || isAdmin) && (
                             <Button size="sm" onClick={() => startMeeting(meeting)} className="bg-blue-600 hover:bg-blue-700 text-white text-xs" disabled={isProcessing}>
                               {isActive ? 'Join' : 'Start'} Meeting
                             </Button>

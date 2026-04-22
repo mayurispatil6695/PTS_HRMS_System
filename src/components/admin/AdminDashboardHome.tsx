@@ -52,6 +52,15 @@ interface WorkSession {
   breakStartTime?: number;
   lastUpdated?: number;
 }
+ // Monitor activity for alertSent (without any)
+ // ... (everything before the useEffect remains identical)
+
+  // Monitor activity for alertSent - FIXED
+  interface ExtendedActivityData extends ActivityData {
+    alertSent?: boolean;
+    idleDuration?: number;
+  }
+
 
 const AdminDashboardHome = () => {
   const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
@@ -164,6 +173,7 @@ const AdminDashboardHome = () => {
       new Notification(title, { body, icon: '/logo.png' });
     }
   };
+
   // Check for posts scheduled for today and upcoming posts
   useEffect(() => {
     if (marketingPosts.length === 0) return;
@@ -294,37 +304,37 @@ const AdminDashboardHome = () => {
     const employeesRef = ref(database, "users");
     const allEmployees: Employee[] = [];
 
-const unsubscribeEmployees = onValue(employeesRef, (snapshot: DataSnapshot) => {
-  const employeeMap = new Map<string, Employee>(); // Use Map to keep unique IDs
+    const unsubscribeEmployees = onValue(employeesRef, (snapshot: DataSnapshot) => {
+      const employeeMap = new Map<string, Employee>(); // Use Map to keep unique IDs
 
-  if (snapshot.exists()) {
-    snapshot.forEach((adminSnap: DataSnapshot) => {
-      const employeesData = adminSnap.child("employees").val() as Record<string, FirebaseEmployee> | null;
-      if (employeesData && typeof employeesData === 'object') {
-        Object.entries(employeesData).forEach(([key, value]) => {
-          // Only add if not already present
-          if (!employeeMap.has(key)) {
-            employeeMap.set(key, {
-              id: key,
-              name: value.name || '',
-              email: value.email || '',
-              phone: value.phone || '',
-              department: value.department || '',
-              designation: value.designation || '',
-              createdAt: value.createdAt || '',
-              employeeId: value.employeeId || `EMP-${key.slice(0, 8)}`,
-              isActive: value.status === 'active',
-              status: value.status || 'active',
-              adminId: adminSnap.key || ''
+      if (snapshot.exists()) {
+        snapshot.forEach((adminSnap: DataSnapshot) => {
+          const employeesData = adminSnap.child("employees").val() as Record<string, FirebaseEmployee> | null;
+          if (employeesData && typeof employeesData === 'object') {
+            Object.entries(employeesData).forEach(([key, value]) => {
+              // Only add if not already present
+              if (!employeeMap.has(key)) {
+                employeeMap.set(key, {
+                  id: key,
+                  name: value.name || '',
+                  email: value.email || '',
+                  phone: value.phone || '',
+                  department: value.department || '',
+                  designation: value.designation || '',
+                  createdAt: value.createdAt || '',
+                  employeeId: value.employeeId || `EMP-${key.slice(0, 8)}`,
+                  isActive: value.status === 'active',
+                  status: value.status || 'active',
+                  adminId: adminSnap.key || ''
+                });
+              }
             });
           }
         });
       }
-    });
-  }
 
-  setEmployees(Array.from(employeeMap.values()));
-  setInitialLoadComplete(true);
+      setEmployees(Array.from(employeeMap.values()));
+      setInitialLoadComplete(true);
     }, (error: Error) => {
       console.error('Error fetching employees:', error);
       setInitialLoadComplete(true);
@@ -335,133 +345,136 @@ const unsubscribeEmployees = onValue(employeesRef, (snapshot: DataSnapshot) => {
     };
   }, [user]);
 
-useEffect(() => {
-  const activityRef = ref(database, 'activity');
+  // Monitor idle users via activity node (without any)
+  useEffect(() => {
+    const activityRef = ref(database, 'activity');
 
-  const unsubscribe = onValue(activityRef, (snapshot: DataSnapshot) => {
-    const data = snapshot.val();
-    const idleEmployees: IdleUser[] = [];
+    const unsubscribe = onValue(activityRef, (snapshot: DataSnapshot) => {
+      const data = snapshot.val() as Record<string, ActivityData> | null;
+      const idleEmployees: IdleUser[] = [];
 
-    if (data && typeof data === 'object') {
-      Object.entries(data as Record<string, ActivityData>).forEach(([userId, userData]) => {
-        if (userData.status === 'idle' || userData.isIdle === true) {
-          idleEmployees.push({
-            id: userId,
-            idleStartTime: userData.idleStartTime || userData.timestamp || Date.now(),
-            idleDuration: userData.idleDuration || 0,
-            lastActive: userData.lastActive || Date.now(),
-            status: userData.status || 'idle'
-          });
-        }
-      });
-    }
-
-    // Sort by idle duration (longest first)
-    idleEmployees.sort((a, b) => b.idleDuration - a.idleDuration);
-    setIdleUsers(idleEmployees);
-
-    // ✅ Browser notification for newly idle employees
-    const newIdleIds = idleEmployees.map(u => u.id);
-    const justBecameIdle = newIdleIds.filter(id => !notifiedIdleIds.has(id));
-
-    if (justBecameIdle.length > 0 && notificationPermission === 'granted') {
-      justBecameIdle.forEach(userId => {
-        const employee = employees.find(e => e.id === userId);
-        if (employee) {
-          new Notification(`Idle Employee: ${employee.name}`, {
-            body: `${employee.name} (${employee.email}) has been idle for more than 10 seconds.`,
-            icon: '/notification-icon.png',
-            tag: `idle-${userId}`,
-          });
-        }
-      });
-      setNotifiedIdleIds(new Set(newIdleIds));
-    }
-
-    // If employee is no longer idle, remove from notified set
-    const noLongerIdle = Array.from(notifiedIdleIds).filter(id => !newIdleIds.includes(id));
-    if (noLongerIdle.length > 0) {
-      const updatedSet = new Set(notifiedIdleIds);
-      noLongerIdle.forEach(id => updatedSet.delete(id));
-      setNotifiedIdleIds(updatedSet);
-    }
-  });
-
-  return () => unsubscribe();
-}, [employees, notificationPermission, notifiedIdleIds]);
-// Fetch ALL projects from global projects node
-useEffect(() => {
-  if (!user) return;
-
-  const projectsRef = ref(database, 'projects');
-  const unsubscribe = onValue(projectsRef, (snapshot) => {
-    try {
-      const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
-      if (!data) {
-        setProjects([]);
-        return;
+      if (data && typeof data === 'object') {
+        Object.entries(data).forEach(([userId, userData]) => {
+          if (userData.status === 'idle' || userData.isIdle === true) {
+            idleEmployees.push({
+              id: userId,
+              idleStartTime: userData.idleStartTime || userData.timestamp || Date.now(),
+              idleDuration: userData.idleDuration || 0,
+              lastActive: userData.lastActive || Date.now(),
+              status: userData.status || 'idle'
+            });
+          }
+        });
       }
-      const allProjects: Project[] = Object.entries(data).map(([projId, projData]) => {
-        // Convert tasks from object (keyed by taskId) to array
-        const tasksObj = projData.tasks as Record<string, Task> | undefined;
-        const tasksArray = tasksObj ? Object.values(tasksObj) : [];
-        
-        // Convert updates from object to array
-        const updatesObj = projData.updates as Record<string, ProjectUpdate> | undefined;
-        const updatesArray = updatesObj ? Object.values(updatesObj) : [];
 
-        // Cast priority and status to the correct union types
-        const priority = (projData.priority as Project['priority']) || 'medium';
-        const status = (projData.status as Project['status']) || 'not_started';
+      // Sort by idle duration (longest first)
+      idleEmployees.sort((a, b) => b.idleDuration - a.idleDuration);
+      setIdleUsers(idleEmployees);
 
-        return {
-          id: projId,
-          name: projData.name || '',
-          description: projData.description || '',
-          department: projData.department || '',
-          assignedTeamLeader: projData.assignedTeamLeader || '',
-          assignedEmployees: projData.assignedEmployees || [],
-          tasks: tasksArray,
-          startDate: projData.startDate || '',
-          endDate: projData.endDate || '',
-          priority: priority,
-          status: status,
-          progress: projData.progress || 0,
-          createdAt: projData.createdAt || '',
-          createdBy: projData.createdBy || '',
-          updates: updatesArray,
-        };
-      });
-      setProjects(allProjects);
-    } catch (err) {
-      console.error('Error loading global projects:', err);
-    }
-  });
-  return () => off(projectsRef);
-}, [user]);
+      // ✅ Browser notification for newly idle employees
+      const newIdleIds = idleEmployees.map(u => u.id);
+      const justBecameIdle = newIdleIds.filter(id => !notifiedIdleIds.has(id));
 
-// Auto-complete projects when all tasks are done
-useEffect(() => {
-  if (!user || projects.length === 0) return;
+      if (justBecameIdle.length > 0 && notificationPermission === 'granted') {
+        justBecameIdle.forEach(userId => {
+          const employee = employees.find(e => e.id === userId);
+          if (employee) {
+            new Notification(`Idle Employee: ${employee.name}`, {
+              body: `${employee.name} (${employee.email}) has been idle for more than 10 seconds.`,
+              icon: '/notification-icon.png',
+              tag: `idle-${userId}`,
+            });
+          }
+        });
+        setNotifiedIdleIds(new Set(newIdleIds));
+      }
 
-  projects.forEach(project => {
-    // Compute progress from tasks
-    const tasks = project.tasks || [];
-    const total = tasks.length;
-    if (total === 0) return; // no tasks → skip
+      // If employee is no longer idle, remove from notified set
+      const noLongerIdle = Array.from(notifiedIdleIds).filter(id => !newIdleIds.includes(id));
+      if (noLongerIdle.length > 0) {
+        const updatedSet = new Set(notifiedIdleIds);
+        noLongerIdle.forEach(id => updatedSet.delete(id));
+        setNotifiedIdleIds(updatedSet);
+      }
+    });
 
-    const completed = tasks.filter(t => t.status === 'completed').length;
-    const progress = (completed / total) * 100;
+    return () => unsubscribe();
+  }, [employees, notificationPermission, notifiedIdleIds]);
 
-    // If 100% but status is not 'completed', update Firebase
-    if (progress === 100 && project.status !== 'completed') {
-      const projectRef = ref(database, `projects/${project.id}`);
-      update(projectRef, { status: 'completed' })
-        .then(() => console.log(`✅ Project "${project.name}" auto-completed`))
-        .catch(err => console.error('Auto-complete failed:', err));
-    }
-  });
-}, [projects, user]); // runs whenever projects change
+  // Fetch ALL projects from global projects node
+  useEffect(() => {
+    if (!user) return;
+
+    const projectsRef = ref(database, 'projects');
+    const unsubscribe = onValue(projectsRef, (snapshot) => {
+      try {
+        const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
+        if (!data) {
+          setProjects([]);
+          return;
+        }
+        const allProjects: Project[] = Object.entries(data).map(([projId, projData]) => {
+          // Convert tasks from object (keyed by taskId) to array
+          const tasksObj = projData.tasks as Record<string, Task> | undefined;
+          const tasksArray = tasksObj ? Object.values(tasksObj) : [];
+          
+          // Convert updates from object to array
+          const updatesObj = projData.updates as Record<string, ProjectUpdate> | undefined;
+          const updatesArray = updatesObj ? Object.values(updatesObj) : [];
+
+          // Cast priority and status to the correct union types
+          const priority = (projData.priority as Project['priority']) || 'medium';
+          const status = (projData.status as Project['status']) || 'not_started';
+
+          return {
+            id: projId,
+            name: projData.name || '',
+            description: projData.description || '',
+            department: projData.department || '',
+            assignedTeamLeader: projData.assignedTeamLeader || '',
+            assignedEmployees: projData.assignedEmployees || [],
+            tasks: tasksArray,
+            startDate: projData.startDate || '',
+            endDate: projData.endDate || '',
+            priority: priority,
+            status: status,
+            progress: projData.progress || 0,
+            createdAt: projData.createdAt || '',
+            createdBy: projData.createdBy || '',
+            updates: updatesArray,
+          };
+        });
+        setProjects(allProjects);
+      } catch (err) {
+        console.error('Error loading global projects:', err);
+      }
+    });
+    return () => off(projectsRef);
+  }, [user]);
+
+  // Auto-complete projects when all tasks are done
+  useEffect(() => {
+    if (!user || projects.length === 0) return;
+
+    projects.forEach(project => {
+      // Compute progress from tasks
+      const tasks = project.tasks || [];
+      const total = tasks.length;
+      if (total === 0) return; // no tasks → skip
+
+      const completed = tasks.filter(t => t.status === 'completed').length;
+      const progress = (completed / total) * 100;
+
+      // If 100% but status is not 'completed', update Firebase
+      if (progress === 100 && project.status !== 'completed') {
+        const projectRef = ref(database, `projects/${project.id}`);
+        update(projectRef, { status: 'completed' })
+          .then(() => console.log(`✅ Project "${project.name}" auto-completed`))
+          .catch(err => console.error('Auto-complete failed:', err));
+      }
+    });
+  }, [projects, user]);
+
   // Fetch ALL leave requests from all employees across all admins
   useEffect(() => {
     if (!user || employees.length === 0) return;
@@ -483,7 +496,7 @@ useEffect(() => {
         const leavesQuery = query(leavesRef, orderByChild('appliedAt'));
         
         const unsubscribe = onValue(leavesQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val();
+          const data = snapshot.val() as Record<string, Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'employeeEmail' | 'department' | 'adminId'>> | null;
           
           const index = allLeaveRequests.findIndex(r => r.employeeId === employee.id);
           if (index !== -1) {
@@ -491,7 +504,7 @@ useEffect(() => {
           }
 
           if (data && typeof data === 'object') {
-            const requests: LeaveRequest[] = Object.entries(data as Record<string, Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'employeeEmail' | 'department' | 'adminId'>>).map(([key, value]) => ({
+            const requests: LeaveRequest[] = Object.entries(data).map(([key, value]) => ({
               id: key,
               employeeId: employee.id,
               employeeName: employee.name,
@@ -544,7 +557,7 @@ useEffect(() => {
         const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
         
         const unsubscribe = onValue(attendanceQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val();
+          const data = snapshot.val() as Record<string, Partial<AttendanceRecord>> | null;
           
           const index = allAttendanceRecords.findIndex(r => r.employeeId === employee.id);
           if (index !== -1) {
@@ -552,7 +565,7 @@ useEffect(() => {
           }
 
           if (data && typeof data === 'object') {
-            const records: AttendanceRecord[] = Object.entries(data as Record<string, Partial<AttendanceRecord>>).map(([key, value]) => {
+            const records: AttendanceRecord[] = Object.entries(data).map(([key, value]) => {
               let hoursWorked = 0;
               if (value.punchIn && value.punchOut) {
                 const punchInTime = new Date(`1970-01-01T${value.punchIn}`);
@@ -614,7 +627,7 @@ useEffect(() => {
         const postsQuery = query(postsRef, orderByChild('createdAt'));
         
         const unsubscribe = onValue(postsQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val();
+          const data = snapshot.val() as Record<string, Omit<MarketingPost, 'id' | 'adminId'>> | null;
           
           const index = allMarketingPosts.findIndex(p => p.createdBy === employee.id);
           if (index !== -1) {
@@ -622,7 +635,7 @@ useEffect(() => {
           }
 
           if (data && typeof data === 'object') {
-            const posts: MarketingPost[] = Object.entries(data as Record<string, Omit<MarketingPost, 'id' | 'adminId'>>).map(([key, value]) => ({
+            const posts: MarketingPost[] = Object.entries(data).map(([key, value]) => ({
               id: key,
               adminId: adminId,
               platform: value.platform,
@@ -678,9 +691,9 @@ useEffect(() => {
         request.status === 'pending'
       ).length;
 
-    const activeProjects = projects.filter(project => 
-  project.status === 'in_progress' || project.status === 'active'
-).length;
+      const activeProjects = projects.filter(project => 
+        project.status === 'in_progress' || project.status === 'active'
+      ).length;
       const completedProjects = projects.filter(project => 
         project.status === 'completed'
       ).length;
@@ -707,37 +720,35 @@ useEffect(() => {
     }
   }, [employees, leaveRequests, attendanceRecords, projects, marketingPosts]);
 
+ 
   useEffect(() => {
-  const activityRef = ref(database, 'activity');
-  const unsubscribe = onValue(activityRef, (snapshot) => {
-    const data = snapshot.val();
-    if (!data) return;
-    Object.entries(data).forEach(([userId, userData]: [string, any]) => {
-      if (userData.isIdle === true && !userData.alertSent) {
-        // Fetch employee name
-        const employee = employees.find(e => e.id === userId);
-        if (employee) {
-          // Show browser notification
-          if (Notification.permission === 'granted') {
-            new Notification(`⚠️ Idle Employee: ${employee.name}`, {
-              body: `${employee.name} (${employee.department}) has been idle for ${userData.idleDuration || 20} seconds.`,
-              icon: '/logo.png',
-              tag: `idle-${userId}`,
-            });
+    const activityRef = ref(database, 'activity');
+    const unsubscribe = onValue(activityRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, ExtendedActivityData> | null;
+      if (!data) return;
+      Object.entries(data).forEach(([userId, userData]) => {
+        if (userData.isIdle === true && !userData.alertSent) {
+          const employee = employees.find(e => e.id === userId);
+          if (employee) {
+            if (Notification.permission === 'granted') {
+              new Notification(`⚠️ Idle Employee: ${employee.name}`, {
+                body: `${employee.name} (${employee.department}) has been idle for ${userData.idleDuration || 20} seconds.`,
+                icon: '/logo.png',
+                tag: `idle-${userId}`,
+              });
+            }
+            toast.error(`${employee.name} is idle!`, { duration: 5000 });
+            update(ref(database, `activity/${userId}`), { alertSent: true });
           }
-          // Also show a toast (optional)
-          toast.error(`${employee.name} is idle!`, { duration: 5000 });
-          // Mark alert as sent to avoid spamming
-          update(ref(database, `activity/${userId}`), { alertSent: true });
+        } else if (userData.isIdle === false) {
+          update(ref(database, `activity/${userId}`), { alertSent: false });
         }
-      } else if (userData.isIdle === false) {
-        // Reset alert flag when user becomes active again
-        update(ref(database, `activity/${userId}`), { alertSent: false });
-      }
+      });
     });
-  });
-  return () => off(activityRef);
-}, [employees]);
+    return () => off(activityRef);
+  }, [employees]);
+
+// ... (rest unchanged)
 
   const formatIdleTime = (startTime: number): string => {
     const idleSeconds = Math.floor((Date.now() - startTime) / 1000);
@@ -951,7 +962,7 @@ useEffect(() => {
       </div>
       <div className="mt-6">
   
-</div>
+      </div>
      
 
       <AttendancePopup

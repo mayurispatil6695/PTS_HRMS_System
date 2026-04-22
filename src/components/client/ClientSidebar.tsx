@@ -5,6 +5,8 @@ import {
   LayoutDashboard, 
   FolderOpen, 
   MessageCircle,
+  FileText,
+  HelpCircle,
   X,
   Building2
 } from 'lucide-react';
@@ -24,6 +26,9 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
     { icon: LayoutDashboard, label: 'Dashboard', path: '/client/' },
     { icon: FolderOpen, label: 'Projects', path: '/client/projects' },
     { icon: MessageCircle, label: 'Chat', path: '/client/chat' },
+    // Optional future features:
+    // { icon: FileText, label: 'Invoices', path: '/client/invoices' },
+    // { icon: HelpCircle, label: 'Support', path: '/client/support' },
   ];
 
   const isActive = (path: string) => {
@@ -59,8 +64,8 @@ const ClientSidebar: React.FC<ClientSidebarProps> = ({ onClose, isMobile = false
           </div>
           <div className="min-w-0">
             <p className="font-medium text-gray-800 truncate">{user?.name}</p>
-            <p className="text-sm text-gray-500 truncate">{user?.designation}</p>
-            <p className="text-xs text-gray-400 truncate">{user?.employeeId}</p>
+            <p className="text-sm text-gray-500 truncate">{user?.companyName || user?.designation}</p>
+            <p className="text-xs text-gray-400 truncate">{user?.email}</p>
           </div>
         </div>
       </div>
