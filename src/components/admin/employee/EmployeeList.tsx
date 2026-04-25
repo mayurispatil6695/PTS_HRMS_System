@@ -5,11 +5,10 @@ import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
 import { Avatar, AvatarFallback, AvatarImage } from '../../ui/avatar';
 import { Eye, Edit, Trash2, Mail, Phone, User } from 'lucide-react';
-import { ref, onValue, off, update, remove } from 'firebase/database';
+import { ref, onValue, off, update, remove, get } from 'firebase/database';
 import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
-import { deleteUser, getAuth } from 'firebase/auth';
-import { toast } from '@/hooks/use-toast';
+import { toast } from 'react-hot-toast';
 import EmployeeFilters from './EmployeeFilters';
 import AddEmployeeDialog from './AddEmployeeDialog';
 
@@ -25,34 +24,37 @@ export interface Employee {
   createdAt: string;
   profileImage?: string;
   addedBy?: string;
-
   joiningDate?: string;
   salary?: number;
-
-  emergencyContact?: {
-    name?: string;
-    phone?: string;
-  };
-
+  emergencyContact?: { name?: string; phone?: string };
   address?: string;
   workMode?: string;
   employmentType?: string;
-
-  bankDetails?: {
-    accountNumber?: string;
-    bankName?: string;
-    ifscCode?: string;
-  };
-
+  bankDetails?: { accountNumber?: string; bankName?: string; ifscCode?: string };
   status?: string;
 }
-interface EmployeeListProps {
-  onViewEmployee: (employee: Employee) => void;
+
+interface FirebaseEmployeeData {
+  name?: string;
+  email?: string;
+  phone?: string;
+  department?: string;
+  designation?: string;
+  employeeId?: string;
+  status?: string;
+  createdAt?: string;
+  profileImage?: string;
+  addedBy?: string;
+  joiningDate?: string;
+  salary?: number;
+  emergencyContact?: { name?: string; phone?: string };
+  address?: string;
+  workMode?: string;
+  employmentType?: string;
+  bankDetails?: { accountNumber?: string; bankName?: string; ifscCode?: string };
 }
 
-const EmployeeList: React.FC<EmployeeListProps> = ({
-  onViewEmployee
-}) => {
+const EmployeeList: React.FC<{ onViewEmployee: (employee: Employee) => void }> = ({ onViewEmployee }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([]);
@@ -68,243 +70,148 @@ const EmployeeList: React.FC<EmployeeListProps> = ({
   const [employeeToEdit, setEmployeeToEdit] = useState<Employee | null>(null);
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
-useEffect(() => {
+  // Fetch employees from ALL admins (like dashboard)
+ useEffect(() => {
   if (!user || user.role !== 'admin') return;
 
   const usersRef = ref(database, "users");
   setLoading(true);
 
-  const unsubscribe = onValue(
-    usersRef,
-    (snapshot) => {
-      const employeesData: Employee[] = [];
-      const deptSet = new Set<string>();
-      const desigSet = new Set<string>();
+  const unsubscribe = onValue(usersRef, (snapshot) => {
+    const employeesMap = new Map<string, Employee>(); // ✅ deduplicate by employee ID
+    const deptSet = new Set<string>();
+    const desigSet = new Set<string>();
 
-      snapshot.forEach((userSnap) => {
-        const userId = userSnap.key;
-        const userData = userSnap.val();
-        
-        // ✅ Skip if user is an admin
-        if (userData.role === 'admin') return;
-        if (userData.role === 'client') return;
-        // ✅ Get employee profile (prefer the 'profile' node, fallback to 'employee')
-        const profile = userData.profile || userData.employee;
-        if (!profile || !profile.name) return; // Not an employee
-        
-        employeesData.push({
-          id: userId || '',
-          name: profile.name || '',
-          email: profile.email || '',
-          phone: profile.phone || '',
-          department: profile.department || '',
-          designation: profile.designation || '',
-          employeeId: profile.employeeId || `EMP-${userId?.slice(0, 8)}`,
-          isActive: profile.status === 'active',
-          status: profile.status || 'active',
-          createdAt: profile.createdAt || '',
-          profileImage: profile.profileImage,
-          addedBy: profile.addedBy,
-          joiningDate: profile.joiningDate,
-          salary: profile.salary,
-          emergencyContact: profile.emergencyContact,
-          address: profile.address,
-          workMode: profile.workMode,
-          employmentType: profile.employmentType,
-          bankDetails: profile.bankDetails,
+    snapshot.forEach((adminSnap) => {
+      const adminEmployees = adminSnap.child("employees").val() as Record<string, FirebaseEmployeeData> | null;
+      if (adminEmployees && typeof adminEmployees === 'object') {
+        Object.entries(adminEmployees).forEach(([empId, empData]) => {
+          // Skip inactive employees
+          if (empData.status === 'inactive') return;
+
+          // If the employee is already in the map, skip (keep first occurrence)
+          if (employeesMap.has(empId)) return;
+
+          employeesMap.set(empId, {
+            id: empId,
+            name: empData.name || '',
+            email: empData.email || '',
+            phone: empData.phone || '',
+            department: empData.department || '',
+            designation: empData.designation || '',
+            employeeId: empData.employeeId || `EMP-${empId.slice(0, 8)}`,
+            isActive: empData.status === 'active',
+            status: empData.status || 'active',
+            createdAt: empData.createdAt || '',
+            profileImage: empData.profileImage,
+            addedBy: empData.addedBy,
+            joiningDate: empData.joiningDate,
+            salary: empData.salary,
+            emergencyContact: empData.emergencyContact,
+            address: empData.address,
+            workMode: empData.workMode,
+            employmentType: empData.employmentType,
+            bankDetails: empData.bankDetails,
+          });
+
+          if (empData.department) deptSet.add(empData.department);
+          if (empData.designation) desigSet.add(empData.designation);
         });
+      }
+    });
 
-        if (profile.department) deptSet.add(profile.department);
-        if (profile.designation) desigSet.add(profile.designation);
-      });
-
-      setEmployees(employeesData);
-      setFilteredEmployees(employeesData);
-      setDepartments(Array.from(deptSet));
-      setDesignations(Array.from(desigSet));
-      setLoading(false);
-    },
-    (error) => {
-      console.error('Error fetching employees:', error);
-      setError('Failed to load employees');
-      setLoading(false);
-    }
-  );
+    setEmployees(Array.from(employeesMap.values()));
+    setFilteredEmployees(Array.from(employeesMap.values()));
+    setDepartments(Array.from(deptSet));
+    setDesignations(Array.from(desigSet));
+    setLoading(false);
+  }, (error) => {
+    console.error('Error fetching employees:', error);
+    setError('Failed to load employees');
+    setLoading(false);
+  });
 
   return () => unsubscribe();
 }, [user]);
-  // Apply filters whenever search term, department or status changes
+  // Filters
   useEffect(() => {
     let result = [...employees];
-
-    // Apply search filter
     if (searchTerm) {
-      result = result.filter(employee => 
-        employee.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        employee.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        employee.employeeId?.toLowerCase().includes(searchTerm.toLowerCase())
+      const term = searchTerm.toLowerCase();
+      result = result.filter(emp =>
+        emp.name?.toLowerCase().includes(term) ||
+        emp.email?.toLowerCase().includes(term) ||
+        emp.employeeId?.toLowerCase().includes(term)
       );
     }
-
-    // Apply department filter
-    if (filterDepartment !== 'all') {
-      result = result.filter(employee => 
-        employee.department === filterDepartment
-      );
-    }
-
-    // Apply status filter
-    if (filterStatus !== 'all') {
-      const statusFilter = filterStatus === 'active';
-      result = result.filter(employee => 
-        employee.isActive === statusFilter
-      );
-    }
-
+    if (filterDepartment !== 'all') result = result.filter(emp => emp.department === filterDepartment);
+    if (filterStatus !== 'all') result = result.filter(emp => emp.isActive === (filterStatus === 'active'));
     setFilteredEmployees(result);
-    setCurrentPage(1); // Reset to first page when filters change
+    setCurrentPage(1);
   }, [searchTerm, filterDepartment, filterStatus, employees]);
 
-  // Pagination logic
+  // Pagination
   const indexOfLastEmployee = currentPage * itemsPerPage;
   const indexOfFirstEmployee = indexOfLastEmployee - itemsPerPage;
   const currentEmployees = filteredEmployees.slice(indexOfFirstEmployee, indexOfLastEmployee);
   const totalPages = Math.ceil(filteredEmployees.length / itemsPerPage);
 
-  // Toggle employee status
+  // Toggle status
   const handleToggleStatus = async (employeeId: string) => {
     if (!user) return;
-    
     try {
       const employeeRef = ref(database, `users/${user.id}/employees/${employeeId}`);
       const employeeSelfRef = ref(database, `users/${employeeId}/employee`);
-      
       const employee = employees.find(e => e.id === employeeId);
       if (!employee) return;
-
       const newStatus = employee.isActive ? 'inactive' : 'active';
-      
       await update(employeeRef, { status: newStatus });
       await update(employeeSelfRef, { status: newStatus });
-
-      toast({
-        title: "Success",
-        description: `Employee status updated to ${newStatus}`,
-      });
+      toast.success(`Employee status updated to ${newStatus}`);
     } catch (err) {
-      console.error('Error updating employee status:', err);
-      setError('Failed to update employee status');
-      toast({
-        title: "Error",
-        description: "Failed to update employee status",
-        variant: "destructive",
-      });
+      console.error(err);
+      toast.error('Failed to update employee status');
     }
   };
 
-  // Delete employee
+  // Delete from all admins
   const handleDeleteEmployee = async (employeeId: string) => {
-    if (!user || !window.confirm('Are you sure you want to delete this employee?')) return;
-    
+    if (!window.confirm('Are you sure you want to delete this employee?')) return;
     try {
-      const employee = employees.find(e => e.id === employeeId);
-      if (!employee) return;
-
-      // Delete from admin's employee list
-      const employeeRef = ref(database, `users/${user.id}/employees/${employeeId}`);
-      await remove(employeeRef);
-      
-      // // Delete the employee's auth account
-      // const auth = getAuth();
-      // try {
-      //   const employeeUser = await fetchUserByEmail(employee.email);
-      //   if (employeeUser) {
-      //     await deleteUser(employeeUser);
-      //   }
-      // } catch (authError) {
-      //   console.warn('Error deleting auth user (might not exist):', authError);
-      // }
-
-      // Delete the employee's self-reference if it exists
-     const employeeSelfRef = ref(database, `users/${employeeId}/employee`);
-      await remove(employeeSelfRef);
-      
-      toast({
-        title: "Success",
-        description: "Employee deleted successfully",
+      const usersSnap = await get(ref(database, "users"));
+      const deletePromises: Promise<void>[] = [];
+      usersSnap.forEach((adminSnap) => {
+        const adminId = adminSnap.key;
+        deletePromises.push(remove(ref(database, `users/${adminId}/employees/${employeeId}`)));
       });
+      await Promise.all(deletePromises);
+      await remove(ref(database, `users/${employeeId}/employee`));
+      await remove(ref(database, `users/${employeeId}/profile`));
+      setEmployees(prev => prev.filter(emp => emp.id !== employeeId));
+      setFilteredEmployees(prev => prev.filter(emp => emp.id !== employeeId));
+      toast.success('Employee deleted successfully from all admins');
     } catch (err) {
-      console.error('Error deleting employee:', err);
-      setError('Failed to delete employee');
-      toast({
-        title: "Error",
-        description: "Failed to delete employee",
-        variant: "destructive",
-      });
+      console.error(err);
+      toast.error('Failed to delete employee');
     }
   };
 
-  // Helper function to fetch user by email
-  const fetchUserByEmail = async (email: string) => {
-    const auth = getAuth();
-    try {
-      const userMethods = await import('firebase/auth');
-      const methods = await userMethods.fetchSignInMethodsForEmail(auth, email);
-      if (methods.length > 0) {
-        return auth.currentUser; // This might need adjustment based on your auth setup
-      }
-      return null;
-    } catch (error) {
-      console.error('Error fetching user:', error);
-      return null;
-    }
-  };
-
-  // Handle edit employee
   const handleEditEmployee = (employee: Employee) => {
     setEmployeeToEdit(employee);
     setEditDialogOpen(true);
   };
 
-  // Handle successful edit
   const handleEditSuccess = () => {
     setEditDialogOpen(false);
     setEmployeeToEdit(null);
-    toast({
-      title: "Success",
-      description: "Employee updated successfully",
-    });
+    toast.success('Employee updated successfully');
   };
 
-  if (loading) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Loading employees...</CardTitle>
-        </CardHeader>
-        <CardContent className="flex justify-center">
-          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div>
-        </CardContent>
-      </Card>
-    );
-  }
-
-  if (error) {
-    return (
-      <Card>
-        <CardHeader>
-          <CardTitle>Error</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="text-red-500">{error}</div>
-        </CardContent>
-      </Card>
-    );
-  }
+  if (loading) return <div className="flex justify-center p-8"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900"></div></div>;
+  if (error) return <div className="text-red-500 p-4">{error}</div>;
 
   return (
     <div className="space-y-4">
-      {/* Edit Employee Dialog */}
       {employeeToEdit && (
         <AddEmployeeDialog
           departments={departments}
@@ -316,7 +223,6 @@ useEffect(() => {
         />
       )}
 
-      {/* Filters Component */}
       <EmployeeFilters
         searchTerm={searchTerm}
         setSearchTerm={setSearchTerm}
@@ -327,181 +233,57 @@ useEffect(() => {
         departments={departments}
       />
 
-      {/* Employee List */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <span>Employees ({filteredEmployees.length})</span>
-            </div>
-            <Badge variant="outline">
-              {filteredEmployees.filter(e => e.isActive).length} Active
-            </Badge>
+            <span>Employees ({filteredEmployees.length})</span>
+            <Badge variant="outline">{filteredEmployees.filter(e => e.isActive).length} Active</Badge>
           </CardTitle>
         </CardHeader>
         <CardContent>
           {filteredEmployees.length === 0 ? (
-            <div className="text-center py-8 text-gray-500">
-              No employees found matching your criteria
-            </div>
+            <div className="text-center py-8 text-gray-500">No employees found</div>
           ) : (
             <div className="space-y-4">
-              {currentEmployees.map((employee, index) => (
+              {currentEmployees.map((employee, idx) => (
                 <motion.div
                   key={employee.id}
                   initial={{ opacity: 0, x: -20 }}
                   animate={{ opacity: 1, x: 0 }}
-                  transition={{ delay: index * 0.1 }}
-                  className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 border rounded-lg hover:bg-gray-50 transition-colors gap-3 sm:gap-0"
+                  transition={{ delay: idx * 0.05 }}
+                  className="flex flex-col sm:flex-row items-start sm:items-center justify-between p-4 border rounded-lg hover:bg-gray-50"
                 >
-                  <div className="flex items-start sm:items-center gap-4 w-full sm:w-auto">
+                  <div className="flex gap-4">
                     <Avatar className="w-12 h-12">
                       <AvatarImage src={employee.profileImage} />
-                      <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-600 text-white font-semibold">
-                        {employee.name?.split(' ').map(n => n[0]).join('')}
-                      </AvatarFallback>
+                      <AvatarFallback>{employee.name?.charAt(0)}</AvatarFallback>
                     </Avatar>
-                    <div className="flex-1 sm:flex-none">
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                        <h3 className="font-semibold">{employee.name}</h3>
-                        <Badge variant={employee.isActive ? "default" : "secondary"}>
-                          {employee.isActive ? "Active" : "Inactive"}
-                        </Badge>
+                    <div>
+                      <h3 className="font-semibold">{employee.name}</h3>
+                      <div className="flex flex-wrap gap-2 text-sm text-gray-600">
+                        <span className="flex items-center gap-1"><Mail className="w-3 h-3" />{employee.email}</span>
+                        <span className="flex items-center gap-1"><Phone className="w-3 h-3" />{employee.phone}</span>
+                        <span className="flex items-center gap-1"><User className="w-3 h-3" />{employee.employeeId}</span>
                       </div>
-                      <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4 text-sm text-gray-600 mt-1 sm:mt-0">
-                        <span className="flex items-center gap-1">
-                          <Mail className="w-3 h-3" />
-                          <span className="truncate max-w-[180px]">{employee.email}</span>
-                        </span>
-                        <span className="flex items-center gap-1 sm:ml-0">
-                          <Phone className="w-3 h-3" />
-                          {employee.phone}
-                        </span>
-                        <span className="flex items-center gap-1 sm:ml-0">
-                          <User className="w-3 h-3" />
-                          {employee.employeeId}
-                        </span>
-                      </div>
-                      <div className="text-sm text-gray-500 mt-1 sm:mt-0">
-                        {employee.designation} • {employee.department}
-                      </div>
+                      <div className="text-sm text-gray-500">{employee.designation} • {employee.department}</div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2 self-end sm:self-auto">
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => onViewEmployee(employee)}
-                      className="hover:bg-blue-50 hover:text-blue-600 h-8 w-8"
-                    >
-                      <Eye className="w-4 h-4" />
+                  <div className="flex gap-2 mt-2 sm:mt-0">
+                    <Button variant="ghost" size="icon" onClick={() => onViewEmployee(employee)}><Eye className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleEditEmployee(employee)}><Edit className="w-4 h-4" /></Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleToggleStatus(employee.id)}>
+                      {employee.isActive ? <span className="text-xs bg-yellow-100 p-1 rounded">Off</span> : <span className="text-xs bg-green-100 p-1 rounded">On</span>}
                     </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleEditEmployee(employee)}
-                      className="hover:bg-green-50 hover:text-green-600 h-8 w-8"
-                    >
-                      <Edit className="w-4 h-4" />
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => handleToggleStatus(employee.id)}
-                      className={`hidden sm:inline-flex hover:bg-${employee.isActive ? 'yellow' : 'green'}-50 hover:text-${employee.isActive ? 'yellow' : 'green'}-600`}
-                    >
-                      {employee.isActive ? 'Deactivate' : 'Activate'}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleToggleStatus(employee.id)}
-                      className={
-  employee.isActive
-    ? "hover:bg-yellow-50 hover:text-yellow-600"
-    : "hover:bg-green-50 hover:text-green-600"
-}
-                    >
-                      {employee.isActive ? (
-                        <span className="text-xs">Off</span>
-                      ) : (
-                        <span className="text-xs">On</span>
-                      )}
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => handleDeleteEmployee(employee.id)}
-                      className="hover:bg-red-50 hover:text-red-600 h-8 w-8"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </Button>
+                    <Button variant="ghost" size="icon" onClick={() => handleDeleteEmployee(employee.id)}><Trash2 className="w-4 h-4 text-red-500" /></Button>
                   </div>
                 </motion.div>
               ))}
 
-              {/* Pagination */}
               {totalPages > 1 && (
-                <div className="flex flex-col sm:flex-row items-center justify-between mt-6 gap-4">
-                  <p className="text-sm text-gray-600">
-                    Showing {indexOfFirstEmployee + 1} to {Math.min(indexOfLastEmployee, filteredEmployees.length)} of {filteredEmployees.length} employees
-                  </p>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCurrentPage(Math.max(currentPage - 1, 1))}
-                      disabled={currentPage === 1}
-                    >
-                      Previous
-                    </Button>
-                    <div className="flex items-center gap-1">
-                      {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
-                        // Show limited page numbers on mobile
-                        let pageNum;
-                        if (totalPages <= 5) {
-                          pageNum = i + 1;
-                        } else if (currentPage <= 3) {
-                          pageNum = i + 1;
-                        } else if (currentPage >= totalPages - 2) {
-                          pageNum = totalPages - 4 + i;
-                        } else {
-                          pageNum = currentPage - 2 + i;
-                        }
-                        
-                        return (
-                          <Button
-                            key={pageNum}
-                            variant={currentPage === pageNum ? "default" : "outline"}
-                            size="sm"
-                            onClick={() => setCurrentPage(pageNum)}
-                          >
-                            {pageNum}
-                          </Button>
-                        );
-                      })}
-                      {totalPages > 5 && currentPage < totalPages - 2 && (
-                        <span className="px-2">...</span>
-                      )}
-                      {totalPages > 5 && currentPage < totalPages - 2 && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setCurrentPage(totalPages)}
-                        >
-                          {totalPages}
-                        </Button>
-                      )}
-                    </div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setCurrentPage(Math.min(currentPage + 1, totalPages))}
-                      disabled={currentPage === totalPages}
-                    >
-                      Next
-                    </Button>
-                  </div>
+                <div className="flex justify-center gap-2 mt-4">
+                  <Button variant="outline" disabled={currentPage === 1} onClick={() => setCurrentPage(p => p-1)}>Previous</Button>
+                  <span className="py-2 px-3">{currentPage} / {totalPages}</span>
+                  <Button variant="outline" disabled={currentPage === totalPages} onClick={() => setCurrentPage(p => p+1)}>Next</Button>
                 </div>
               )}
             </div>

@@ -86,7 +86,7 @@ const AdminDashboard = () => {
 
         {/* Main content area */}
         <main className="flex-1 overflow-auto">
-          <div className="p-6">
+          <div className="p-6 flex flex-col h-full">
             <Routes>
               <Route path="/" element={<AdminDashboardHome />} />
               <Route path="/employees" element={<EmployeeManagement />} />

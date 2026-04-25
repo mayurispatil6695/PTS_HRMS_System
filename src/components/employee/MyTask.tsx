@@ -1,4 +1,4 @@
-// MyTasks.tsx – without work updates (comments only)
+// src/components/employee/MyTasks.tsx
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { CheckCircle, Clock, AlertCircle, Calendar, Bell, Eye, X } from 'lucide-react';
@@ -13,6 +13,8 @@ import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { Input } from '../ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
+import { Textarea } from '../ui/textarea';
 import { toast } from 'react-hot-toast';
 
 interface TaskComment {
@@ -36,6 +38,7 @@ interface StandaloneTaskData {
   assignedBy?: string;
   assignedByName?: string;
   dependsOn?: string[];
+  achievementSummary?: string;
 }
 
 interface ProjectTaskData {
@@ -51,6 +54,7 @@ interface ProjectTaskData {
   createdBy?: string;
   createdByName?: string;
   dependsOn?: string[];
+  achievementSummary?: string;
 }
 
 interface FirebaseProjectData {
@@ -78,6 +82,7 @@ interface DailyTask {
   projectId?: string;
   adminId?: string;
   dependsOn?: string[];
+  achievementSummary?: string;
 }
 
 const MyTasks: React.FC = () => {
@@ -89,7 +94,12 @@ const MyTasks: React.FC = () => {
   const [viewMode, setViewMode] = useState<'table' | 'card'>('table');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterDate, setFilterDate] = useState<string>('');
-  const [commentText, setCommentText] = useState(''); // for adding new comments
+  const [commentText, setCommentText] = useState('');
+
+  // Achievement modal state
+  const [showAchievementModal, setShowAchievementModal] = useState(false);
+  const [pendingTask, setPendingTask] = useState<DailyTask | null>(null);
+  const [achievementText, setAchievementText] = useState('');
 
   useEffect(() => {
     if (!user?.id) {
@@ -146,6 +156,7 @@ const MyTasks: React.FC = () => {
                 assignedByName: assignedByName || taskData.assignedBy || 'Admin',
                 adminId: adminId,
                 dependsOn: taskData.dependsOn || [],
+                achievementSummary: taskData.achievementSummary,
               });
             }
           }
@@ -178,6 +189,7 @@ const MyTasks: React.FC = () => {
                     assignedByName: taskData.createdByName || 'Admin',
                     projectId: projId,
                     dependsOn: taskData.dependsOn || [],
+                    achievementSummary: taskData.achievementSummary,
                   });
                 }
               }
@@ -200,117 +212,191 @@ const MyTasks: React.FC = () => {
     fetchAllTasks();
   }, [user]);
 
- const handleStatusUpdate = async (task: DailyTask, newStatus: 'in-progress' | 'completed') => {
-  if (!user?.id) return;
+  // Core function to update task status (without achievement prompt)
+  const updateTaskStatusBase = async (
+    task: DailyTask,
+    newStatus: 'in-progress' | 'completed',
+    achievement?: string
+  ): Promise<boolean> => {
+    if (!user?.id) return false;
 
-  try {
-    let taskRef;
-    let currentTask: any;
+    try {
+      if (task.projectId) {
+        // Project task – no startedAt/completedAt fields
+        const taskRef = ref(database, `projects/${task.projectId}/tasks/${task.id}`);
+        const snapshot = await get(taskRef);
+        if (!snapshot.exists()) {
+          toast.error('Task not found in project. It may have been deleted.');
+          return false;
+        }
+        const currentTask = snapshot.val() as ProjectTaskData;
 
-    if (task.projectId) {
-      // Project task
-      taskRef = ref(database, `projects/${task.projectId}/tasks/${task.id}`);
-      const snapshot = await get(taskRef);
-      if (!snapshot.exists()) {
-        toast.error('Task not found in project. It may have been deleted.');
-        return;
+        // Check dependencies
+        if (currentTask.dependsOn && currentTask.dependsOn.length > 0) {
+          const incompleteDeps: string[] = [];
+          for (const depId of currentTask.dependsOn) {
+            const depTaskRef = ref(database, `projects/${task.projectId}/tasks/${depId}`);
+            const depSnap = await get(depTaskRef);
+            const depTask = depSnap.val() as ProjectTaskData | null;
+            if (depTask && depTask.status !== 'completed') {
+              incompleteDeps.push(depTask.title || depId);
+            }
+          }
+          if (incompleteDeps.length > 0) {
+            toast.error(`Cannot update status. Complete: ${incompleteDeps.join(', ')}`);
+            return false;
+          }
+        }
+
+        if (currentTask.status === newStatus) {
+          toast('Status already set to this value');
+          return false;
+        }
+
+        const updates: Partial<ProjectTaskData> = {
+          status: newStatus,
+          updatedAt: new Date().toISOString(),
+        };
+        if (newStatus === 'completed' && achievement) {
+          updates.achievementSummary = achievement;
+        }
+
+        await update(taskRef, updates);
+        toast.success(`Task marked as ${newStatus}`);
+
+        // Update local state
+        setTasks(prev =>
+          prev.map(t =>
+            t.id === task.id && t.projectId === task.projectId
+              ? {
+                  ...t,
+                  status: newStatus,
+                  updatedAt: new Date().toISOString(),
+                  achievementSummary: achievement || t.achievementSummary,
+                }
+              : t
+          )
+        );
+      } else {
+        // Standalone task – has startedAt/completedAt fields
+        const adminId = task.adminId;
+        if (!adminId) {
+          toast.error('Cannot determine admin for this task.');
+          return false;
+        }
+        const taskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${task.id}`);
+        const snapshot = await get(taskRef);
+        if (!snapshot.exists()) {
+          toast.error('Task not found.');
+          return false;
+        }
+        const currentTask = snapshot.val() as StandaloneTaskData;
+
+        // Check dependencies
+        if (currentTask.dependsOn && currentTask.dependsOn.length > 0) {
+          const incompleteDeps: string[] = [];
+          for (const depId of currentTask.dependsOn) {
+            const depTaskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${depId}`);
+            const depSnap = await get(depTaskRef);
+            const depTask = depSnap.val() as StandaloneTaskData | null;
+            if (depTask && depTask.status !== 'completed') {
+              incompleteDeps.push(depTask.task || depId);
+            }
+          }
+          if (incompleteDeps.length > 0) {
+            toast.error(`Cannot update status. Complete: ${incompleteDeps.join(', ')}`);
+            return false;
+          }
+        }
+
+        if (currentTask.status === newStatus) {
+          toast('Status already set to this value');
+          return false;
+        }
+
+        const updates: Partial<StandaloneTaskData> = {
+          status: newStatus,
+          updatedAt: new Date().toISOString(),
+        };
+        if (newStatus === 'in-progress') {
+          updates.startedAt = new Date().toISOString();
+        }
+        if (newStatus === 'completed') {
+          updates.completedAt = new Date().toISOString();
+          if (achievement) updates.achievementSummary = achievement;
+        }
+
+        await update(taskRef, updates);
+        toast.success(`Task marked as ${newStatus}`);
+
+        // Notify all admins
+        const usersSnapshot = await get(ref(database, 'users'));
+        const adminNotifications: Promise<void>[] = [];
+        usersSnapshot.forEach((userSnap) => {
+          const userData = userSnap.val();
+          if (userData.role === 'admin') {
+            const notifRef = push(ref(database, `notifications/${userSnap.key}`));
+            adminNotifications.push(
+              set(notifRef, {
+                title: 'Task Status Updated',
+                body: `${user?.name} changed status of "${task.task}" to ${newStatus}`,
+                type: 'task_update',
+                read: false,
+                createdAt: Date.now(),
+                taskId: task.id,
+              })
+            );
+          }
+        });
+        await Promise.all(adminNotifications);
+
+        // Update local state
+        setTasks(prev =>
+          prev.map(t =>
+            t.id === task.id && t.projectId === task.projectId
+              ? {
+                  ...t,
+                  status: newStatus,
+                  updatedAt: new Date().toISOString(),
+                  startedAt: newStatus === 'in-progress' ? new Date().toISOString() : t.startedAt,
+                  completedAt: newStatus === 'completed' ? new Date().toISOString() : t.completedAt,
+                  achievementSummary: achievement || t.achievementSummary,
+                }
+              : t
+          )
+        );
       }
-      currentTask = snapshot.val();
+      return true;
+    } catch (err) {
+      console.error(err);
+      toast.error('Failed to update task');
+      return false;
+    }
+  };
+
+  // Handle status update – open achievement modal for 'completed'
+  const handleStatusUpdate = (task: DailyTask, newStatus: 'in-progress' | 'completed') => {
+    if (newStatus === 'completed') {
+      setPendingTask(task);
+      setAchievementText('');
+      setShowAchievementModal(true);
     } else {
-      // Standalone task – use task.adminId (must be set)
-      const adminId = task.adminId;
-      if (!adminId) {
-        toast.error('Cannot determine admin for this task. Please contact support.');
-        return;
-      }
-      const path = `users/${adminId}/employees/${user.id}/dailyTasks/${task.id}`;
-      console.log('🔍 Updating standalone task at:', path);
-      taskRef = ref(database, path);
-      const snapshot = await get(taskRef);
-      if (!snapshot.exists()) {
-        toast.error('Task not found. It may have been deleted.');
-        return;
-      }
-      currentTask = snapshot.val();
+      updateTaskStatusBase(task, newStatus);
     }
+  };
 
-    // Check dependencies (if any)
-    if (currentTask.dependsOn && currentTask.dependsOn.length > 0) {
-      const dependencies = currentTask.dependsOn;
-      const incompleteDeps: string[] = [];
-      for (const depId of dependencies) {
-        let depTaskRef;
-        let depTask;
-        if (task.projectId) {
-          depTaskRef = ref(database, `projects/${task.projectId}/tasks/${depId}`);
-          const depSnap = await get(depTaskRef);
-          depTask = depSnap.val();
-        } else {
-          const adminId = task.adminId;
-          if (!adminId) continue;
-          depTaskRef = ref(database, `users/${adminId}/employees/${user.id}/dailyTasks/${depId}`);
-          const depSnap = await get(depTaskRef);
-          depTask = depSnap.val();
-        }
-        if (depTask && depTask.status !== 'completed') {
-          incompleteDeps.push(depTask.title || depId);
-        }
-      }
-      if (incompleteDeps.length > 0) {
-        toast.error(`Cannot update status. The following tasks must be completed first:\n${incompleteDeps.join(', ')}`);
-        return;
-      }
-    }
-
-    if (currentTask.status === newStatus) {
-      toast('Status is already set to this value');
+  // Complete task with achievement summary
+  const completeTaskWithAchievement = async () => {
+    if (!pendingTask) return;
+    if (!achievementText.trim()) {
+      toast.error('Please enter an achievement summary');
       return;
     }
-
-    const updates: Partial<DailyTask> = {
-      status: newStatus,
-      updatedAt: new Date().toISOString(),
-    };
-    if (newStatus === 'in-progress') updates.startedAt = new Date().toISOString();
-    if (newStatus === 'completed') updates.completedAt = new Date().toISOString();
-
-    await update(taskRef, updates);
-    toast.success(`Task marked as ${newStatus}`);
-
-    // Notify admins for standalone tasks
-    if (!task.projectId) {
-      const usersSnapshot = await get(ref(database, 'users'));
-      const adminNotifications: Promise<void>[] = [];
-      usersSnapshot.forEach((userSnap) => {
-        const userData = userSnap.val();
-        if (userData.role === 'admin') {
-          const notifRef = push(ref(database, `notifications/${userSnap.key}`));
-          adminNotifications.push(set(notifRef, {
-            title: 'Task Status Updated',
-            body: `${user?.name} changed status of "${task.task}" to ${newStatus}`,
-            type: 'task_update',
-            read: false,
-            createdAt: Date.now(),
-            taskId: task.id,
-          }));
-        }
-      });
-      await Promise.all(adminNotifications);
-    }
-
-    // Update local state
-    setTasks(prev =>
-      prev.map(t =>
-        t.id === task.id && t.projectId === task.projectId
-          ? { ...t, status: newStatus, updatedAt: new Date().toISOString() }
-          : t
-      )
-    );
-  } catch (err) {
-    console.error(err);
-    toast.error('Failed to update task');
-  }
-};
+    await updateTaskStatusBase(pendingTask, 'completed', achievementText);
+    setShowAchievementModal(false);
+    setPendingTask(null);
+    setAchievementText('');
+  };
 
   const addComment = async () => {
     if (!selectedTask || !user || !commentText.trim()) return;
@@ -390,6 +476,30 @@ const MyTasks: React.FC = () => {
 
   return (
     <div className="space-y-6 px-4 sm:px-6">
+      {/* Achievement modal */}
+      <Dialog open={showAchievementModal} onOpenChange={setShowAchievementModal}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Task Achievement Summary</DialogTitle>
+            <DialogDescription>
+              Please describe what you achieved in this task.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Textarea
+              placeholder="e.g., Fixed login bug, added unit tests, deployed to staging..."
+              value={achievementText}
+              onChange={(e) => setAchievementText(e.target.value)}
+              rows={4}
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setShowAchievementModal(false)}>Cancel</Button>
+              <Button onClick={completeTaskWithAchievement}>Confirm Completion</Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -552,6 +662,12 @@ const MyTasks: React.FC = () => {
                         <p className="text-sm truncate">{task.department}</p>
                       </div>
                     </div>
+                    {task.achievementSummary && (
+                      <div>
+                        <Label>Achievement Summary</Label>
+                        <p className="text-sm text-green-700 mt-1 line-clamp-2">{task.achievementSummary}</p>
+                      </div>
+                    )}
                     {task.comments && task.comments.length > 0 && (
                       <div>
                         <Label>Comments ({task.comments.length})</Label>
@@ -636,6 +752,14 @@ const MyTasks: React.FC = () => {
                   <div className="space-y-2">
                     <Label className="text-gray-500">Last Updated</Label>
                     <p>{formatDateTime(selectedTask.updatedAt)}</p>
+                  </div>
+                )}
+                {selectedTask.achievementSummary && (
+                  <div className="space-y-2 col-span-full">
+                    <Label className="text-gray-500">Achievement Summary</Label>
+                    <div className="p-3 bg-green-50 rounded-md border-l-4 border-green-500">
+                      <p className="text-sm text-green-800">{selectedTask.achievementSummary}</p>
+                    </div>
                   </div>
                 )}
               </div>

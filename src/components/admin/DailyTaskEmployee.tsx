@@ -1,7 +1,6 @@
-// src/components/admin/DailyTaskEmployee.tsx
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  Card, CardHeader, CardTitle, CardContent
+  Card, CardContent, CardHeader, CardTitle
 } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -19,12 +18,16 @@ import { toast } from '../ui/use-toast';
 import { Badge } from '../ui/badge';
 import { format } from 'date-fns';
 import { motion } from 'framer-motion';
-import { Users, Calendar, Clock, Filter, Search, RefreshCw, Trash2, Paperclip } from 'lucide-react';
+import { Users, Calendar, Clock, Filter, Search, RefreshCw, Trash2, Paperclip, Plus } from 'lucide-react';
 import { MessageSquare } from 'lucide-react';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
-/* ================= TYPES ================= */
-import { TaskTemplate } from './TaskTemplatesManager'; // ✅ IMPORT TASK TEMPLATE TYPE
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
+import { Checkbox } from '../ui/checkbox';
+import { Label } from '../ui/label';
+import { TaskTemplate } from './TaskTemplatesManager';
+
+// ========== TYPES ==========
 interface FirebaseEmployeeData {
   name: string;
   email: string;
@@ -92,6 +95,16 @@ interface Attachment {
   uploadedAt: string;
 }
 
+interface TaskInfo {
+  id: string;
+  title: string;
+}
+
+interface RawProjectTask {
+  title?: string;
+  [key: string]: unknown;
+}
+
 interface DailyTask {
   id?: string;
   employeeId: string;
@@ -111,18 +124,19 @@ interface DailyTask {
   assignedBy?: string;
   assignedByName?: string;
   comments?: Comment[];
-  attachments?: Attachment[]; // ✅ ADDED
+  attachments?: Attachment[];
+  dependsOn?: string[];
+  achievementSummary?: string;
 }
 
 interface DailyTaskEmployeeProps {
   role?: 'admin' | 'team_manager' | 'team_leader' | 'client' | 'employee';
   userId?: string;
   readOnly?: boolean;
-  department?: string; // for manager filtering
+  department?: string;
 }
 
 /* ================= COMPONENT ================= */
-
 const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   role: propRole,
   userId: propUserId,
@@ -138,13 +152,13 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   const isTeamManager = effectiveRole === 'team_manager';
   const isTeamLeader = effectiveRole === 'team_leader';
   const isClient = effectiveRole === 'client';
-  const isEmployee = effectiveRole === 'employee';
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [taskHistory, setTaskHistory] = useState<DailyTask[]>([]);
   const [projectTasks, setProjectTasks] = useState<DailyTask[]>([]);
   const [filteredTasks, setFilteredTasks] = useState<DailyTask[]>([]);
+  const [showForm, setShowForm] = useState(false);
 
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([]);
@@ -154,13 +168,16 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
 
-  // Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filterDate, setFilterDate] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [filterDepartment, setFilterDepartment] = useState('all');
   const [previewImage, setPreviewImage] = useState<string | null>(null);
   const getTime = () => new Date().toTimeString().slice(0, 5);
+
+  const [dependsOn, setDependsOn] = useState<string[]>([]);
+  const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
+  const [projectTaskList, setProjectTaskList] = useState<TaskInfo[]>([]);
 
   const [formData, setFormData] = useState({
     employeeId: '',
@@ -175,10 +192,8 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     priority: 'medium' as 'low' | 'medium' | 'high',
   });
 
-  // Can assign tasks? Only admin or team manager (or team leader if allowed)
   const canAssignTasks = !readOnly && (isAdmin || isTeamManager);
 
-  // All tasks (deduplicated)
   const allTasks = useMemo(() => {
     const map = new Map<string, DailyTask>();
     projectTasks.forEach(task => {
@@ -192,7 +207,19 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     return Array.from(map.values());
   }, [taskHistory, projectTasks]);
 
-  // Fetch all employees (non‑admin)
+  const loadingTimeoutRef = useRef<NodeJS.Timeout>();
+
+  useEffect(() => {
+    loadingTimeoutRef.current = setTimeout(() => {
+      if (loading) {
+        setLoading(false);
+        toast({ title: "Warning", description: "Loading took too long. Some data might be missing.", variant: "default" });
+      }
+    }, 10000);
+    return () => clearTimeout(loadingTimeoutRef.current);
+  }, [loading]);
+
+  // Fetch employees
   useEffect(() => {
     const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
@@ -220,27 +247,25 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     }, (error) => {
       console.error(error);
       setLoading(false);
+      toast({ title: "Error", description: "Failed to load employees", variant: "destructive" });
     });
     return () => off(usersRef);
   }, []);
 
-
+  // Fetch templates
   useEffect(() => {
-  const templatesRef = ref(database, 'taskTemplates');
-  const unsubscribe = onValue(templatesRef, (snapshot) => {
-    const data = snapshot.val() as Record<string, Omit<TaskTemplate, 'id'>> | null;
-    if (data && typeof data === 'object') {
-      const list: TaskTemplate[] = Object.entries(data).map(([id, val]) => ({
-        id,
-        ...val,
-      }));
-      setTemplates(list);
-    } else {
-      setTemplates([]);
-    }
-  });
-  return () => off(templatesRef);
-}, []);
+    const templatesRef = ref(database, 'taskTemplates');
+    const unsubscribe = onValue(templatesRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, Omit<TaskTemplate, 'id'>> | null;
+      if (data && typeof data === 'object') {
+        const list: TaskTemplate[] = Object.entries(data).map(([id, val]) => ({ id, ...val }));
+        setTemplates(list);
+      } else {
+        setTemplates([]);
+      }
+    });
+    return () => off(templatesRef);
+  }, []);
 
   const applyTemplate = (templateId: string) => {
     const template = templates.find(t => t.id === templateId);
@@ -254,9 +279,9 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
       priority: template.priority,
       date: dueDate.toISOString().split('T')[0],
     });
-    // If your task creation supports subtasks, store them separately
   };
-  // Fetch all projects (for dropdown)
+
+  // Fetch projects
   useEffect(() => {
     const projectsRef = ref(database, 'projects');
     const unsubscribe = onValue(projectsRef, (snapshot) => {
@@ -271,20 +296,39 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
         description: '',
         status: proj.status || 'active',
         adminId: '',
-        department: proj.department || '',  // ✅ add department field
+        department: proj.department || '',
       }));
-
-      // ✅ Filter by department for manager
       if (isTeamManager && effectiveDepartment) {
         allProjects = allProjects.filter(p => p.department === effectiveDepartment);
       }
-
       setProjects(allProjects);
     });
     return () => off(projectsRef);
-  }, []);
+  }, [isTeamManager, effectiveDepartment]);
 
-  // Fetch project tasks from global `/projects` node
+  // Fetch tasks of selected project (for dependencies)
+  useEffect(() => {
+    if (taskType !== 'project' || !selectedProject) {
+      setProjectTaskList([]);
+      return;
+    }
+    const projectTasksRef = ref(database, `projects/${selectedProject}/tasks`);
+    const unsubscribe = onValue(projectTasksRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, RawProjectTask> | null;
+      if (data) {
+        const tasks: TaskInfo[] = Object.entries(data).map(([id, task]) => ({
+          id,
+          title: task.title || 'Untitled',
+        }));
+        setProjectTaskList(tasks);
+      } else {
+        setProjectTaskList([]);
+      }
+    });
+    return () => off(projectTasksRef);
+  }, [taskType, selectedProject]);
+
+  // Fetch project tasks (for display)
   useEffect(() => {
     const projectsRef = ref(database, 'projects');
     const unsubscribe = onValue(projectsRef, (snapshot) => {
@@ -333,13 +377,12 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
               assignedByName: taskData.createdByName,
               adminId: projData.createdBy,
               comments: [],
-              attachments: [], // initialize empty
+              attachments: [],
             });
           }
         }
       }
 
-      // Filter tasks based on role
       let filteredTasks = tasks;
       if (isAdmin) {
         // keep all
@@ -350,11 +393,9 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
       } else if (isClient) {
         filteredTasks = [];
       } else {
-        // Employee: only their own tasks
         filteredTasks = tasks.filter(t => t.employeeId === effectiveUserId);
       }
 
-      // Fetch comments AND attachments for each task asynchronously
       const fetchCommentsAndAttachments = async () => {
         const tasksWithData = await Promise.all(
           filteredTasks.map(async (task) => {
@@ -380,7 +421,7 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     return () => off(projectsRef);
   }, [isAdmin, isTeamManager, isTeamLeader, isClient, effectiveUserId, effectiveDepartment]);
 
-  // Filter employees by department (for assignment form)
+  // Filter employees by department
   useEffect(() => {
     if (selectedDepartment) {
       setFilteredEmployees(employees.filter(e => e.department === selectedDepartment));
@@ -389,14 +430,13 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     }
   }, [selectedDepartment, employees]);
 
-  // Fetch standalone tasks (daily tasks)
+  // Fetch standalone tasks
   useEffect(() => {
     if (!effectiveUserId) return;
 
     const unsubscribers: (() => void)[] = [];
     const allTasksTemp: DailyTask[] = [];
 
-    // For admin/manager, fetch all employees' tasks; for others, only own tasks
     let targetEmployees: Employee[] = [];
     if (isAdmin || isTeamManager) {
       targetEmployees = employees;
@@ -475,7 +515,6 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     setFilteredTasks(filtered);
   }, [searchTerm, filterDate, filterStatus, filterDepartment, allTasks]);
 
-  // Delete task (admin only or manager for department tasks)
   const handleDeleteTask = async (task: DailyTask) => {
     if (!isAdmin && !(isTeamManager && task.department === effectiveDepartment)) {
       toast({ title: "Unauthorized", description: "You don't have permission to delete this task", variant: "destructive" });
@@ -507,8 +546,25 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
     }
   };
 
-  // Submit new task (only admin or manager)
-  // Submit new task (only admin or manager)
+  const handleCancelForm = () => {
+    setShowForm(false);
+    setFormData({
+      ...formData,
+      task: '',
+      description: '',
+      time: getTime(),
+      employeeId: '',
+      employeeName: '',
+      email: '',
+      department: '',
+      priority: 'medium',
+    });
+    setSelectedProject('');
+    setTaskType('standalone');
+    setSelectedDepartment('');
+    setDependsOn([]);
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!canAssignTasks) {
@@ -550,12 +606,12 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
           dueDate: newTask.date,
           time: newTask.time,
           status: newTask.status,
-          priority: newTask.priority, // ✅ ADDED
+          priority: newTask.priority,
+          dependsOn,
           createdAt: newTask.createdAt,
           createdBy: newTask.assignedBy,
           createdByName: newTask.assignedByName,
         });
-        // ✅ Notification for project task (with projectId)
         const notifRef = push(ref(database, `notifications/${formData.employeeId}`));
         await set(notifRef, {
           title: 'New Task Assigned',
@@ -574,7 +630,7 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
           date: newTask.date,
           time: newTask.time,
           status: newTask.status,
-          priority: newTask.priority, // ✅ ADDED
+          priority: newTask.priority,
           createdAt: newTask.createdAt,
           assignedBy: newTask.assignedBy,
           assignedByName: newTask.assignedByName,
@@ -584,7 +640,6 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
           department: newTask.department,
           adminId: newTask.adminId,
         });
-        // ✅ Notification for standalone task (NO projectId)
         const notifRef = push(ref(database, `notifications/${formData.employeeId}`));
         await set(notifRef, {
           title: 'New Task Assigned',
@@ -611,11 +666,14 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
       setSelectedProject('');
       setTaskType('standalone');
       setSelectedDepartment('');
+      setDependsOn([]);
+      setShowForm(false);
     } catch (err) {
       console.error(err);
       toast({ title: "Error saving task", variant: "destructive" });
     }
   };
+
   const formatDate = (d: string) => {
     if (!d) return 'Invalid date';
     const date = new Date(d);
@@ -640,12 +698,13 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
   const departments = [...new Set(employees.map(emp => emp.department))].filter(Boolean);
 
   if (loading) {
-    return <div className="flex justify-center items-center h-64"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
+    return <div className="flex justify-center items-center h-full min-h-[400px]"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>;
   }
 
   return (
-    <div className="p-4 space-y-6">
-      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
+    <div className="flex flex-col h-full w-full p-4 space-y-6 overflow-auto">
+      {/* Header */}
+      <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Task Management</h1>
           <p className="text-gray-600">
@@ -655,14 +714,21 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
                   'View your assigned tasks'}
           </p>
         </div>
-        <Badge variant="outline" className="bg-blue-50">
-          <Users className="h-3 w-3 mr-1" /> {employees.length} Employees
-        </Badge>
-      </motion.div>
+        <div className="flex gap-2">
+          <Badge variant="outline" className="bg-blue-50">
+            <Users className="h-3 w-3 mr-1" /> {employees.length} Employees
+          </Badge>
+          {canAssignTasks && (
+            <Button onClick={() => setShowForm(true)}>
+              <Plus className="h-4 w-4 mr-1" /> Assign Task
+            </Button>
+          )}
+        </div>
+      </div>
 
-      {/* ASSIGN TASK FORM – only for admin/manager */}
-      {canAssignTasks && (
-        <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+      {/* Toggleable Form */}
+      {showForm && canAssignTasks && (
+        <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}>
           <Card>
             <CardHeader><CardTitle>Assign New Task</CardTitle></CardHeader>
             <CardContent>
@@ -674,12 +740,14 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
                     <SelectItem value="project">Project Task</SelectItem>
                   </SelectContent>
                 </Select>
+
                 <Select value={selectedTemplate} onValueChange={(val) => { setSelectedTemplate(val); applyTemplate(val); }}>
                   <SelectTrigger className="w-64"><SelectValue placeholder="Apply template" /></SelectTrigger>
                   <SelectContent>
                     {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
                   </SelectContent>
                 </Select>
+
                 {taskType === 'project' && (
                   <Select value={selectedProject} onValueChange={setSelectedProject}>
                     <SelectTrigger><SelectValue placeholder="Select project" /></SelectTrigger>
@@ -688,10 +756,12 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
                     </SelectContent>
                   </Select>
                 )}
+
                 <Select value={selectedDepartment} onValueChange={setSelectedDepartment}>
                   <SelectTrigger><SelectValue placeholder="Select department" /></SelectTrigger>
                   <SelectContent>{departments.map(d => <SelectItem key={d} value={d}>{d}</SelectItem>)}</SelectContent>
                 </Select>
+
                 <Select value={formData.employeeId} onValueChange={(id) => {
                   const emp = employees.find(e => e.id === id);
                   setFormData({ ...formData, employeeId: id, employeeName: emp?.name || '', email: emp?.email || '', department: emp?.department || '' });
@@ -701,8 +771,57 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
                     {filteredEmployees.map(e => <SelectItem key={e.id} value={e.id}>{e.name} - {e.email}</SelectItem>)}
                   </SelectContent>
                 </Select>
+
                 <Input placeholder="Task title" value={formData.task} onChange={e => setFormData({ ...formData, task: e.target.value })} />
                 <Textarea placeholder="Task description" value={formData.description} onChange={e => setFormData({ ...formData, description: e.target.value })} rows={3} />
+
+                {taskType === 'project' && selectedProject && (
+                  <div>
+                    <Label className="text-sm">Depends on (optional)</Label>
+                    <Popover open={dependencyPopoverOpen} onOpenChange={setDependencyPopoverOpen}>
+                      <PopoverTrigger asChild>
+                        <Button variant="outline" className="w-full justify-start">
+                          {dependsOn.length === 0 ? "Select dependencies" : `${dependsOn.length} task(s) selected`}
+                        </Button>
+                      </PopoverTrigger>
+                      <PopoverContent className="w-full p-2 max-h-48 overflow-auto">
+                        {projectTaskList.length === 0 ? (
+                          <p className="text-xs text-gray-500">No tasks in this project yet</p>
+                        ) : (
+                          projectTaskList.map(task => (
+                            <div key={task.id} className="flex items-center gap-2 py-1">
+                              <Checkbox
+                                checked={dependsOn.includes(task.id)}
+                                onCheckedChange={(checked) => {
+                                  if (checked) setDependsOn(prev => [...prev, task.id]);
+                                  else setDependsOn(prev => prev.filter(id => id !== task.id));
+                                }}
+                              />
+                              <span className="text-sm">{task.title}</span>
+                            </div>
+                          ))
+                        )}
+                      </PopoverContent>
+                    </Popover>
+                    {dependsOn.length > 0 && (
+                      <div className="flex flex-wrap gap-1 mt-1">
+                        {dependsOn.map(depId => {
+                          const depTask = projectTaskList.find(t => t.id === depId);
+                          return (
+                            <Badge key={depId} variant="secondary" className="text-xs">
+                              {depTask?.title || depId}
+                              <button
+                                className="ml-1 text-red-500 hover:text-red-700"
+                                onClick={() => setDependsOn(prev => prev.filter(id => id !== depId))}
+                              >×</button>
+                            </Badge>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-4">
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -728,28 +847,29 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
                     </div>
                   </div>
                 </div>
-                <Button type="submit" className="w-full">Assign Task</Button>
+
+                <div className="flex gap-2">
+                  <Button type="submit" className="flex-1">Assign Task</Button>
+                  <Button type="button" variant="outline" onClick={handleCancelForm}>Cancel</Button>
+                </div>
               </form>
             </CardContent>
           </Card>
         </motion.div>
       )}
 
-      {/* TASKS TABLE */}
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-        <Card>
+      {/* Task Table Section – fills remaining vertical space */}
+      <div className="flex-1 min-h-0 flex flex-col">
+        <Card className="flex flex-col flex-1 min-h-0">
           <CardHeader>
             <div className="flex items-center justify-between">
               <CardTitle className="flex items-center gap-2"><Calendar className="h-4 w-4" /> Tasks ({filteredTasks.length})</CardTitle>
               <Button variant="outline" size="sm" onClick={clearFilters}><RefreshCw className="h-3 w-3 mr-1" /> Clear Filters</Button>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex-1 overflow-auto">
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
-              <div className="relative">
-                <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
-                <Input placeholder="Search tasks..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" />
-              </div>
+              <div className="relative"><Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" /><Input placeholder="Search tasks..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-9" /></div>
               <Input type="date" value={filterDate} onChange={(e) => setFilterDate(e.target.value)} placeholder="Filter by date" />
               <Select value={filterStatus} onValueChange={setFilterStatus}>
                 <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
@@ -826,46 +946,29 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
                               </CollapsibleContent>
                             </Collapsible>
                           </TableCell>
-
-
                           <TableCell>
                             {task.attachments && task.attachments.length > 0 ? (
                               <div className="flex flex-col gap-1">
                                 {task.attachments.slice(0, 2).map((att) => {
                                   const isImage = att.type?.startsWith('image/') || /\.(jpg|jpeg|png|gif|webp)$/i.test(att.name);
                                   return isImage ? (
-                                    <button
-                                      key={att.id}
-                                      onClick={() => setPreviewImage(att.url)}
-                                      className="text-blue-500 hover:underline text-xs flex items-center gap-1 text-left"
-                                    >
+                                    <button key={att.id} onClick={() => setPreviewImage(att.url)} className="text-blue-500 hover:underline text-xs flex items-center gap-1 text-left">
                                       <Paperclip className="h-3 w-3" />
                                       {att.name.length > 20 ? att.name.slice(0, 20) + '…' : att.name}
                                     </button>
                                   ) : (
-                                    <a
-                                      key={att.id}
-                                      href={att.url}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                      className="text-blue-500 hover:underline text-xs flex items-center gap-1"
-                                    >
+                                    <a key={att.id} href={att.url} target="_blank" rel="noopener noreferrer" className="text-blue-500 hover:underline text-xs flex items-center gap-1">
                                       <Paperclip className="h-3 w-3" />
                                       {att.name.length > 20 ? att.name.slice(0, 20) + '…' : att.name}
                                     </a>
                                   );
                                 })}
-                                {task.attachments.length > 2 && (
-                                  <span className="text-xs text-gray-400">+{task.attachments.length - 2} more</span>
-                                )}
+                                {task.attachments.length > 2 && <span className="text-xs text-gray-400">+{task.attachments.length - 2} more</span>}
                               </div>
                             ) : (
                               <span className="text-xs text-gray-400">—</span>
                             )}
                           </TableCell>
-
-
-
                           <TableCell>
                             {canDelete && (
                               <Button variant="ghost" size="sm" onClick={() => handleDeleteTask(task)} className="text-red-500 hover:text-red-700 hover:bg-red-50">
@@ -882,15 +985,14 @@ const DailyTaskEmployee: React.FC<DailyTaskEmployeeProps> = ({
             </div>
           </CardContent>
         </Card>
-      </motion.div>
+      </div>
+
       {/* Image Preview Modal */}
       <Dialog open={!!previewImage} onOpenChange={() => setPreviewImage(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader>
             <DialogTitle>Image Preview</DialogTitle>
-            <DialogDescription className="sr-only">
-              Preview of the uploaded image attachment.
-            </DialogDescription>
+            <DialogDescription className="sr-only">Preview of the uploaded image attachment.</DialogDescription>
           </DialogHeader>
           <div className="flex justify-center">
             <img src={previewImage || ''} alt="Preview" className="max-w-full max-h-[70vh] object-contain" />

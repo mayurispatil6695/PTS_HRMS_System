@@ -12,7 +12,8 @@ import { ref, onValue, off, set, push } from 'firebase/database';
 import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { toast } from '../../ui/use-toast';
-
+import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
+import { Checkbox } from '../../ui/checkbox';
 // ✅ TaskTemplate interface (matching Firebase structure)
 interface TaskTemplate {
   id: string;
@@ -167,6 +168,7 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
   // Template state
   const [selectedTemplate, setSelectedTemplate] = useState('');
   const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
 
   // Fetch all employees
   useEffect(() => {
@@ -498,49 +500,56 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
               </Select>
 
               {/* DEPENDENCIES */}
-              <div className="md:col-span-2">
-                <Label className="text-sm">Depends on (optional)</Label>
-                <div className="border rounded-md p-2 max-h-32 overflow-y-auto space-y-1 mt-1">
-                  {formData.tasks.length === 0 ? (
-                    <p className="text-xs text-gray-400">No tasks added yet</p>
-                  ) : (
-                    formData.tasks.map(t => (
-                      <label key={t.id} className="flex items-center gap-2 text-sm">
-                        <input
-                          type="checkbox"
-                          checked={newTask.dependsOn.includes(t.id)}
-                          onChange={(e) => {
-                            if (e.target.checked) {
-                              setNewTask({ ...newTask, dependsOn: [...newTask.dependsOn, t.id] });
-                            } else {
-                              setNewTask({ ...newTask, dependsOn: newTask.dependsOn.filter(id => id !== t.id) });
-                            }
-                          }}
-                        />
-                        {t.title}
-                      </label>
-                    ))
-                  )}
-                </div>
-                {newTask.dependsOn.length > 0 && (
-                  <div className="flex flex-wrap gap-1 mt-1">
-                    {newTask.dependsOn.map(depId => {
-                      const depTask = formData.tasks.find(t => t.id === depId);
-                      return (
-                        <Badge key={depId} variant="secondary" className="text-xs">
-                          {depTask?.title || depId}
-                          <button
-                            className="ml-1 text-red-500 hover:text-red-700"
-                            onClick={() => setNewTask({ ...newTask, dependsOn: newTask.dependsOn.filter(id => id !== depId) })}
-                          >
-                            ×
-                          </button>
-                        </Badge>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+             
+<div className="md:col-span-2">
+  <Label className="text-sm">Depends on (optional)</Label>
+  <Popover open={dependencyPopoverOpen} onOpenChange={setDependencyPopoverOpen}>
+    <PopoverTrigger asChild>
+      <Button variant="outline" className="w-full justify-start">
+        {newTask.dependsOn.length === 0 
+          ? "Select dependencies" 
+          : `${newTask.dependsOn.length} task(s) selected`}
+      </Button>
+    </PopoverTrigger>
+    <PopoverContent className="w-full p-2 max-h-48 overflow-auto">
+      {formData.tasks.length === 0 ? (
+        <p className="text-xs text-gray-500">No tasks added yet</p>
+      ) : (
+        formData.tasks.map(t => (
+          <div key={t.id} className="flex items-center gap-2 py-1">
+            <Checkbox
+              checked={newTask.dependsOn.includes(t.id)}
+              onCheckedChange={(checked) => {
+                if (checked) {
+                  setNewTask(prev => ({ ...prev, dependsOn: [...prev.dependsOn, t.id] }));
+                } else {
+                  setNewTask(prev => ({ ...prev, dependsOn: prev.dependsOn.filter(id => id !== t.id) }));
+                }
+              }}
+            />
+            <span className="text-sm">{t.title}</span>
+          </div>
+        ))
+      )}
+    </PopoverContent>
+  </Popover>
+  {newTask.dependsOn.length > 0 && (
+    <div className="flex flex-wrap gap-1 mt-1">
+      {newTask.dependsOn.map(depId => {
+        const depTask = formData.tasks.find(t => t.id === depId);
+        return (
+          <Badge key={depId} variant="secondary" className="text-xs">
+            {depTask?.title || depId}
+            <button
+              className="ml-1 text-red-500 hover:text-red-700"
+              onClick={() => setNewTask(prev => ({ ...prev, dependsOn: prev.dependsOn.filter(id => id !== depId) }))}
+            >×</button>
+          </Badge>
+        );
+      })}
+    </div>
+  )}
+</div>
 
               <div className="md:col-span-2">
                 <Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({ ...newTask, description: e.target.value })} />

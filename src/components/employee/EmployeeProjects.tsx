@@ -1,4 +1,3 @@
-// EmployeeProjects.tsx – Fully corrected version
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -55,6 +54,17 @@ interface Comment {
   mentions?: string[];
 }
 
+// Time log entry interface
+interface TimeLogEntry {
+  id?: string;
+  startTime: number;
+  endTime?: number;
+  durationMs?: number;
+  note?: string;
+  loggedAt?: number;
+  isRunning?: boolean;
+}
+
 interface Task {
   id: string;
   title: string;
@@ -71,7 +81,7 @@ interface Task {
   createdAt?: string;
   updatedAt?: string;
   totalTimeSpentMs?: number;
-  timeLogs?: Record<string, any>;
+  timeLogs?: Record<string, TimeLogEntry>;
   dependsOn?: string[];
 }
 
@@ -433,12 +443,9 @@ const EmployeeProjects = () => {
       }
 
       // Check dependencies
-      // Replace your dependency check block with this:
-
       if (task.dependsOn && task.dependsOn.length > 0) {
         const incompleteDeps: string[] = [];
         for (const depId of task.dependsOn) {
-          // Normalize ID (remove spaces, ensure string)
           const normalizedId = String(depId).trim();
           const depTask = project.tasks[normalizedId];
           console.log(`Checking ${depId} -> found:`, depTask?.title, depTask?.status);
@@ -812,10 +819,9 @@ const EmployeeProjects = () => {
                                                     try {
                                                       const suggestions = await getTaskSuggestions(task.title, task.description);
                                                       toast.success(`AI suggests: ${suggestions.priority} priority, due in ${suggestions.dueDateOffsetDays} days`);
-                                                    } catch (error: any) {
+                                                    } catch (error) {
                                                       console.error(error);
-                                                      // ✅ Add this check
-                                                      if (error.message?.includes('429')) {
+                                                      if (error instanceof Error && error.message?.includes('429')) {
                                                         toast.error('AI quota exceeded. Please try again later or upgrade your plan.');
                                                       } else {
                                                         toast.error('AI suggestion failed');
@@ -845,9 +851,9 @@ const EmployeeProjects = () => {
                                             <Button size="sm" variant="outline" onClick={() => openManualLogModal(task)}><Edit className="h-4 w-4 mr-1" /> Log Time</Button>
                                           </div>
                                           <div className="mt-2 text-sm text-gray-600">Total logged: {formatDuration(task.totalTimeSpentMs || 0)}</div>
-                                          {task.timeLogs && Object.values(task.timeLogs).slice(0, 2).map((log: any) => (
+                                          {task.timeLogs && Object.values(task.timeLogs).slice(0, 2).map((log) => (
                                             <div key={log.id} className="text-xs text-gray-500 mt-1">
-                                              {new Date(log.startTime).toLocaleTimeString()} – {formatDuration(log.durationMs)} {log.note && `(${log.note})`}
+                                              {new Date(log.startTime).toLocaleTimeString()} – {formatDuration(log.durationMs || 0)} {log.note && `(${log.note})`}
                                             </div>
                                           ))}
                                         </div>
@@ -912,8 +918,6 @@ const EmployeeProjects = () => {
                           </CollapsibleContent>
                         </Collapsible>
                       </div>
-
-
                     )}
 
                     <Collapsible>

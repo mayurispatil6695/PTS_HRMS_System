@@ -1,4 +1,3 @@
-// src/components/admin/ProjectManagement.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { FolderOpen, Plus, List, Grid, Users, LayoutGrid, Calendar } from 'lucide-react';
@@ -11,16 +10,17 @@ import KanbanBoard from './project/KanbanBoard';
 import ListView from './project/ListView';
 import TimelineView from './project/TimelineView';
 import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group';
-import { ref, onValue, off, remove } from 'firebase/database';
+import { ref, onValue, off, remove, get } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { Badge } from '../ui/badge';
 import ProjectChat from './project/ProjectChat';
 import ProjectCalendar from './project/ProjectCalendar';
-import SprintBoard from './project/SprintBoard';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
-
-// Employee interface
+import { TaskEditModal } from './project/TaskEditModal';
+import { ProjectReportModal } from './project/ProjectReportModal';
+import { Trash2 } from 'lucide-react';
+// ========== TYPES ==========
 interface Employee {
   id: string;
   name: string;
@@ -29,12 +29,10 @@ interface Employee {
   designation: string;
 }
 
-// Admin view: group by creator
 interface TaskItem {
   status?: string;
 }
 
-// Firebase project data structure
 interface FirebaseProjectData {
   name?: string;
   description?: string;
@@ -54,7 +52,7 @@ interface FirebaseProjectData {
   clientId?: string;
 }
 
-// Project interface for the component
+// Internal Project interface (as stored)
 interface Project {
   id: string;
   name: string;
@@ -70,12 +68,11 @@ interface Project {
   specificDepartment?: string;
   createdAt: string;
   createdBy: string;
-  tasks?: Record<string, any>;
+  tasks?: Record<string, unknown>;
   progress?: number;
   clientId?: string;
 }
 
-// User data interface for Firebase users
 interface UserData {
   role?: string;
   name?: string;
@@ -83,7 +80,6 @@ interface UserData {
   employee?: EmployeeProfile;
 }
 
-// Employee profile data interface
 interface EmployeeProfile {
   name?: string;
   email?: string;
@@ -91,6 +87,101 @@ interface EmployeeProfile {
   designation?: string;
   status?: string;
 }
+
+interface ExtendedTask {
+  status?: string;
+  [key: string]: unknown;
+}
+
+// Expected shapes for child components
+type KanbanTask = {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  assignedTo?: string;
+  description?: string;
+  dueDate?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  dependsOn?: string[];
+};
+
+type KanbanProject = {
+  id: string;
+  name: string;
+  tasks: Record<string, KanbanTask>;
+  assignedTeamLeader?: string;
+  assignedEmployees?: string[];
+};
+
+type ListViewTask = {
+  id: string;
+  title: string;
+  assignedTo: string;
+  status: string;
+  priority: string;
+  dueDate: string;
+  description?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  dependsOn?: string[];
+};
+
+type ListViewProject = {
+  id: string;
+  name: string;
+  tasks: Record<string, ListViewTask>;
+};
+
+type TimelineTask = {
+  id: string;
+  title: string;
+  dueDate: string;
+};
+
+type TimelineProject = {
+  id: string;
+  name: string;
+  tasks: Record<string, TimelineTask>;
+};
+
+// ✅ CalendarTask matches the expected Task type (requires status and priority)
+type CalendarTask = {
+  id: string;
+  title: string;
+  status: string;
+  priority: string;
+  dueDate?: string;
+  assignedToName?: string;
+  [key: string]: unknown;
+};
+
+// Helper to convert a Project to the shape required by child components
+const toKanbanProject = (project: Project): KanbanProject => ({
+  id: project.id,
+  name: project.name,
+  tasks: (project.tasks as Record<string, KanbanTask>) || {},
+  assignedTeamLeader: project.assignedTeamLeader,
+  assignedEmployees: project.assignedEmployees,
+});
+
+const toListViewProject = (project: Project): ListViewProject => ({
+  id: project.id,
+  name: project.name,
+  tasks: (project.tasks as Record<string, ListViewTask>) || {},
+});
+
+const toTimelineProject = (project: Project): TimelineProject => ({
+  id: project.id,
+  name: project.name,
+  tasks: (project.tasks as Record<string, TimelineTask>) || {},
+});
+
+// ✅ Returns array of CalendarTask (status and priority are required)
+const toCalendarTasks = (tasks: Record<string, unknown>): CalendarTask[] => {
+  return Object.values(tasks).map(task => task as CalendarTask);
+};
 
 interface ProjectManagementProps {
   role?: 'admin' | 'team_manager' | 'team_leader' | 'client' | 'employee';
@@ -115,7 +206,8 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
-  const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline' | 'calendar' | 'sprint'>('kanban');
+  const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline' | 'calendar'>('kanban');
+  const [reportProjectId, setReportProjectId] = useState<string | null>(null);
 
   const isAdmin = effectiveRole === 'admin';
   const isTeamManager = effectiveRole === 'team_manager';
@@ -126,12 +218,15 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
   const [globalEmployees, setGlobalEmployees] = useState<Employee[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // Helper: enrich tasks with employee names
-  const enrichTasksWithNames = (tasks: Record<string, any>) => {
-    return Object.values(tasks).map((task: any) => ({
-      ...task,
-      assignedToName: globalEmployees.find(e => e.id === task.assignedTo)?.name || 'Unassigned'
-    }));
+ 
+  const enrichTasksWithNames = (tasks: Record<string, unknown>) => {
+    return Object.values(tasks).map((task: unknown) => {
+      const t = task as { assignedTo?: string;[key: string]: unknown };
+      return {
+        ...t,
+        assignedToName: globalEmployees.find(e => e.id === t.assignedTo)?.name || 'Unassigned',
+      };
+    });
   };
 
   // Fetch admin names
@@ -178,15 +273,16 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
 
   // allTasks memo (used for some views)
   const allTasks = useMemo(() => {
-    const tasksList: any[] = [];
+    const tasksList: ExtendedTask[] = [];
     projects.forEach(project => {
       if (project.tasks) {
-        Object.values(project.tasks).forEach((task: any) => {
+        Object.values(project.tasks).forEach((task: unknown) => {
+          const t = task as ExtendedTask;
           tasksList.push({
-            ...task,
+            ...t,
             projectId: project.id,
             projectName: project.name,
-            assignedToName: globalEmployees.find(e => e.id === task.assignedTo)?.name || 'Unassigned',
+            assignedToName: globalEmployees.find(e => e.id === (t as { assignedTo?: string }).assignedTo)?.name || 'Unassigned',
           });
         });
       }
@@ -314,6 +410,44 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     );
   }
 
+  const handleDeleteProject = async (projectId: string, projectName: string) => {
+    if (!window.confirm(`Are you sure you want to delete the project "${projectName}"? This will also remove it from all assigned employees and the team leader. This action cannot be undone.`)) {
+      return;
+    }
+
+    try {
+      // 1. Get the project data to know which users have it assigned
+      const projectRef = ref(database, `projects/${projectId}`);
+      const projectSnap = await get(projectRef);
+      const projectData = projectSnap.val();
+      if (!projectData) {
+        toast({ title: "Not Found", description: "Project does not exist", variant: "destructive" });
+        return;
+      }
+
+      const assignedUsers = [
+        ...(projectData.assignedEmployees || []),
+        projectData.assignedTeamLeader,
+      ].filter(Boolean);
+
+      // 2. Delete the project from each user’s personal project list
+      const userProjectDeletes = assignedUsers.map(userId =>
+        remove(ref(database, `users/${userId}/projects/${projectId}`))
+      );
+
+      // 3. Delete the main project node
+      userProjectDeletes.push(remove(projectRef));
+
+      await Promise.all(userProjectDeletes);
+
+      toast({ title: "Project Deleted", description: `"${projectName}" has been deleted.` });
+      // No need to manually update state – Firebase onValue will refetch
+    } catch (error) {
+      console.error("Error deleting project:", error);
+      toast({ title: "Error", description: "Failed to delete project", variant: "destructive" });
+    }
+  };
+
   const renderAdminView = () => {
     if (!isAdmin) return null;
 
@@ -378,31 +512,41 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                     <div key={project.id} className="border rounded-lg p-4">
                       <h3 className="text-lg font-bold mb-2">{project.name}</h3>
 
-                      {/* Views */}
+                      {/* Views – using type-safe conversion functions */}
                       {displayMode === 'kanban' && (
-                        <KanbanBoard projects={[project]} employees={globalEmployees} readOnly={readOnly} />
+                        <KanbanBoard projects={[toKanbanProject(project)]} employees={globalEmployees} readOnly={readOnly} />
                       )}
                       {displayMode === 'list' && (
-                        <ListView projects={[project]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)}  />
+                        <ListView projects={[toListViewProject(project)]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)} />
                       )}
                       {displayMode === 'timeline' && (
-                        <TimelineView projects={[project]} readOnly={readOnly} />
+                        <TimelineView projects={[toTimelineProject(project)]} readOnly={readOnly} />
                       )}
                       {displayMode === 'calendar' && (
                         <ProjectCalendar
-                          tasks={enrichTasksWithNames(project.tasks || {})}
-                          projectId={project.id}
-                          readOnly={readOnly}
-                        />
-                      )}
-                      {displayMode === 'sprint' && (
-                        <SprintBoard
-                          tasks={enrichTasksWithNames(project.tasks || {})}
+                          tasks={toCalendarTasks(project.tasks || {})}
                           projectId={project.id}
                           readOnly={readOnly}
                         />
                       )}
 
+
+                      {/* Export Report Button */}
+                      <div className="flex justify-end mt-4">
+                        <Button variant="outline" size="sm" onClick={() => setReportProjectId(project.id)}>
+                          <FolderOpen className="h-4 w-4 mr-1" /> Export Report
+                        </Button>
+                      </div>
+                      <div className="flex justify-end mt-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-red-600 border-red-200 hover:bg-red-50"
+                          onClick={() => handleDeleteProject(project.id, project.name)}
+                        >
+                          <Trash2 className="h-4 w-4 mr-1" /> Delete Project
+                        </Button>
+                      </div>
                       {/* Team Chat */}
                       <Collapsible>
                         <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">
@@ -412,6 +556,7 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                           <ProjectChat projectId={project.id} />
                         </CollapsibleContent>
                       </Collapsible>
+
                     </div>
                   );
                 })}
@@ -425,6 +570,14 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
 
   return (
     <div className="space-y-6 px-4 sm:px-6">
+      {reportProjectId && (
+        <ProjectReportModal
+          open={!!reportProjectId}
+          onOpenChange={() => setReportProjectId(null)}
+          projectId={reportProjectId}
+        />
+      )}
+
       {/* HEADER */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -449,42 +602,19 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
         <div className="flex gap-2">
           {/* View Mode Toggle */}
           <div className="flex gap-1 mr-2">
-            <Button
-              variant={displayMode === 'kanban' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setDisplayMode('kanban')}
-            >
+            <Button variant={displayMode === 'kanban' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('kanban')}>
               <LayoutGrid className="h-4 w-4 mr-1" /> Board
             </Button>
-            <Button
-              variant={displayMode === 'list' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setDisplayMode('list')}
-            >
+            <Button variant={displayMode === 'list' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('list')}>
               <List className="h-4 w-4 mr-1" /> List
             </Button>
-            <Button
-              variant={displayMode === 'timeline' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setDisplayMode('timeline')}
-            >
+            <Button variant={displayMode === 'timeline' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('timeline')}>
               <Calendar className="h-4 w-4 mr-1" /> Timeline
             </Button>
-            <Button
-              variant={displayMode === 'calendar' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setDisplayMode('calendar')}
-            >
+            <Button variant={displayMode === 'calendar' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('calendar')}>
               <Calendar className="h-4 w-4 mr-1" /> Calendar
             </Button>
-            <Button
-              variant={displayMode === 'sprint' ? 'default' : 'outline'}
-              size="sm"
-              onClick={() => setDisplayMode('sprint')}
-            >
-              <LayoutGrid className="h-4 w-4 mr-1" /> Sprint
-            </Button>
-          </div>
+           </div>
 
           {canCreate && (
             <Button onClick={() => setShowAddForm(true)}>
@@ -513,26 +643,10 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
             {isAdmin ? 'All Projects' : isTeamManager ? 'Department Projects' : isTeamLeader ? 'Team Projects' : 'My Projects'} ({projects.length})
           </CardTitle>
           <div className="flex gap-2 flex-wrap">
-            {counts.completed > 0 && (
-              <Badge variant="outline" className="bg-green-50">
-                ✓ {counts.completed} Completed
-              </Badge>
-            )}
-            {counts.inProgress > 0 && (
-              <Badge variant="outline" className="bg-blue-50">
-                🔄 {counts.inProgress} In Progress
-              </Badge>
-            )}
-            {counts.pending > 0 && (
-              <Badge variant="outline" className="bg-yellow-50">
-                ⏳ {counts.pending} Pending
-              </Badge>
-            )}
-            {counts.onHold > 0 && (
-              <Badge variant="outline" className="bg-gray-50">
-                ⏸ {counts.onHold} On Hold
-              </Badge>
-            )}
+            {counts.completed > 0 && <Badge variant="outline" className="bg-green-50">✓ {counts.completed} Completed</Badge>}
+            {counts.inProgress > 0 && <Badge variant="outline" className="bg-blue-50">🔄 {counts.inProgress} In Progress</Badge>}
+            {counts.pending > 0 && <Badge variant="outline" className="bg-yellow-50">⏳ {counts.pending} Pending</Badge>}
+            {counts.onHold > 0 && <Badge variant="outline" className="bg-gray-50">⏸ {counts.onHold} On Hold</Badge>}
           </div>
         </CardHeader>
 
@@ -568,34 +682,35 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                   <h3 className="text-lg font-bold mb-2">{project.name}</h3>
 
                   {displayMode === 'kanban' && (
-                    <KanbanBoard projects={[project]} employees={globalEmployees} readOnly={readOnly} />
+                    <KanbanBoard projects={[toKanbanProject(project)]} employees={globalEmployees} readOnly={readOnly} />
                   )}
                   {displayMode === 'list' && (
-                    <ListView
-                      projects={[project]}
-                      employees={globalEmployees}
-                      readOnly={readOnly}
-                      onTaskUpdate={() => setRefreshKey(prev => prev + 1)}  // ✅ add this
-                    />
+                    <ListView projects={[toListViewProject(project)]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)} />
                   )}
                   {displayMode === 'timeline' && (
-                    <TimelineView projects={[project]} readOnly={readOnly} />
+                    <TimelineView projects={[toTimelineProject(project)]} readOnly={readOnly} />
                   )}
                   {displayMode === 'calendar' && (
-                    <ProjectCalendar
-                      tasks={enrichTasksWithNames(project.tasks || {})}
-                      projectId={project.id}
-                      readOnly={readOnly}
-                    />
+                    <ProjectCalendar tasks={toCalendarTasks(project.tasks || {})} projectId={project.id} readOnly={readOnly} />
                   )}
-                  {displayMode === 'sprint' && (
-                    <SprintBoard
-                      tasks={enrichTasksWithNames(project.tasks || {})}
-                      projectId={project.id}
-                      readOnly={readOnly}
-                    />
+                  {/* Export Report Button */}
+                  <div className="flex justify-end mt-4">
+                    <Button variant="outline" size="sm" onClick={() => setReportProjectId(project.id)}>
+                      <FolderOpen className="h-4 w-4 mr-1" /> Export Report
+                    </Button>
+                  </div>
+                  {(isAdmin || isTeamManager || isTeamLeader) && (
+                    <div className="flex justify-end mt-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="text-red-600 border-red-200 hover:bg-red-50"
+                        onClick={() => handleDeleteProject(project.id, project.name)}
+                      >
+                        <Trash2 className="h-4 w-4 mr-1" /> Delete Project
+                      </Button>
+                    </div>
                   )}
-
                   {/* Team Chat */}
                   <Collapsible>
                     <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">
@@ -605,6 +720,8 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                       <ProjectChat projectId={project.id} />
                     </CollapsibleContent>
                   </Collapsible>
+
+
                 </div>
               ))}
             </div>

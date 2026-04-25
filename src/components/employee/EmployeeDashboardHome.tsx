@@ -213,6 +213,39 @@ const EmployeeDashboardHome = () => {
   const navigate = useNavigate();
   const lastNotifiedStatusRef = useRef<string | null>(null);
 
+  // ========== FETCH EMPLOYEE ID IF MISSING ==========
+const [employeeIdDisplay, setEmployeeIdDisplay] = useState<string | undefined>(user?.employeeId);
+
+useEffect(() => {
+  if (!user?.id || !user?.adminUid) return;
+  if (user.employeeId) {
+    setEmployeeIdDisplay(user.employeeId);
+    return;
+  }
+  const fetchEmpId = async () => {
+    try {
+      const adminUid = user.adminUid;
+      const empId = user.id;
+      console.log(`🔍 Fetching employee ID from: users/${adminUid}/employees/${empId}`);
+      const empRef = ref(database, `users/${adminUid}/employees/${empId}`);
+      const snap = await get(empRef);
+      const data = snap.val();
+      console.log('📦 Employee data from admin list:', data);
+      if (data && data.employeeId) {
+        setEmployeeIdDisplay(data.employeeId);
+        // Save to profile for future
+        await update(ref(database, `users/${empId}/profile`), { employeeId: data.employeeId });
+        console.log(`✅ Employee ID set to: ${data.employeeId}`);
+      } else {
+        console.log('❌ No employeeId found in admin list');
+      }
+    } catch (err) {
+      console.error('Error fetching employee ID:', err);
+    }
+  };
+  fetchEmpId();
+}, [user]);
+
   // Helper: convert time to minutes
   const convertTimeToMinutes = (timeStr: string): number => {
     try {
@@ -235,6 +268,8 @@ const EmployeeDashboardHome = () => {
       return 0;
     }
   };
+
+
 
   const parseDurationToMinutes = (durationStr: string): number => {
     if (!durationStr) return 0;
@@ -933,7 +968,7 @@ projectsList.push({
           <div>
             <h1 className="text-2xl font-bold">Welcome back, {user?.name}!</h1>
             <p className="text-blue-100 mt-1">{user?.designation} • {user?.department}</p>
-            <p className="text-blue-100 text-sm">Employee ID: {user?.employeeId}</p>
+            <p className="text-blue-100 text-sm">Employee ID: {employeeIdDisplay || 'Not assigned'}</p>
           </div>
           <div className="text-right">
             <p className="text-sm text-blue-100">Today's Date</p>

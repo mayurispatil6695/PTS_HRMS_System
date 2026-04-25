@@ -16,6 +16,7 @@ import { Badge } from '../ui/badge';
 import { AttendanceRecord } from '@/types/attendance';
 import { Project, Task, ProjectUpdate } from '@/types/project';
 
+
 import {
   Employee,
   MarketingPost,
@@ -722,7 +723,7 @@ useEffect(() => {
       ).length;
 
       setStats({
-        totalEmployees: employees.length,
+        totalEmployees: employees.filter(e => e.isActive).length,
         activeEmployees: activeCount,
         pendingLeaves,
         todayPresent,
@@ -982,7 +983,6 @@ useEffect(() => {
           
       </div>
       <div className="mt-6">
-  
       </div>
      
 
