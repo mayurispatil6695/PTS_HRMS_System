@@ -57,6 +57,7 @@ interface Task {
   achievementSummary?: string;
   comments?: Record<string, Comment>;
   attachments?: Record<string, Attachment>;
+  totalTimeSpentMs?: number;   // ✅ added for time tracking
 }
 
 interface FirebaseTaskData {
@@ -73,6 +74,7 @@ interface FirebaseTaskData {
   achievementSummary?: string;
   comments?: Record<string, Comment>;
   attachments?: Record<string, Attachment>;
+  totalTimeSpentMs?: number;
 }
 
 interface KanbanProject {
@@ -120,17 +122,30 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
   const [editDependsOn, setEditDependsOn] = useState<string[]>([]);
   const [projectTasks, setProjectTasks] = useState<Task[]>([]);
 
-  // Create a lookup map from task id to title (automatically updates when tasks change)
+  // Build task title map
   const taskTitleMap = useMemo(() => {
     const map: Record<string, string> = {};
-    tasks.forEach(task => {
-      map[task.id] = task.title;
+    tasks.forEach(task => { map[task.id] = task.title; });
+    projects.forEach(project => {
+      if (project.tasks) {
+        Object.entries(project.tasks).forEach(([taskId, taskData]) => {
+          if (!map[taskId] && taskData.title) map[taskId] = taskData.title;
+        });
+      }
     });
     return map;
-  }, [tasks]);
+  }, [tasks, projects]);
 
   const getDependencyTitle = (depId: string): string => {
-    return taskTitleMap[depId] || depId;
+    return taskTitleMap[depId] || `${depId} (missing)`;
+  };
+
+  // Helper: format milliseconds
+  const formatDuration = (ms: number): string => {
+    if (!ms) return '0m';
+    const hours = Math.floor(ms / 3600000);
+    const minutes = Math.floor((ms % 3600000) / 60000);
+    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
   };
 
   const fetchProjectTasks = async (projectId: string, currentTaskId: string): Promise<Task[]> => {
@@ -157,6 +172,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
         achievementSummary: task.achievementSummary,
         comments: task.comments || {},
         attachments: task.attachments || {},
+        totalTimeSpentMs: task.totalTimeSpentMs || 0,
       });
     }
     return taskList;
@@ -183,6 +199,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
             achievementSummary: task.achievementSummary,
             comments: task.comments || {},
             attachments: task.attachments || {},
+            totalTimeSpentMs: task.totalTimeSpentMs || 0,
           });
         });
       }
@@ -197,7 +214,6 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
     if (!result.destination) return;
     const { source, destination, draggableId } = result;
     if (source.droppableId === destination.droppableId) return;
-
     const task = tasks.find(t => t.id === draggableId);
     if (task) {
       let newStatus = destination.droppableId;
@@ -205,12 +221,8 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
       else if (newStatus === 'in_progress') newStatus = 'in_progress';
       else if (newStatus === 'review') newStatus = 'review';
       else if (newStatus === 'done') newStatus = 'completed';
-      await update(dbRef(database, `projects/${task.projectId}/tasks/${task.id}`), {
-        status: newStatus
-      });
-      setTasks(prev =>
-        prev.map(t => (t.id === draggableId ? { ...t, status: destination.droppableId } : t))
-      );
+      await update(dbRef(database, `projects/${task.projectId}/tasks/${task.id}`), { status: newStatus });
+      setTasks(prev => prev.map(t => (t.id === draggableId ? { ...t, status: destination.droppableId } : t)));
       toast.success('Task status updated');
     }
   };
@@ -245,14 +257,12 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
     }
   };
 
-  // Open modal in VIEW mode (not edit)
   const openViewModal = async (task: Task): Promise<void> => {
     setSelectedTask(task);
-    setEditMode(false); // view mode
+    setEditMode(false);
     setModalOpen(true);
   };
 
-  // Switch to edit mode (called when admin clicks "Edit Task")
   const enterEditMode = async (): Promise<void> => {
     if (!selectedTask) return;
     setEditTitle(selectedTask.title);
@@ -303,11 +313,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
           {columns.map(col => (
             <Droppable key={col} droppableId={col}>
               {(provided) => (
-                <div
-                  ref={provided.innerRef}
-                  {...provided.droppableProps}
-                  className="bg-gray-50 p-3 rounded-lg min-h-[400px]"
-                >
+                <div ref={provided.innerRef} {...provided.droppableProps} className="bg-gray-50 p-3 rounded-lg min-h-[400px]">
                   <h3 className="font-semibold mb-3 capitalize">{columnNames[col]}</h3>
                   {getTasksByStatus(col).map((task, idx) => {
                     const draggableId = task.id && task.id !== 'undefined' ? task.id : `${task.projectId}-${idx}`;
@@ -327,19 +333,13 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                                 <p className="text-xs text-gray-500">{task.projectName}</p>
                                 <div className="flex justify-between items-center">
                                   <Badge variant="outline" className="text-xs">{task.priority}</Badge>
-                                  {task.assignedTo && (
-                                    <span className="text-xs text-gray-400">
-                                      @{getEmployeeName(task.assignedTo).split(' ')[0]}
-                                    </span>
-                                  )}
+                                  {task.assignedTo && <span className="text-xs text-gray-400">@{getEmployeeName(task.assignedTo).split(' ')[0]}</span>}
                                 </div>
                                 {task.dependsOn && task.dependsOn.length > 0 && (
                                   <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-1">
                                     <span className="font-medium">Depends on:</span>
                                     {task.dependsOn.map(depId => (
-                                      <Badge key={depId} variant="outline" className="text-xs bg-yellow-50">
-                                        {getDependencyTitle(depId)}
-                                      </Badge>
+                                      <Badge key={depId} variant="outline" className="text-xs bg-yellow-50">{getDependencyTitle(depId)}</Badge>
                                     ))}
                                   </div>
                                 )}
@@ -358,18 +358,15 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
         </div>
       </DragDropContext>
 
-      {/* Modal */}
       <Dialog open={modalOpen} onOpenChange={(open) => { if (!open) setEditMode(false); setModalOpen(open); }}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editMode ? 'Edit Task' : selectedTask?.title}</DialogTitle>
-            <DialogDescription className="sr-only">
-              Task details and dependencies
-            </DialogDescription>
+            <DialogDescription className="sr-only">Task details and dependencies</DialogDescription>
           </DialogHeader>
           {selectedTask && (
             editMode ? (
-              // ---------- EDIT MODE ----------
+              // ---------- EDIT MODE (unchanged) ----------
               <div className="space-y-4">
                 <div><Label>Title</Label><Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} /></div>
                 <div><Label>Description</Label><Textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} /></div>
@@ -406,26 +403,16 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                 <div className="space-y-2">
                   <Label>Depends on (tasks that must be completed first)</Label>
                   <div className="border rounded-md p-2 max-h-40 overflow-y-auto space-y-1">
-                    {projectTasks.length === 0 ? (
-                      <p className="text-sm text-gray-400">No other tasks in this project</p>
-                    ) : (
+                    {projectTasks.length === 0 ? <p className="text-sm text-gray-400">No other tasks in this project</p> :
                       projectTasks.map(task => (
                         <label key={task.id} className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={editDependsOn.includes(task.id)}
-                            onChange={(e) => {
-                              if (e.target.checked) {
-                                setEditDependsOn([...editDependsOn, task.id]);
-                              } else {
-                                setEditDependsOn(editDependsOn.filter(id => id !== task.id));
-                              }
-                            }}
-                          />
+                          <input type="checkbox" checked={editDependsOn.includes(task.id)} onChange={(e) => {
+                            if (e.target.checked) setEditDependsOn([...editDependsOn, task.id]);
+                            else setEditDependsOn(editDependsOn.filter(id => id !== task.id));
+                          }} />
                           {task.title} ({task.status})
                         </label>
-                      ))
-                    )}
+                      ))}
                   </div>
                   {editDependsOn.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">
@@ -435,12 +422,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                         return (
                           <Badge key={depId} variant="secondary" className="text-xs">
                             {title}
-                            <button
-                              className="ml-1 text-red-500 hover:text-red-700"
-                              onClick={() => setEditDependsOn(editDependsOn.filter(id => id !== depId))}
-                            >
-                              ×
-                            </button>
+                            <button className="ml-1 text-red-500 hover:text-red-700" onClick={() => setEditDependsOn(editDependsOn.filter(id => id !== depId))}>×</button>
                           </Badge>
                         );
                       })}
@@ -453,7 +435,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                 </div>
               </div>
             ) : (
-              // ---------- VIEW MODE (shows achievement, comments, attachments) ----------
+              // ---------- VIEW MODE (with Time Spent added) ----------
               <div className="space-y-4">
                 <div className="flex gap-2">
                   <Badge className={getPriorityColor(selectedTask.priority)}>{selectedTask.priority}</Badge>
@@ -464,28 +446,21 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                   <div className="flex items-center gap-2"><User className="h-4 w-4 text-gray-500" /><span>Assigned to: {getEmployeeName(selectedTask.assignedTo) || 'Unassigned'}</span></div>
                   <div className="flex items-center gap-2"><Calendar className="h-4 w-4 text-gray-500" /><span>Due: {formatDate(selectedTask.dueDate)}</span></div>
                   <div className="flex items-center gap-2"><Clock className="h-4 w-4 text-gray-500" /><span>Created: {formatDateTime(selectedTask.createdAt)}</span></div>
+                  <div className="flex items-center gap-2"><Clock className="h-4 w-4 text-gray-500" /><span>Time Spent: {formatDuration(selectedTask.totalTimeSpentMs || 0)}</span></div>
                   {selectedTask.updatedAt && <div className="flex items-center gap-2"><Clock className="h-4 w-4 text-gray-500" /><span>Updated: {formatDateTime(selectedTask.updatedAt)}</span></div>}
                 </div>
                 {selectedTask.dependsOn && selectedTask.dependsOn.length > 0 && (
-                  <div className="border-t pt-3"><h4 className="text-sm font-medium mb-2">Depends on</h4><div className="flex flex-wrap gap-2">
-                    {selectedTask.dependsOn.map(depId => (
-                      <Badge key={depId} variant="outline" className="bg-yellow-50">
-                        {getDependencyTitle(depId)}
-                      </Badge>
-                    ))}
-                  </div></div>
+                  <div className="border-t pt-3"><h4 className="text-sm font-medium mb-2">Depends on</h4>
+                    <div className="flex flex-wrap gap-2">{selectedTask.dependsOn.map(depId => <Badge key={depId} variant="outline" className="bg-yellow-50">{getDependencyTitle(depId)}</Badge>)}</div>
+                  </div>
                 )}
-                {/* ACHIEVEMENT SUMMARY SECTION */}
                 {selectedTask.achievementSummary && (
-                  <div className="border-t pt-3">
-                    <h4 className="text-sm font-medium mb-1 text-green-700">Achievement Summary (from employee)</h4>
+                  <div className="border-t pt-3"><h4 className="text-sm font-medium mb-1 text-green-700">Achievement Summary (from employee)</h4>
                     <div className="p-2 bg-green-50 rounded text-sm">{selectedTask.achievementSummary}</div>
                   </div>
                 )}
-                {/* COMMENTS SECTION */}
                 {selectedTask.comments && Object.values(selectedTask.comments).length > 0 && (
-                  <div className="border-t pt-3">
-                    <h4 className="text-sm font-medium mb-1">Comments ({Object.values(selectedTask.comments).length})</h4>
+                  <div className="border-t pt-3"><h4 className="text-sm font-medium mb-1">Comments ({Object.values(selectedTask.comments).length})</h4>
                     <div className="space-y-2 max-h-32 overflow-y-auto">
                       {Object.values(selectedTask.comments).map(comment => (
                         <div key={comment.id} className="text-xs p-2 bg-gray-50 rounded">
@@ -497,10 +472,8 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                     </div>
                   </div>
                 )}
-                {/* ATTACHMENTS SECTION */}
                 {selectedTask.attachments && Object.values(selectedTask.attachments).length > 0 && (
-                  <div className="border-t pt-3">
-                    <h4 className="text-sm font-medium mb-1">Attachments ({Object.values(selectedTask.attachments).length})</h4>
+                  <div className="border-t pt-3"><h4 className="text-sm font-medium mb-1">Attachments ({Object.values(selectedTask.attachments).length})</h4>
                     <div className="space-y-2">
                       {Object.values(selectedTask.attachments).map(att => (
                         <div key={att.id} className="flex items-center justify-between p-2 bg-gray-50 rounded text-sm">
