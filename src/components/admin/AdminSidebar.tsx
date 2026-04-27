@@ -39,7 +39,7 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
     { icon: Clock, label: 'Attendance Management', path: '/admin/attendance' },
     { icon: Calendar, label: 'Meetings', path: '/admin/meetings' },
     { icon: FolderOpen, label: 'Projects', path: '/admin/projects' },
-    { icon: Workflow, label: 'Employee Task', path: '/admin/employeetask' },
+    // ❌ REMOVED: { icon: Workflow, label: 'Employee Task', path: '/admin/employeetask' },
     { icon: Plane, label: 'Leaves', path: '/admin/leaves' },
     { icon: Star, label: 'Performance Reviews', path: '/admin/performance-reviews' },
     { icon: TrendingUp, label: 'Performance Analytics', path: '/admin/performance-analytics' },
@@ -107,7 +107,6 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
                 </NavLink>
               </motion.li>
             ))}
-            {/* Virtual Office – custom button (no route) */}
             <motion.li
               initial={{ opacity: 0, x: -20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -124,7 +123,7 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
           </ul>
         </nav>
 
-        {/* Footer - Only show on desktop */}
+        {/* Footer */}
         {!isMobile && (
           <div className="p-4 border-t border-gray-200">
             <div className="text-xs text-gray-500 text-center">© 2025 PTS System</div>
@@ -132,7 +131,6 @@ const AdminSidebar: React.FC<AdminSidebarProps> = ({ onClose, isMobile = false }
         )}
       </div>
 
-      {/* Virtual Office Dialog */}
       {showVirtualOffice && <VirtualOffice open={showVirtualOffice} onOpenChange={setShowVirtualOffice} />}
     </>
   );

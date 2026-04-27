@@ -14,7 +14,7 @@ import {
   X,
   Building2,
   MessageCircle,
-  Workflow,
+  ListTodo,      // for My Work
   Video,
   Star
 } from 'lucide-react';
@@ -36,8 +36,10 @@ const EmployeeSidebar: React.FC<EmployeeSidebarProps> = ({ onClose, isMobile = f
     { icon: Clock, label: 'Attendance', path: '/employee/attendance' },
     { icon: MessageCircle, label: 'Chat', path: '/employee/chat' },
     { icon: Calendar, label: 'Meetings', path: '/employee/meetings' },
-    { icon: Workflow, label: 'My Task', path: '/employee/mytask' },
-    { icon: FolderOpen, label: 'Projects', path: '/employee/projects' },
+    // ✅ My Work – employee's task execution page
+    { icon: ListTodo, label: 'My Work', path: '/employee/my-work' },
+    // ✅ My Projects – read‑only project list
+    { icon: FolderOpen, label: 'My Projects', path: '/employee/my-projects' },
     ...(user?.department === 'Digital Marketing' ? [
       { icon: Share2, label: 'Social Media Calendar', path: '/employee/social-calendar' }
     ] : []),
@@ -118,7 +120,7 @@ const EmployeeSidebar: React.FC<EmployeeSidebarProps> = ({ onClose, isMobile = f
               </NavLink>
             </motion.li>
           ))}
-          {/* Virtual Office button - opens in new tab directly */}
+          {/* Virtual Office button */}
           <motion.li
             initial={{ opacity: 0, x: -20 }}
             animate={{ opacity: 1, x: 0 }}

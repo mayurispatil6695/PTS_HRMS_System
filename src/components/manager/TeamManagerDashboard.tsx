@@ -10,7 +10,7 @@ import ManagerDashboardHome from './ManagerDashboardHome';
 import AttendanceManagement from '../admin/AttendanceManagement';
 import LeaveManagement from '../admin/LeaveManagement';
 import ProjectManagement from '../admin/ProjectManagement';
-import DailyTaskEmployee from '../admin/DailyTaskEmployee';
+
 import PerformanceReviews from '../admin/PerformanceReviews';
 import MeetingManagement from '../admin/MeetingManagement';
 import IdleDetectionPage from '../admin/IdleDetectionPage';
@@ -74,7 +74,6 @@ const TeamManagerDashboard = () => {
 
               {/* Components that expect role="team_manager" */}
               <Route path="/projects" element={<ProjectManagement role="team_manager" />} />
-              <Route path="/tasks" element={<DailyTaskEmployee role="team_manager" />} />
               <Route path="/chat" element={<ChatManagement role="team_manager" />} />
 
               {/* Other manager‑specific components (no role prop needed) */}

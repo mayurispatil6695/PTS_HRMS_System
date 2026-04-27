@@ -2,12 +2,54 @@ import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { Users, Clock, Calendar, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { Users, Clock, Calendar, AlertTriangle, CheckCircle, XCircle, Camera, Play, StopCircle } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, get, onValue, off } from 'firebase/database';
+import { ref, get, onValue, off, update, push, set } from 'firebase/database';
 import IdleMonitoring from '../attendance/IdleMonitoring';
 import { Link } from 'react-router-dom';
+import { toast } from 'react-hot-toast';
+import SelfieCapture from '../attendance/SelfieCapture';
+
+// --- Types ---
+interface EmployeeData {
+  name: string;
+  email?: string;
+  department?: string;
+  designation?: string;
+  [key: string]: unknown;
+}
+
+interface AttendanceRecord {
+  id: string;
+  date: string;
+  punchIn: string;
+  punchOut: string | null;
+  status: string;
+  timestamp: number;
+  selfie?: string;
+  selfieOut?: string;
+  breaks?: Record<string, { breakIn: string; breakOut?: string; duration?: string; timestamp: number }>;
+}
+
+interface LeaveRequest {
+  id: string;
+  employeeName: string;
+  leaveType: string;
+  startDate: string;
+  status: string;
+}
+
+interface RecentAttendance {
+  name: string;
+  status: string;
+  punchIn: string;
+}
+
+// Helper: get current time string (HH:MM AM/PM)
+const getCurrentTime = () => {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+};
 
 const ManagerDashboardHome = () => {
   const { user } = useAuth();
@@ -17,58 +59,72 @@ const ManagerDashboardHome = () => {
     pendingLeaves: 0,
     idleCount: 0,
   });
-  const [recentAttendance, setRecentAttendance] = useState<any[]>([]);
-  const [pendingLeaveRequests, setPendingLeaveRequests] = useState<any[]>([]);
+  const [recentAttendance, setRecentAttendance] = useState<RecentAttendance[]>([]);
+  const [pendingLeaveRequests, setPendingLeaveRequests] = useState<LeaveRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  
+  // Manager's own attendance
+  const [managerTodayAttendance, setManagerTodayAttendance] = useState<AttendanceRecord | null>(null);
+  const [showSelfieCapture, setShowSelfieCapture] = useState(false);
+  const [pendingPunchType, setPendingPunchType] = useState<'in' | 'out' | null>(null);
+  const [attendanceLoading, setAttendanceLoading] = useState(false);
 
+  const managerId = user?.id;
+  const adminId = user?.adminUid;
+
+  // Fetch dashboard data (employees, attendance, leaves)
   useEffect(() => {
-    if (!user?.adminUid) return;
+    if (!adminId) return;
 
     const fetchDashboardData = async () => {
       setLoading(true);
-      const adminId = user.adminUid;
       const employeesRef = ref(database, `users/${adminId}/employees`);
       const employeesSnap = await get(employeesRef);
-      const employees = employeesSnap.val() as Record<string, any> || {};
+      const employees = employeesSnap.val() as Record<string, EmployeeData> || {};
       const employeeIds = Object.keys(employees);
       const totalEmployees = employeeIds.length;
 
       const today = new Date().toISOString().split('T')[0];
       let presentToday = 0;
-      const recentAtt: any[] = [];
+      const recentAtt: RecentAttendance[] = [];
 
-      // Get today's attendance for each employee
       for (const empId of employeeIds) {
         const punchingRef = ref(database, `users/${adminId}/employees/${empId}/punching`);
         const punchSnap = await get(punchingRef);
-        const records = punchSnap.val() as Record<string, any> || {};
-        const todayRecord = Object.values(records).find((r: any) => r.date?.startsWith(today));
-        if (todayRecord && todayRecord.status === 'present') presentToday++;
-        if (todayRecord) {
-          recentAtt.push({
-            name: employees[empId]?.name || empId,
-            status: todayRecord.status,
-            punchIn: todayRecord.punchIn,
-          });
+        const records = punchSnap.val() as Record<string, Omit<AttendanceRecord, 'id'> & { id?: never }> | null;
+        if (records) {
+          const todayRecord = Object.values(records).find(r => r.date?.startsWith(today));
+          if (todayRecord && todayRecord.status === 'present') presentToday++;
+          if (todayRecord) {
+            recentAtt.push({
+              name: employees[empId]?.name || empId,
+              status: todayRecord.status || 'present',
+              punchIn: todayRecord.punchIn || '--:--',
+            });
+          }
         }
       }
 
       // Pending leaves
       let pendingLeaves = 0;
-      const leaveRequests: any[] = [];
+      const leaveReqs: LeaveRequest[] = [];
       for (const empId of employeeIds) {
         const leavesRef = ref(database, `users/${adminId}/employees/${empId}/leaves`);
         const leavesSnap = await get(leavesRef);
-        const leaves = leavesSnap.val() as Record<string, any> || {};
-        for (const [leaveId, leave] of Object.entries(leaves)) {
-          if (leave.status === 'pending') {
-            pendingLeaves++;
-            leaveRequests.push({
-              id: leaveId,
-              employeeName: employees[empId]?.name || empId,
-              leaveType: leave.leaveType,
-              startDate: leave.startDate,
-            });
+        const leaves = leavesSnap.val() as Record<string, any> | null;
+        if (leaves) {
+          for (const [leaveId, leave] of Object.entries(leaves)) {
+            const l = leave as { status?: string; leaveType?: string; startDate?: string };
+            if (l.status === 'pending') {
+              pendingLeaves++;
+              leaveReqs.push({
+                id: leaveId,
+                employeeName: employees[empId]?.name || empId,
+                leaveType: l.leaveType || 'Leave',
+                startDate: l.startDate || '',
+                status: 'pending',
+              });
+            }
           }
         }
       }
@@ -77,10 +133,10 @@ const ManagerDashboardHome = () => {
         totalEmployees,
         presentToday,
         pendingLeaves,
-        idleCount: 0, // will be updated via realtime listener
+        idleCount: 0,
       });
       setRecentAttendance(recentAtt.slice(0, 5));
-      setPendingLeaveRequests(leaveRequests.slice(0, 5));
+      setPendingLeaveRequests(leaveReqs.slice(0, 5));
       setLoading(false);
     };
 
@@ -89,16 +145,104 @@ const ManagerDashboardHome = () => {
     // Real-time idle count from activity node
     const activityRef = ref(database, 'activity');
     const unsubscribe = onValue(activityRef, (snap) => {
-      const activities = snap.val() as Record<string, any> || {};
+      const activities = snap.val() as Record<string, { isIdle?: boolean }> | null;
       let idleCount = 0;
-      for (const [uid, act] of Object.entries(activities)) {
-        if (act.isIdle === true) idleCount++;
+      if (activities) {
+        for (const act of Object.values(activities)) {
+          if (act.isIdle === true) idleCount++;
+        }
       }
       setStats(prev => ({ ...prev, idleCount }));
     });
 
     return () => off(activityRef);
-  }, [user]);
+  }, [adminId]);
+
+  // Fetch manager's own attendance for today
+  useEffect(() => {
+    if (!adminId || !managerId) return;
+    const today = new Date().toISOString().split('T')[0];
+    const punchingRef = ref(database, `users/${adminId}/employees/${managerId}/punching`);
+    const unsubscribe = onValue(punchingRef, (snapshot) => {
+      const records = snapshot.val() as Record<string, Omit<AttendanceRecord, 'id'> & { id?: never }> | null;
+      if (records) {
+        const todayRecordEntry = Object.entries(records).find(([, rec]) => rec.date?.startsWith(today));
+        if (todayRecordEntry) {
+          const [id, rec] = todayRecordEntry;
+          setManagerTodayAttendance({ id, ...rec });
+        } else {
+          setManagerTodayAttendance(null);
+        }
+      } else {
+        setManagerTodayAttendance(null);
+      }
+    });
+    return () => off(punchingRef);
+  }, [adminId, managerId]);
+
+  const handleSelfieCapture = async (imageData: string) => {
+    if (!adminId || !managerId || !pendingPunchType) return;
+    setAttendanceLoading(true);
+    try {
+      const now = new Date();
+      const punchTime = getCurrentTime();
+      const todayStr = now.toISOString().split('T')[0];
+
+      if (pendingPunchType === 'in') {
+        if (managerTodayAttendance) {
+          toast.error('You have already punched in today');
+          return;
+        }
+        const newRecordRef = push(ref(database, `users/${adminId}/employees/${managerId}/punching`));
+        await set(newRecordRef, {
+          employeeId: managerId,
+          employeeName: user?.name || 'Manager',
+          date: now.toISOString(),
+          punchIn: punchTime,
+          punchOut: null,
+          status: 'present',
+          workMode: 'office',
+          timestamp: now.getTime(),
+          selfie: imageData,
+          location: null,
+        });
+        toast.success('Punched in successfully!');
+      } else if (pendingPunchType === 'out') {
+        if (!managerTodayAttendance) {
+          toast.error('You have not punched in today');
+          return;
+        }
+        const recordRef = ref(database, `users/${adminId}/employees/${managerId}/punching/${managerTodayAttendance.id}`);
+        await update(recordRef, {
+          punchOut: punchTime,
+          timestamp: now.getTime(),
+          selfieOut: imageData,
+        });
+        toast.success('Punched out successfully!');
+      }
+    } catch (error) {
+      console.error(error);
+      toast.error('Failed to record attendance');
+    } finally {
+      setAttendanceLoading(false);
+      setShowSelfieCapture(false);
+      setPendingPunchType(null);
+    }
+  };
+
+  const handlePunchIn = () => {
+    setPendingPunchType('in');
+    setShowSelfieCapture(true);
+  };
+
+  const handlePunchOut = () => {
+    if (!managerTodayAttendance?.punchIn) {
+      toast.error('No punch-in record found');
+      return;
+    }
+    setPendingPunchType('out');
+    setShowSelfieCapture(true);
+  };
 
   if (loading) return <div className="flex justify-center p-8">Loading dashboard...</div>;
 
@@ -146,6 +290,40 @@ const ManagerDashboardHome = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Manager's Own Attendance Card */}
+      <Card className="border-blue-200 bg-blue-50">
+        <CardHeader>
+          <CardTitle className="text-lg">Your Today's Attendance</CardTitle>
+        </CardHeader>
+        <CardContent>
+          {managerTodayAttendance ? (
+            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+              <div>
+                <p className="text-sm text-gray-600">Punched In: <span className="font-medium text-green-600">{managerTodayAttendance.punchIn}</span></p>
+                {managerTodayAttendance.punchOut && (
+                  <p className="text-sm text-gray-600 mt-1">Punched Out: <span className="font-medium text-red-600">{managerTodayAttendance.punchOut}</span></p>
+                )}
+                <Badge className="mt-1">{managerTodayAttendance.status || 'present'}</Badge>
+              </div>
+              {!managerTodayAttendance.punchOut ? (
+                <Button onClick={handlePunchOut} disabled={attendanceLoading} className="bg-red-600 hover:bg-red-700">
+                  <Camera className="h-4 w-4 mr-2" /> Punch Out with Selfie
+                </Button>
+              ) : (
+                <Badge variant="outline" className="text-green-600">Attendance Completed</Badge>
+              )}
+            </div>
+          ) : (
+            <div className="flex justify-between items-center">
+              <p className="text-gray-600">Not punched in yet today.</p>
+              <Button onClick={handlePunchIn} disabled={attendanceLoading} className="bg-green-600 hover:bg-green-700">
+                <Camera className="h-4 w-4 mr-2" /> Punch In with Selfie
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Recent Attendance & Pending Leaves */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -196,6 +374,18 @@ const ManagerDashboardHome = () => {
           </CardContent>
         </Card>
       </div>
+
+      {/* Selfie Capture Modal */}
+      <SelfieCapture
+        isOpen={showSelfieCapture}
+        onClose={() => {
+          setShowSelfieCapture(false);
+          setPendingPunchType(null);
+        }}
+        onCapture={handleSelfieCapture}
+        employeeName={user?.name || 'Manager'}
+        punchType={pendingPunchType === 'in' ? 'Punch In' : 'Punch Out'}
+      />
     </div>
   );
 };

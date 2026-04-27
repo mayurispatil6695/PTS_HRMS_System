@@ -7,7 +7,7 @@ import TeamLeaderSidebar from './TeamLeaderSidebar';
 
 // Reuse admin components with role="team_leader"
 import ProjectManagement from '../admin/ProjectManagement';
-import DailyTaskEmployee from '../admin/DailyTaskEmployee';
+
 import AttendanceManagement from '../admin/AttendanceManagement';
 import LeaveManagement from '../admin/LeaveManagement';
 import MeetingManagement from '../admin/MeetingManagement';
@@ -57,7 +57,7 @@ const TeamLeaderDashboard = () => {
             <Routes>
               <Route path="/" element={<TeamLeaderHome />} />
               <Route path="/projects" element={<ProjectManagement role="team_leader" userId={user?.id} department={user?.department} />} />
-              <Route path="/tasks" element={<DailyTaskEmployee role="team_leader" userId={user?.id} department={user?.department} />} />
+             
               <Route path="/attendance" element={<AttendanceManagement role="team_leader" />} />
               <Route path="/leaves" element={<LeaveManagement role="team_leader" />} />
               <Route path="/meetings" element={<MeetingManagement role="team_leader" />} />

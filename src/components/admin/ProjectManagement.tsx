@@ -1,15 +1,13 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { FolderOpen, Plus, List, Grid, Users, LayoutGrid, Calendar } from 'lucide-react';
+import { FolderOpen, Plus, List, Grid, Users, LayoutGrid, Calendar, PlusCircle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { toast } from '../ui/use-toast';
 import EnhancedProjectForm from './project/EnhancedProjectForm';
-import ProjectCard from './project/ProjectCard';
 import KanbanBoard from './project/KanbanBoard';
 import ListView from './project/ListView';
 import TimelineView from './project/TimelineView';
-import { ToggleGroup, ToggleGroupItem } from '../ui/toggle-group';
 import { ref, onValue, off, remove, get } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
@@ -17,9 +15,10 @@ import { Badge } from '../ui/badge';
 import ProjectChat from './project/ProjectChat';
 import ProjectCalendar from './project/ProjectCalendar';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
-import { TaskEditModal } from './project/TaskEditModal';
 import { ProjectReportModal } from './project/ProjectReportModal';
+import TaskCreateModal from './project/TaskCreateModal';
 import { Trash2 } from 'lucide-react';
+
 // ========== TYPES ==========
 interface Employee {
   id: string;
@@ -52,7 +51,6 @@ interface FirebaseProjectData {
   clientId?: string;
 }
 
-// Internal Project interface (as stored)
 interface Project {
   id: string;
   name: string;
@@ -93,7 +91,6 @@ interface ExtendedTask {
   [key: string]: unknown;
 }
 
-// Expected shapes for child components
 type KanbanTask = {
   id: string;
   title: string;
@@ -146,7 +143,6 @@ type TimelineProject = {
   tasks: Record<string, TimelineTask>;
 };
 
-// ✅ CalendarTask matches the expected Task type (requires status and priority)
 type CalendarTask = {
   id: string;
   title: string;
@@ -157,7 +153,6 @@ type CalendarTask = {
   [key: string]: unknown;
 };
 
-// Helper to convert a Project to the shape required by child components
 const toKanbanProject = (project: Project): KanbanProject => ({
   id: project.id,
   name: project.name,
@@ -178,7 +173,6 @@ const toTimelineProject = (project: Project): TimelineProject => ({
   tasks: (project.tasks as Record<string, TimelineTask>) || {},
 });
 
-// ✅ Returns array of CalendarTask (status and priority are required)
 const toCalendarTasks = (tasks: Record<string, unknown>): CalendarTask[] => {
   return Object.values(tasks).map(task => task as CalendarTask);
 };
@@ -205,7 +199,6 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'grid' | 'list'>('grid');
   const [displayMode, setDisplayMode] = useState<'kanban' | 'list' | 'timeline' | 'calendar'>('kanban');
   const [reportProjectId, setReportProjectId] = useState<string | null>(null);
 
@@ -217,17 +210,7 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
   const [adminNames, setAdminNames] = useState<Record<string, string>>({});
   const [globalEmployees, setGlobalEmployees] = useState<Employee[]>([]);
   const [refreshKey, setRefreshKey] = useState(0);
-
- 
-  const enrichTasksWithNames = (tasks: Record<string, unknown>) => {
-    return Object.values(tasks).map((task: unknown) => {
-      const t = task as { assignedTo?: string;[key: string]: unknown };
-      return {
-        ...t,
-        assignedToName: globalEmployees.find(e => e.id === t.assignedTo)?.name || 'Unassigned',
-      };
-    });
-  };
+  const [taskCreateProject, setTaskCreateProject] = useState<{ id: string; name: string } | null>(null);
 
   // Fetch admin names
   useEffect(() => {
@@ -247,7 +230,7 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     return () => off(usersRef);
   }, []);
 
-  // Fetch all employees (non‑admin)
+  // Fetch all employees
   useEffect(() => {
     const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
@@ -271,29 +254,9 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     return () => off(usersRef);
   }, []);
 
-  // allTasks memo (used for some views)
-  const allTasks = useMemo(() => {
-    const tasksList: ExtendedTask[] = [];
-    projects.forEach(project => {
-      if (project.tasks) {
-        Object.values(project.tasks).forEach((task: unknown) => {
-          const t = task as ExtendedTask;
-          tasksList.push({
-            ...t,
-            projectId: project.id,
-            projectName: project.name,
-            assignedToName: globalEmployees.find(e => e.id === (t as { assignedTo?: string }).assignedTo)?.name || 'Unassigned',
-          });
-        });
-      }
-    });
-    return tasksList;
-  }, [projects, globalEmployees]);
-
-  // Fetch projects from Firebase
+  // Fetch projects
   useEffect(() => {
     if (!effectiveUserId) return;
-
     setLoading(true);
     setError(null);
 
@@ -330,7 +293,6 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
           }));
 
           let filteredProjects: Project[] = [];
-
           if (isAdmin) {
             filteredProjects = allProjects;
           } else if (isTeamManager && effectiveDepartment) {
@@ -342,24 +304,21 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
           } else {
             filteredProjects = allProjects.filter(p => p.assignedEmployees?.includes(effectiveUserId));
           }
-
           filteredProjects.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
           setProjects(filteredProjects);
           setLoading(false);
         } catch (err) {
-          console.error('Error loading projects:', err);
+          console.error(err);
           setError('Failed to load projects');
           setLoading(false);
         }
       },
       (err) => {
-        console.error('Firebase error:', err);
+        console.error(err);
         setError('Failed to load projects from database');
         setLoading(false);
       }
     );
-
     return () => off(projectsRef);
   }, [effectiveUserId, isAdmin, isTeamManager, isTeamLeader, isClient, effectiveDepartment]);
 
@@ -371,7 +330,6 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     return { completed, inProgress, pending, onHold };
   }, [projects]);
 
-  // Group projects by creator for admin view
   const projectsByCreator = useMemo(() => {
     if (!isAdmin) return null;
     const grouped: Record<string, Project[]> = {};
@@ -390,33 +348,9 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
 
   const canCreate = !readOnly && (isAdmin || isTeamManager || isTeamLeader);
 
-  if (loading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64">
-        <div className="animate-spin h-10 w-10 border-b-2 border-gray-900 rounded-full"></div>
-        <p className="mt-3 text-gray-500">Loading projects...</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="text-center py-8 text-red-500">
-        <p>{error}</p>
-        <Button onClick={() => window.location.reload()} variant="outline" className="mt-4">
-          Retry
-        </Button>
-      </div>
-    );
-  }
-
   const handleDeleteProject = async (projectId: string, projectName: string) => {
-    if (!window.confirm(`Are you sure you want to delete the project "${projectName}"? This will also remove it from all assigned employees and the team leader. This action cannot be undone.`)) {
-      return;
-    }
-
+    if (!window.confirm(`Are you sure you want to delete the project "${projectName}"? This action cannot be undone.`)) return;
     try {
-      // 1. Get the project data to know which users have it assigned
       const projectRef = ref(database, `projects/${projectId}`);
       const projectSnap = await get(projectRef);
       const projectData = projectSnap.val();
@@ -424,33 +358,19 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
         toast({ title: "Not Found", description: "Project does not exist", variant: "destructive" });
         return;
       }
-
-      const assignedUsers = [
-        ...(projectData.assignedEmployees || []),
-        projectData.assignedTeamLeader,
-      ].filter(Boolean);
-
-      // 2. Delete the project from each user’s personal project list
-      const userProjectDeletes = assignedUsers.map(userId =>
-        remove(ref(database, `users/${userId}/projects/${projectId}`))
-      );
-
-      // 3. Delete the main project node
+      const assignedUsers = [...(projectData.assignedEmployees || []), projectData.assignedTeamLeader].filter(Boolean);
+      const userProjectDeletes = assignedUsers.map(userId => remove(ref(database, `users/${userId}/projects/${projectId}`)));
       userProjectDeletes.push(remove(projectRef));
-
       await Promise.all(userProjectDeletes);
-
       toast({ title: "Project Deleted", description: `"${projectName}" has been deleted.` });
-      // No need to manually update state – Firebase onValue will refetch
     } catch (error) {
-      console.error("Error deleting project:", error);
+      console.error(error);
       toast({ title: "Error", description: "Failed to delete project", variant: "destructive" });
     }
   };
 
   const renderAdminView = () => {
     if (!isAdmin) return null;
-
     if (Object.keys(projectsByCreator || {}).length === 0) {
       return (
         <div className="text-center py-12 text-gray-500">
@@ -464,9 +384,7 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     return (
       <div className="space-y-8">
         {Object.entries(projectsByCreator || {}).map(([creatorId, creatorProjects]) => {
-          let totalTasks = 0;
-          let completedTasks = 0;
-          let inProgressTasks = 0;
+          let totalTasks = 0, completedTasks = 0, inProgressTasks = 0;
           for (const project of creatorProjects) {
             if (project.tasks) {
               const tasksArray = Object.values(project.tasks) as TaskItem[];
@@ -475,9 +393,7 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
               inProgressTasks += tasksArray.filter(t => t.status === 'in_progress').length;
             }
           }
-
           const creatorName = adminNames[creatorId] || creatorId.slice(0, 8);
-
           return (
             <Card key={creatorId}>
               <CardHeader className="bg-gray-50">
@@ -490,76 +406,40 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
                     </Badge>
                   </div>
                   <div className="flex gap-2">
-                    <Badge variant="outline" className="bg-green-50">
-                      ✓ {completedTasks} / {totalTasks} Tasks Completed
-                    </Badge>
-                    {inProgressTasks > 0 && (
-                      <Badge variant="outline" className="bg-blue-50">
-                        🔄 {inProgressTasks} In Progress
-                      </Badge>
-                    )}
+                    <Badge variant="outline" className="bg-green-50">✓ {completedTasks} / {totalTasks} Tasks Completed</Badge>
+                    {inProgressTasks > 0 && <Badge variant="outline" className="bg-blue-50">🔄 {inProgressTasks} In Progress</Badge>}
                   </div>
                 </div>
               </CardHeader>
               <CardContent className="pt-6">
-                {creatorProjects.map(project => {
-                  const tasksArray = project.tasks ? Object.values(project.tasks) as TaskItem[] : [];
-                  const projectProgress = tasksArray.length > 0
-                    ? Math.round((tasksArray.filter(t => t.status === 'completed' || t.status === 'done').length / tasksArray.length) * 100)
-                    : 0;
-
-                  return (
-                    <div key={project.id} className="border rounded-lg p-4">
-                      <h3 className="text-lg font-bold mb-2">{project.name}</h3>
-
-                      {/* Views – using type-safe conversion functions */}
-                      {displayMode === 'kanban' && (
-                        <KanbanBoard projects={[toKanbanProject(project)]} employees={globalEmployees} readOnly={readOnly} />
-                      )}
-                      {displayMode === 'list' && (
-                        <ListView projects={[toListViewProject(project)]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)} />
-                      )}
-                      {displayMode === 'timeline' && (
-                        <TimelineView projects={[toTimelineProject(project)]} readOnly={readOnly} />
-                      )}
-                      {displayMode === 'calendar' && (
-                        <ProjectCalendar
-                          tasks={toCalendarTasks(project.tasks || {})}
-                          projectId={project.id}
-                          readOnly={readOnly}
-                        />
-                      )}
-
-
-                      {/* Export Report Button */}
-                      <div className="flex justify-end mt-4">
-                        <Button variant="outline" size="sm" onClick={() => setReportProjectId(project.id)}>
-                          <FolderOpen className="h-4 w-4 mr-1" /> Export Report
-                        </Button>
-                      </div>
-                      <div className="flex justify-end mt-2">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="text-red-600 border-red-200 hover:bg-red-50"
-                          onClick={() => handleDeleteProject(project.id, project.name)}
-                        >
-                          <Trash2 className="h-4 w-4 mr-1" /> Delete Project
-                        </Button>
-                      </div>
-                      {/* Team Chat */}
-                      <Collapsible>
-                        <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">
-                          💬 Team Chat
-                        </CollapsibleTrigger>
-                        <CollapsibleContent className="pt-2">
-                          <ProjectChat projectId={project.id} />
-                        </CollapsibleContent>
-                      </Collapsible>
-
+                {creatorProjects.map(project => (
+                  <div key={project.id} className="border rounded-lg p-4 mb-6 last:mb-0">
+                    <div className="flex justify-between items-center mb-2">
+                      <h3 className="text-lg font-bold">{project.name}</h3>
+                      <Button size="sm" variant="outline" onClick={() => setTaskCreateProject({ id: project.id, name: project.name })}>
+                        <PlusCircle className="h-4 w-4 mr-1" /> Add Task
+                      </Button>
                     </div>
-                  );
-                })}
+
+                    {displayMode === 'kanban' && <KanbanBoard projects={[toKanbanProject(project)]} employees={globalEmployees} readOnly={readOnly} />}
+                    {displayMode === 'list' && <ListView projects={[toListViewProject(project)]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)} />}
+                    {displayMode === 'timeline' && <TimelineView projects={[toTimelineProject(project)]} readOnly={readOnly} />}
+                    {displayMode === 'calendar' && <ProjectCalendar tasks={toCalendarTasks(project.tasks || {})} projectId={project.id} readOnly={readOnly} />}
+
+                    <div className="flex justify-end mt-4 space-x-2">
+                      <Button variant="outline" size="sm" onClick={() => setReportProjectId(project.id)}>
+                        <FolderOpen className="h-4 w-4 mr-1" /> Export Report
+                      </Button>
+                      <Button variant="outline" size="sm" className="text-red-600 border-red-200 hover:bg-red-50" onClick={() => handleDeleteProject(project.id, project.name)}>
+                        <Trash2 className="h-4 w-4 mr-1" /> Delete Project
+                      </Button>
+                    </div>
+                    <Collapsible>
+                      <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">💬 Team Chat</CollapsibleTrigger>
+                      <CollapsibleContent className="pt-2"><ProjectChat projectId={project.id} /></CollapsibleContent>
+                    </Collapsible>
+                  </div>
+                ))}
               </CardContent>
             </Card>
           );
@@ -568,80 +448,54 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
     );
   };
 
+  if (loading) {
+    return <div className="flex flex-col items-center justify-center h-64"><div className="animate-spin h-10 w-10 border-b-2 border-gray-900 rounded-full"></div><p className="mt-3 text-gray-500">Loading projects...</p></div>;
+  }
+
+  if (error) {
+    return <div className="text-center py-8 text-red-500"><p>{error}</p><Button onClick={() => window.location.reload()} variant="outline" className="mt-4">Retry</Button></div>;
+  }
+
   return (
     <div className="space-y-6 px-4 sm:px-6">
-      {reportProjectId && (
-        <ProjectReportModal
-          open={!!reportProjectId}
-          onOpenChange={() => setReportProjectId(null)}
-          projectId={reportProjectId}
+      {reportProjectId && <ProjectReportModal open={!!reportProjectId} onOpenChange={() => setReportProjectId(null)} projectId={reportProjectId} />}
+      {taskCreateProject && (
+        <TaskCreateModal
+          open={!!taskCreateProject}
+          onOpenChange={() => setTaskCreateProject(null)}
+          projectId={taskCreateProject.id}
+          projectName={taskCreateProject.name}
+          employees={globalEmployees.map(e => ({ id: e.id, name: e.name }))}
+          onTaskCreated={() => setRefreshKey(prev => prev + 1)}
         />
       )}
 
-      {/* HEADER */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="flex flex-col sm:flex-row justify-between gap-4"
-      >
+      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col sm:flex-row justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">Project Management</h1>
           <p className="text-gray-600 text-sm">
-            {isAdmin
-              ? `Viewing all projects across the organization (${projects.length} total projects)`
-              : isTeamManager
-                ? `Managing projects for ${effectiveDepartment} department`
-                : isTeamLeader
-                  ? 'Managing your team projects'
-                  : isClient
-                    ? 'Viewing your assigned projects'
-                    : 'Create and manage your projects'}
+            {isAdmin ? `Viewing all projects across the organization (${projects.length} total projects)` :
+             isTeamManager ? `Managing projects for ${effectiveDepartment} department` :
+             isTeamLeader ? 'Managing your team projects' :
+             isClient ? 'Viewing your assigned projects' : 'Create and manage your projects'}
           </p>
         </div>
-
         <div className="flex gap-2">
-          {/* View Mode Toggle */}
           <div className="flex gap-1 mr-2">
-            <Button variant={displayMode === 'kanban' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('kanban')}>
-              <LayoutGrid className="h-4 w-4 mr-1" /> Board
-            </Button>
-            <Button variant={displayMode === 'list' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('list')}>
-              <List className="h-4 w-4 mr-1" /> List
-            </Button>
-            <Button variant={displayMode === 'timeline' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('timeline')}>
-              <Calendar className="h-4 w-4 mr-1" /> Timeline
-            </Button>
-            <Button variant={displayMode === 'calendar' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('calendar')}>
-              <Calendar className="h-4 w-4 mr-1" /> Calendar
-            </Button>
-           </div>
-
-          {canCreate && (
-            <Button onClick={() => setShowAddForm(true)}>
-              <Plus className="h-4 w-4 mr-2" />
-              New Project
-            </Button>
-          )}
+            <Button variant={displayMode === 'kanban' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('kanban')}><LayoutGrid className="h-4 w-4 mr-1" /> Board</Button>
+            <Button variant={displayMode === 'list' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('list')}><List className="h-4 w-4 mr-1" /> List</Button>
+            <Button variant={displayMode === 'timeline' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('timeline')}><Calendar className="h-4 w-4 mr-1" /> Timeline</Button>
+            <Button variant={displayMode === 'calendar' ? 'default' : 'outline'} size="sm" onClick={() => setDisplayMode('calendar')}><Calendar className="h-4 w-4 mr-1" /> Calendar</Button>
+          </div>
+          {canCreate && <Button onClick={() => setShowAddForm(true)}><Plus className="h-4 w-4 mr-2" /> New Project</Button>}
         </div>
       </motion.div>
 
-      {/* FORM */}
-      {showAddForm && (
-        <EnhancedProjectForm
-          onSuccess={handleProjectCreated}
-          onCancel={() => setShowAddForm(false)}
-          role={effectiveRole}
-          userId={effectiveUserId}
-          department={effectiveDepartment}
-        />
-      )}
+      {showAddForm && <EnhancedProjectForm onSuccess={handleProjectCreated} onCancel={() => setShowAddForm(false)} role={effectiveRole} userId={effectiveUserId} department={effectiveDepartment} />}
 
-      {/* PROJECT LIST */}
       <Card>
         <CardHeader className="flex flex-col sm:flex-row justify-between gap-4">
-          <CardTitle>
-            {isAdmin ? 'All Projects' : isTeamManager ? 'Department Projects' : isTeamLeader ? 'Team Projects' : 'My Projects'} ({projects.length})
-          </CardTitle>
+          <CardTitle>{isAdmin ? 'All Projects' : isTeamManager ? 'Department Projects' : isTeamLeader ? 'Team Projects' : 'My Projects'} ({projects.length})</CardTitle>
           <div className="flex gap-2 flex-wrap">
             {counts.completed > 0 && <Badge variant="outline" className="bg-green-50">✓ {counts.completed} Completed</Badge>}
             {counts.inProgress > 0 && <Badge variant="outline" className="bg-blue-50">🔄 {counts.inProgress} In Progress</Badge>}
@@ -649,29 +503,16 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
             {counts.onHold > 0 && <Badge variant="outline" className="bg-gray-50">⏸ {counts.onHold} On Hold</Badge>}
           </div>
         </CardHeader>
-
         <CardContent>
           {projects.length === 0 ? (
             <div className="text-center py-12 text-gray-500">
               <FolderOpen className="h-12 w-12 mx-auto mb-4 text-gray-400" />
               <p className="text-lg font-medium mb-2">No projects found</p>
               <p className="text-sm mb-4">
-                {isAdmin
-                  ? 'No projects have been created yet'
-                  : isTeamManager
-                    ? 'No projects found for your department'
-                    : isTeamLeader
-                      ? 'No projects assigned to your team'
-                      : isClient
-                        ? 'No projects assigned to you'
-                        : 'Get started by creating your first project'}
+                {isAdmin ? 'No projects have been created yet' : isTeamManager ? 'No projects found for your department' :
+                 isTeamLeader ? 'No projects assigned to your team' : isClient ? 'No projects assigned to you' : 'Get started by creating your first project'}
               </p>
-              {canCreate && (
-                <Button onClick={() => setShowAddForm(true)}>
-                  <Plus className="h-4 w-4 mr-2" />
-                  Create Project
-                </Button>
-              )}
+              {canCreate && <Button onClick={() => setShowAddForm(true)}><Plus className="h-4 w-4 mr-2" /> Create Project</Button>}
             </div>
           ) : isAdmin ? (
             renderAdminView()
@@ -679,49 +520,28 @@ const ProjectManagement: React.FC<ProjectManagementProps> = ({
             <div className="space-y-6">
               {projects.map(project => (
                 <div key={project.id} className="border rounded-lg p-4">
-                  <h3 className="text-lg font-bold mb-2">{project.name}</h3>
-
-                  {displayMode === 'kanban' && (
-                    <KanbanBoard projects={[toKanbanProject(project)]} employees={globalEmployees} readOnly={readOnly} />
-                  )}
-                  {displayMode === 'list' && (
-                    <ListView projects={[toListViewProject(project)]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)} />
-                  )}
-                  {displayMode === 'timeline' && (
-                    <TimelineView projects={[toTimelineProject(project)]} readOnly={readOnly} />
-                  )}
-                  {displayMode === 'calendar' && (
-                    <ProjectCalendar tasks={toCalendarTasks(project.tasks || {})} projectId={project.id} readOnly={readOnly} />
-                  )}
-                  {/* Export Report Button */}
-                  <div className="flex justify-end mt-4">
-                    <Button variant="outline" size="sm" onClick={() => setReportProjectId(project.id)}>
-                      <FolderOpen className="h-4 w-4 mr-1" /> Export Report
+                  <div className="flex justify-between items-center mb-2">
+                    <h3 className="text-lg font-bold">{project.name}</h3>
+                    <Button size="sm" variant="outline" onClick={() => setTaskCreateProject({ id: project.id, name: project.name })}>
+                      <PlusCircle className="h-4 w-4 mr-1" /> Add Task
                     </Button>
                   </div>
-                  {(isAdmin || isTeamManager || isTeamLeader) && (
-                    <div className="flex justify-end mt-2">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="text-red-600 border-red-200 hover:bg-red-50"
-                        onClick={() => handleDeleteProject(project.id, project.name)}
-                      >
+                  {displayMode === 'kanban' && <KanbanBoard projects={[toKanbanProject(project)]} employees={globalEmployees} readOnly={readOnly} />}
+                  {displayMode === 'list' && <ListView projects={[toListViewProject(project)]} employees={globalEmployees} readOnly={readOnly} onTaskUpdate={() => setRefreshKey(prev => prev + 1)} />}
+                  {displayMode === 'timeline' && <TimelineView projects={[toTimelineProject(project)]} readOnly={readOnly} />}
+                  {displayMode === 'calendar' && <ProjectCalendar tasks={toCalendarTasks(project.tasks || {})} projectId={project.id} readOnly={readOnly} />}
+                  <div className="flex justify-end mt-4 space-x-2">
+                    <Button variant="outline" size="sm" onClick={() => setReportProjectId(project.id)}><FolderOpen className="h-4 w-4 mr-1" /> Export Report</Button>
+                    {(isAdmin || isTeamManager || isTeamLeader) && (
+                      <Button variant="outline" size="sm" className="text-red-600 border-red-200 hover:bg-red-50" onClick={() => handleDeleteProject(project.id, project.name)}>
                         <Trash2 className="h-4 w-4 mr-1" /> Delete Project
                       </Button>
-                    </div>
-                  )}
-                  {/* Team Chat */}
+                    )}
+                  </div>
                   <Collapsible>
-                    <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">
-                      💬 Team Chat
-                    </CollapsibleTrigger>
-                    <CollapsibleContent className="pt-2">
-                      <ProjectChat projectId={project.id} />
-                    </CollapsibleContent>
+                    <CollapsibleTrigger className="w-full text-left p-2 hover:bg-gray-50 rounded mt-4">💬 Team Chat</CollapsibleTrigger>
+                    <CollapsibleContent className="pt-2"><ProjectChat projectId={project.id} /></CollapsibleContent>
                   </Collapsible>
-
-
                 </div>
               ))}
             </div>

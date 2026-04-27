@@ -16,18 +16,19 @@ import ExpenseManagement from './ExpenseManagement';
 import SettingsManagement from './SettingsManagement';
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../ui/button';
-import { Menu, X } from 'lucide-react';
+import { Menu, X, PlusCircle } from 'lucide-react';
 import ClientManagement from './ClientManagement';
-import DailyTaskEmployee from './DailyTaskEmployee';
 import NotificationSystem from '../ui/NotificationSystem';
 import IdleDetectionPage from './IdleDetectionPage';
 import WorkloadHeatmap from './WorkloadHeatmap';
 import PerformanceReviews from './PerformanceReviews';
 import PerformanceAnalytics from './PerformanceAnalytics';
 import { DarkModeToggle } from '../ui/DarkModeToggle';
-
+import QuickTaskAssign from './QuickTaskAssign'; // ✅ NEW
+import { useAutoLogout } from '../../hooks/useAutoLogout';
 const AdminDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [quickTaskOpen, setQuickTaskOpen] = useState(false);
   const { user, logout } = useAuth();
   const navigate = useNavigate();
 
@@ -35,7 +36,7 @@ const AdminDashboard = () => {
     logout();
     navigate('/login');
   };
-
+useAutoLogout('18:30'); // 6:30 PM
   useEffect(() => {
     if ('Notification' in window && Notification.permission !== 'denied') {
       Notification.requestPermission();
@@ -75,6 +76,9 @@ const AdminDashboard = () => {
               <p className="text-sm text-muted-foreground">Welcome back, {user?.name}</p>
             </div>
             <div className="flex items-center gap-4">
+              <Button variant="outline" size="sm" onClick={() => setQuickTaskOpen(true)} className="gap-2">
+                <PlusCircle className="h-4 w-4" /> Quick Task
+              </Button>
               <DarkModeToggle />
               <NotificationSystem />
               <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">
@@ -101,7 +105,6 @@ const AdminDashboard = () => {
               <Route path="/reports" element={<ReportsManagement />} />
               <Route path="/expenses" element={<ExpenseManagement />} />
               <Route path="/settings" element={<SettingsManagement />} />
-              <Route path="/employeetask" element={<DailyTaskEmployee />} />
               <Route path="/idle-detection" element={<IdleDetectionPage />} />
               <Route path="/performance-reviews" element={<PerformanceReviews />} />
               <Route path="/performance-analytics" element={<PerformanceAnalytics />} />
@@ -110,6 +113,9 @@ const AdminDashboard = () => {
           </div>
         </main>
       </div>
+
+      {/* Quick Task Modal */}
+      <QuickTaskAssign open={quickTaskOpen} onOpenChange={setQuickTaskOpen} />
     </div>
   );
 };

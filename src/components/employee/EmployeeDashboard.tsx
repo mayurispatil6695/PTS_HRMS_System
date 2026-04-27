@@ -5,13 +5,13 @@ import EmployeeDashboardHome from './EmployeeDashboardHome';
 import EmployeeInfo from './EmployeeInfo';
 import EmployeeAttendance from './EmployeeAttendance';
 import EmployeeMeetings from './EmployeeMeetings';
-import EmployeeProjects from './EmployeeProjects';
 import SocialMediaCalendar from './SocialMediaCalendar';
 import EmployeeLeaves from './EmployeeLeaves';
 import EmployeeSalarySlips from './EmployeeSalarySlips';
 import EmployeeReports from './EmployeeReports';
 import EmployeeChat from './EmployeeChat';
-import MyTask from './MyTask';
+import MyTask from './MyTask';            // This is "My Work"
+import MyProjects from './MyProjects';   // ✅ NEW
 import { useAuth } from '../../hooks/useAuth';
 import { Button } from '../ui/button';
 import { Menu, X } from 'lucide-react';
@@ -19,8 +19,8 @@ import { WorkSessionProvider } from '../../contexts/WorkSessionContext';
 import NotificationSystem from '../ui/NotificationSystem';
 import EmployeeReview from './EmployeeReview';
 import EmployeeGoalSetting from './EmployeeGoalSetting';
-import { TrendingUp } from 'lucide-react';
 import { DarkModeToggle } from '../ui/DarkModeToggle';
+import { useAutoLogout } from '../../hooks/useAutoLogout';
 const EmployeeDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -30,9 +30,7 @@ const EmployeeDashboard = () => {
     logout();
     navigate('/login');
   };
-
-  // ❌ REMOVE the manual activity tracking useEffect (it's replaced by useIdleDetection)
-
+useAutoLogout('18:30'); // 6:30 PM
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Mobile sidebar overlay */}
@@ -53,42 +51,44 @@ const EmployeeDashboard = () => {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white shadow-sm border-b border-gray-200">
-  <div className="flex items-center justify-between px-4 py-3">
-    <div className="flex items-center gap-4">
-      <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setSidebarOpen(true)}>
-        <Menu className="h-5 w-5" />
-      </Button>
-      <div>
-        <h1 className="text-xl font-semibold text-gray-800">Employee Portal</h1>
-        <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
-      </div>
-    </div>
-    <div className="flex items-center gap-4">
-<DarkModeToggle/>
-      <NotificationSystem />
-      <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">
-        Logout
-      </Button>
-    </div>
-  </div>
-</header>
+          <div className="flex items-center justify-between px-4 py-3">
+            <div className="flex items-center gap-4">
+              <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setSidebarOpen(true)}>
+                <Menu className="h-5 w-5" />
+              </Button>
+              <div>
+                <h1 className="text-xl font-semibold text-gray-800">Employee Portal</h1>
+                <p className="text-sm text-gray-600">Welcome back, {user?.name}</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-4">
+              <DarkModeToggle />
+              <NotificationSystem />
+              <Button variant="outline" onClick={handleLogout} className="hover:bg-red-50 hover:text-red-600">
+                Logout
+              </Button>
+            </div>
+          </div>
+        </header>
 
         <main className="flex-1 overflow-auto">
           <div className="p-6">
-            {/* ✅ Wrap routes with WorkSessionProvider so all child pages can access work session state */}
             <WorkSessionProvider>
               <Routes>
                 <Route path="/" element={<EmployeeDashboardHome />} />
                 <Route path="/info" element={<EmployeeInfo />} />
                 <Route path="/attendance" element={<EmployeeAttendance />} />
                 <Route path="/meetings" element={<EmployeeMeetings />} />
-                <Route path="/projects" element={<EmployeeProjects />} />
                 <Route path="/social-calendar" element={<SocialMediaCalendar />} />
                 <Route path="/leaves" element={<EmployeeLeaves />} />
                 <Route path="/salary" element={<EmployeeSalarySlips />} />
                 <Route path="/reports" element={<EmployeeReports />} />
                 <Route path="/chat" element={<EmployeeChat />} />
-                <Route path="/mytask" element={<MyTask />} />
+                {/* My Work – main task dashboard */}
+                <Route path="/my-work" element={<MyTask />} />
+                <Route path="/mytask" element={<MyTask />} /> {/* backwards compatibility */}
+                {/* My Projects – read‑only project list */}
+                <Route path="/my-projects" element={<MyProjects />} />
                 <Route path="/review" element={<EmployeeReview />} />
                 <Route path="employee/goals" element={<EmployeeGoalSetting />} />
               </Routes>
