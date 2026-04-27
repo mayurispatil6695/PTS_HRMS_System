@@ -9,6 +9,26 @@ import { motion } from 'framer-motion';
 import { FolderOpen, Users, Calendar } from 'lucide-react';
 import { format } from 'date-fns';
 
+// ---------- TYPES ----------
+interface FirebaseTask {
+  id?: string;
+  title?: string;
+  status?: string;
+  dueDate?: string;
+  [key: string]: unknown; // allow extra fields like description, priority, etc.
+}
+
+interface FirebaseProject {
+  name?: string;
+  description?: string;
+  startDate?: string;
+  endDate?: string;
+  status?: string;
+  assignedTeamLeader?: string;
+  assignedEmployees?: string[];
+  tasks?: Record<string, FirebaseTask>;
+}
+
 interface Project {
   id: string;
   name: string;
@@ -18,9 +38,10 @@ interface Project {
   status: string;
   assignedTeamLeader?: string;
   assignedEmployees?: string[];
-  tasks?: Record<string, any>;
+  tasks?: Record<string, FirebaseTask>;
 }
 
+// ---------- COMPONENT ----------
 const MyProjects: React.FC = () => {
   const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
@@ -31,7 +52,7 @@ const MyProjects: React.FC = () => {
     if (!user?.id) return;
     const projectsRef = ref(database, 'projects');
     const unsubscribe = onValue(projectsRef, (snapshot) => {
-      const data = snapshot.val() as Record<string, any> | null;
+      const data = snapshot.val() as Record<string, FirebaseProject> | null;
       if (!data) {
         setProjects([]);
         setLoading(false);
@@ -57,13 +78,13 @@ const MyProjects: React.FC = () => {
     return () => off(projectsRef);
   }, [user]);
 
-  const formatDate = (dateStr: string) => {
+  const formatDate = (dateStr: string): string => {
     if (!dateStr) return 'Not set';
     const date = new Date(dateStr);
     return isNaN(date.getTime()) ? dateStr : format(date, 'MMM dd, yyyy');
   };
 
-  const getStatusColor = (status: string) => {
+  const getStatusColor = (status: string): string => {
     switch (status) {
       case 'completed': return 'bg-green-100 text-green-700';
       case 'in_progress': return 'bg-blue-100 text-blue-700';
@@ -135,12 +156,12 @@ const MyProjects: React.FC = () => {
                   {Object.values(selectedProject.tasks || {}).length === 0 ? (
                     <p className="text-sm text-gray-400">No tasks yet</p>
                   ) : (
-                    Object.values(selectedProject.tasks).map((task: any) => (
+                    Object.values(selectedProject.tasks!).map((task) => (
                       <div key={task.id} className="border rounded p-2 text-sm">
-                        <div className="font-medium">{task.title}</div>
+                        <div className="font-medium">{task.title || 'Untitled'}</div>
                         <div className="flex gap-2 text-xs text-gray-500 mt-1">
-                          <span>Status: {task.status}</span>
-                          <span>Due: {formatDate(task.dueDate)}</span>
+                          <span>Status: {task.status || 'pending'}</span>
+                          <span>Due: {formatDate(task.dueDate || '')}</span>
                         </div>
                       </div>
                     ))

@@ -25,7 +25,7 @@ import PerformanceReviews from './PerformanceReviews';
 import PerformanceAnalytics from './PerformanceAnalytics';
 import { DarkModeToggle } from '../ui/DarkModeToggle';
 import QuickTaskAssign from './QuickTaskAssign'; // ✅ NEW
-import { useAutoLogout } from '../../hooks/useAutoLogout';
+
 const AdminDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [quickTaskOpen, setQuickTaskOpen] = useState(false);
@@ -36,7 +36,7 @@ const AdminDashboard = () => {
     logout();
     navigate('/login');
   };
-useAutoLogout('18:30'); // 6:30 PM
+
   useEffect(() => {
     if ('Notification' in window && Notification.permission !== 'denied') {
       Notification.requestPermission();

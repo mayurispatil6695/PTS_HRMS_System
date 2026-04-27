@@ -1,6 +1,5 @@
 import React from 'react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import EnhancedLoginPage from '../components/auth/EnhancedLoginPage';
 import AdminDashboard from '../components/admin/AdminDashboard';
 import EmployeeDashboard from '../components/employee/EmployeeDashboard';
 import TeamManagerDashboard from '../components/manager/TeamManagerDashboard';
@@ -40,8 +39,6 @@ const Index = () => {
 
   return (
     <Routes>
-      <Route path="/login" element={!user ? <EnhancedLoginPage /> : <Navigate to={getDashboardPath(user.role)} />} />
-      
       <Route path="/admin/*" element={user?.role === 'admin' ? <AdminDashboard /> : <Navigate to="/login" />} />
       <Route path="/manager/*" element={user?.role === 'team_manager' ? <TeamManagerDashboard /> : <Navigate to="/login" />} />
       <Route path="/leader/*" element={user?.role === 'team_leader' ? <TeamLeaderDashboard /> : <Navigate to="/login" />} />

@@ -1,25 +1,24 @@
-// src/hooks/useIdleDetection.ts
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { database } from '../firebase';
 import { ref, update, set, push, get, increment } from 'firebase/database';
 
 interface IdleDetectionOptions {
-  idleTimeout: number;          // milliseconds of inactivity to become idle
-  checkInterval?: number;       // how often to re‑send notifications (optional)
+  idleTimeout: number;
+  checkInterval?: number;
   onIdleStart?: () => void;
   onIdleEnd?: () => void;
   onIdleNotification?: (idleTime: number) => void;
   userId?: string;
-  adminId?: string;             // required for admin notifications
+  adminId?: string;
   employeeName?: string;
   employeeEmail?: string;
   department?: string;
-  isActive: boolean;            // true = punched in AND not on break
+  isActive: boolean;
 }
 
 export const useIdleDetection = (options: IdleDetectionOptions) => {
   const {
-    idleTimeout = 300000,
+    idleTimeout = 10000,           // default 10 seconds
     checkInterval = 1000,
     onIdleStart,
     onIdleEnd,
@@ -43,7 +42,6 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
 
   const getTodayString = () => new Date().toISOString().split('T')[0];
 
-  // Write current idle state to the global `activity` node (used by admin dashboard)
   const updateActivityNode = useCallback(async (isIdleNow: boolean, startTime?: number) => {
     if (!userId) return;
     const activityRef = ref(database, `activity/${userId}`);
@@ -59,8 +57,7 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     });
   }, [userId, employeeName, employeeEmail, department]);
 
-  // Start a new idle session – write to root‑level idleLogs
-  const startIdleSession = useCallback(async () => {
+  const startIdleSession = useCallback(async (customStartTimestamp?: number) => {
     if (!userId || !isActive) return;
     if (currentSessionIdRef.current) return;
 
@@ -71,13 +68,15 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     currentSessionIdRef.current = sessionId;
     sessionEndingRef.current = false;
 
-    await set(newSessionRef, { startTime: new Date().toISOString() });
-    await updateActivityNode(true, Date.now());
+    const startTime = customStartTimestamp
+      ? new Date(customStartTimestamp).toISOString()
+      : new Date().toISOString();
+    await set(newSessionRef, { startTime });
+    await updateActivityNode(true, customStartTimestamp || Date.now());
 
-    console.log(`[IdleDetection] Started idle session for ${employeeName || userId}`);
+    console.log(`[IdleDetection] Started idle session for ${employeeName || userId} at ${startTime}`);
   }, [userId, isActive, employeeName, updateActivityNode]);
 
-  // End the current idle session and add duration to totalIdleMs
   const endIdleSession = useCallback(async () => {
     if (!userId || !currentSessionIdRef.current) return;
     if (sessionEndingRef.current) return;
@@ -93,14 +92,20 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
       const startTime = new Date(sessionData.startTime).getTime();
       const endTime = Date.now();
       let durationMs = endTime - startTime;
+      if (durationMs < 0) durationMs = 0;
       if (durationMs > 12 * 60 * 60 * 1000) durationMs = 12 * 60 * 60 * 1000;
+
       if (durationMs > 0) {
         await update(sessionRef, {
           endTime: new Date(endTime).toISOString(),
           durationMs,
         });
-        // Update total idle for the day (root path)
         const totalRef = ref(database, `idleLogs/${userId}/${today}/totalIdleMs`);
+        // Ensure totalIdleMs is a number (initialize if not exists)
+        const totalSnap = await get(totalRef);
+        if (!totalSnap.exists()) {
+          await set(totalRef, 0);
+        }
         await update(totalRef, {
           totalIdleMs: increment(durationMs),
           lastUpdated: new Date().toISOString(),
@@ -114,7 +119,6 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     await updateActivityNode(false);
   }, [userId, employeeName, updateActivityNode]);
 
-  // Send a notification to the admin (stored under admin's node)
   const sendIdleNotification = useCallback(async () => {
     if (!userId || !adminId || notificationSentRef.current) return;
     try {
@@ -138,7 +142,6 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     }
   }, [userId, adminId, idleTimeout, employeeName, employeeEmail, department, onIdleNotification]);
 
-  // Clear the notification when idle ends
   const clearIdleNotification = useCallback(async () => {
     if (!userId || !adminId) return;
     try {
@@ -154,7 +157,6 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     }
   }, [userId, adminId]);
 
-  // Core logic: reset idle timer on user activity
   const resetIdleTimer = useCallback(() => {
     if (!isActive) {
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
@@ -174,10 +176,10 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     lastActivityTimeRef.current = Date.now();
     if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
 
+    // If currently idle, end the session immediately
     if (isIdle) {
       const idleDuration = idleStartTimeRef.current ? Date.now() - idleStartTimeRef.current : 0;
       if (idleDuration > 500) {
-        console.log(`[IdleDetection] User ${employeeName || userId} returned after ${idleDuration}ms`);
         endIdleSession();
         onIdleEnd?.();
         clearIdleNotification();
@@ -186,22 +188,24 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
       idleStartTimeRef.current = null;
     }
 
+    // Capture the start of potential idle period (the moment of last activity)
+    const potentialIdleStart = lastActivityTimeRef.current;
+
     idleTimerRef.current = setTimeout(() => {
       if (!isActive) return;
       const now = Date.now();
-      const inactiveTime = now - lastActivityTimeRef.current;
+      const inactiveTime = now - potentialIdleStart;
       if (inactiveTime >= idleTimeout && !isIdle) {
         console.log(`[IdleDetection] User ${employeeName || userId} became idle after ${inactiveTime}ms`);
         setIsIdle(true);
-        idleStartTimeRef.current = now;
-        startIdleSession();
+        idleStartTimeRef.current = potentialIdleStart;   // Use the captured start time
+        startIdleSession(potentialIdleStart);
         onIdleStart?.();
         sendIdleNotification();
       }
     }, idleTimeout);
   }, [isActive, isIdle, idleTimeout, onIdleStart, onIdleEnd, userId, adminId, employeeName, sendIdleNotification, clearIdleNotification, startIdleSession, endIdleSession]);
 
-  // Optional: update lastActive under admin (not critical for idle detection)
   const updateUserActivity = useCallback(async () => {
     if (userId && adminId && !isIdle && isActive) {
       try {
@@ -216,7 +220,6 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     }
   }, [userId, adminId, isIdle, isActive]);
 
-  // Set up event listeners
   useEffect(() => {
     const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click', 'focus', 'load'];
     const handleActivity = () => {

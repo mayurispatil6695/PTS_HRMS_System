@@ -20,7 +20,7 @@ import NotificationSystem from '../ui/NotificationSystem';
 import EmployeeReview from './EmployeeReview';
 import EmployeeGoalSetting from './EmployeeGoalSetting';
 import { DarkModeToggle } from '../ui/DarkModeToggle';
-import { useAutoLogout } from '../../hooks/useAutoLogout';
+
 const EmployeeDashboard = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const { user, logout } = useAuth();
@@ -30,7 +30,7 @@ const EmployeeDashboard = () => {
     logout();
     navigate('/login');
   };
-useAutoLogout('18:30'); // 6:30 PM
+
   return (
     <div className="flex h-screen bg-gray-50">
       {/* Mobile sidebar overlay */}
