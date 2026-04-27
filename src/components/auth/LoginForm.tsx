@@ -12,7 +12,7 @@ interface LoginFormProps {
 }
 
 const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
-  const [email, setEmail] = useState('');
+  const [identifier, setIdentifier] = useState(''); // can be email OR employee ID
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -22,14 +22,14 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email || !password) {
+    if (!identifier || !password) {
       setError('Please fill in all fields');
       return;
     }
     setLoading(true);
     setError(null);
     try {
-      const result = await login(email, password, userType);
+      const result = await login(identifier, password, userType);
       if (!result.success) throw new Error(result.message || 'Login failed');
       if (onSuccess) onSuccess();
       toast({ title: "Login Successful", description: `Welcome back!` });
@@ -48,6 +48,12 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
     }
   };
 
+  // Dynamic label & placeholder based on user type
+  const labelText = userType === 'admin' ? 'Email' : 'Email or Employee ID';
+  const placeholderText = userType === 'admin' 
+    ? '@gmail.com' 
+    : '.@gmail.com or EMP-id';
+
   return (
     <motion.form
       initial={{ opacity: 0, y: 20 }}
@@ -64,18 +70,20 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
       )}
 
       <div className="space-y-2">
-        <label htmlFor="email" className="text-sm font-medium text-gray-700">Email</label>
+        <label htmlFor="identifier" className="text-sm font-medium text-gray-700">
+          {labelText}
+        </label>
         <div className="relative">
           <Mail className="absolute left-3 top-3 h-4 w-4 text-gray-400" />
           <Input
-            id="email"
-            type="email"
-            placeholder={`${userType}@company.com`}
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            id="identifier"
+            type="text"
+            placeholder={placeholderText}
+            value={identifier}
+            onChange={(e) => setIdentifier(e.target.value)}
             className="pl-10"
             required
-            autoComplete="username"
+            autoComplete="off"
           />
         </div>
       </div>
@@ -104,7 +112,6 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
             {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         </div>
-        {/* ❌ Forgot Password link removed */}
       </div>
 
       <Button 
@@ -127,12 +134,12 @@ const LoginForm: React.FC<LoginFormProps> = ({ userType, onSuccess }) => {
                 r="10"
                 stroke="currentColor"
                 strokeWidth="4"
-              ></circle>
+              />
               <path
                 className="opacity-75"
                 fill="currentColor"
                 d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-              ></path>
+              />
             </svg>
             Signing in...
           </>

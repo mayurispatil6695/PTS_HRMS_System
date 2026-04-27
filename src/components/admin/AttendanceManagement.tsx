@@ -14,15 +14,10 @@ import { AttendanceRecord } from '@/types/attendance';
 
 // ==================== TYPES ====================
 
-
-
-
 interface AttendanceManagementProps {
   role?: 'admin' | 'manager' | 'team_leader' | 'client';
 }
 
-
-  
 interface Employee {
   id: string;
   name: string;
@@ -31,6 +26,7 @@ interface Employee {
   designation?: string;
   status: string;
   adminId?: string;
+  employeeId?: string;   // ✅ custom employee ID (e.g., EMP-00002)
 }
 
 interface BreakRecord {
@@ -40,7 +36,6 @@ interface BreakRecord {
   timestamp: number;
 }
 
-// Extend AttendanceRecord with optional adminId and extra fields
 interface AttendanceRecordWithAdmin {
   id: string;
   employeeId: string;
@@ -82,6 +77,7 @@ interface FirebaseEmployeeRaw {
   department?: string;
   designation?: string;
   status?: string;
+  employeeId?: string;   // ✅ added
 }
 
 interface FirebaseAttendanceRaw {
@@ -138,7 +134,7 @@ interface AbsentEmployee {
 }
 
 // ==================== COMPONENT ====================
-const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'admin' }) =>{
+const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'admin' }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [allRecords, setAllRecords] = useState<AttendanceRecordWithAdmin[]>([]);
@@ -165,7 +161,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
   }, []);
 
-  // Fetch ALL employees from all admins
+  // Fetch ALL employees from all admins (including custom employeeId)
   useEffect(() => {
     if (!user) return;
     const employeesRef = ref(database, "users");
@@ -186,7 +182,8 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
                 department: emp.department || '',
                 designation: emp.designation || '',
                 status: emp.status || 'active',
-                adminId: adminId || ''
+                adminId: adminId || '',
+                employeeId: emp.employeeId || '',   // ✅ store custom employee ID
               });
             });
           }
@@ -197,7 +194,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     return () => off(employeesRef);
   }, [user]);
 
-  // Load all attendance records from all employees once (with pagination support)
+  // Load all attendance records from all employees (use custom employeeId)
   useEffect(() => {
     if (!employees.length) return;
     const loadAllRecords = async () => {
@@ -213,7 +210,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
             const recordId = `${employee.id}-${key}`;
             recordsMap.set(recordId, {
               id: key,
-              employeeId: employee.id,
+              employeeId: employee.employeeId || employee.id,   // ✅ use custom ID
               employeeName: employee.name,
               adminId: employee.adminId,
               date: value.date || '',
@@ -244,7 +241,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     loadAllRecords();
   }, [employees]);
 
-  // Apply filters to all records and paginate
+  // Apply filters and paginate
   useEffect(() => {
     let filtered = allRecords;
     if (searchTerm) {
@@ -275,7 +272,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     setLoadingMore(false);
   };
 
-  // Helper functions (markAsLate, markAsHalfDay, resetStatus, deleteAttendanceRecord, etc.)
+  // Mark as late
   const markAsLate = async (recordId: string, employeeId: string, adminId?: string) => {
     if (!adminId) {
       toast({ title: "Error", description: "Unable to determine admin", variant: "destructive" });
@@ -449,7 +446,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
       const headers = ['Employee Name', 'Employee ID', 'Date', 'Punch In', 'Punch Out', 'Total Hours', 'Total Break Time', 'Status', 'Work Mode', 'Marked Late By', 'Marked Late At', 'Marked Half Day By', 'Marked Half Day At', 'Admin ID', 'Breaks'];
       const rows = filteredRecords.map(record => [
         record.employeeName,
-        record.employeeId,
+        record.employeeId, // now shows custom ID
         new Date(record.date).toLocaleDateString(),
         record.punchIn || '-',
         record.punchOut || '-',

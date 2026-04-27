@@ -27,8 +27,9 @@ interface User {
   adminUid?: string;
   employeeId?: string;
   lastActive?: number;
-  companyName?: string; // ✅ for clients
+  companyName?: string; // for clients
 }
+
 interface EmployeeRecord {
   email: string;
   employeeId?: string;
@@ -42,8 +43,6 @@ interface EmployeeRecord {
   role?: 'employee' | 'team_manager' | 'team_leader';
 }
 
-
-
 interface ClientRecord {
   email: string;
   name?: string;
@@ -51,7 +50,7 @@ interface ClientRecord {
   companyName?: string;
   address?: string;
   createdAt?: string;
-  profileImage?: string; // ✅ add this line
+  profileImage?: string;
   status?: string;
   addedBy?: string;
 }
@@ -64,7 +63,7 @@ interface AdminNode {
 
 interface AuthContextType {
   user: User | null;
-  login: (email: string, password: string, role: string) => Promise<{ success: boolean; message?: string }>;
+  login: (identifier: string, password: string, role: string) => Promise<{ success: boolean; message?: string }>;
   signup: (email: string, password: string, userData: Partial<User>) => Promise<{ success: boolean; message?: string }>;
   logout: () => Promise<void>;
   loading: boolean;
@@ -73,45 +72,163 @@ interface AuthContextType {
   updateUserStatus: (status: 'active' | 'inactive') => Promise<void>;
 }
 
-interface FirebaseUserData {
-  role?: 'admin' | 'employee' | 'team_manager' | 'team_leader' | 'client';
-  email?: string;
-  name?: string;
-  createdAt?: string;
-  profileImage?: string;
-  department?: string;
-  designation?: string;
-  status?: string;
-  adminUid?: string;
-  employeeId?: string;
-  managedBy?: string;
-  lastLogin?: string;
-  lastActive?: number;
-}
-
-interface EmployeeData {
-  email: string;
-  employeeId?: string;
-  name?: string;
-  createdAt?: string;
-  profileImage?: string;
-  department?: string;
-  designation?: string;
-  status?: string;
-  managedBy?: string;
-  role?: 'employee' | 'team_manager' | 'team_leader' | 'client';
-}
-
-interface AdminData {
-  employees?: Record<string, EmployeeData>;
-  [key: string]: unknown;
-}
-
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // ========== Helper: find employee by employeeId across all admins ==========
+  const findEmployeeByEmployeeId = async (employeeId: string): Promise<{ email: string; adminUid: string; employeeData: EmployeeRecord } | null> => {
+    const snapshot = await get(ref(database, 'users'));
+    if (!snapshot.exists()) return null;
+
+    for (const [adminUid, adminValue] of Object.entries(snapshot.val())) {
+      const adminData = adminValue as AdminNode;
+      if (adminData.employees) {
+        for (const [empId, emp] of Object.entries(adminData.employees)) {
+          if (emp.employeeId === employeeId) {
+            return {
+              email: emp.email,
+              adminUid: adminUid,
+              employeeData: emp,
+            };
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> => {
+    try {
+      const userRef = ref(database, `users/${firebaseUser.uid}`);
+      const userSnapshot = await get(userRef);
+
+      // 1. If direct profile exists (admin or previously stored)
+      if (userSnapshot.exists()) {
+        const userData = userSnapshot.val() as {
+          role?: string;
+          email?: string;
+          name?: string;
+          createdAt?: string;
+          profileImage?: string;
+          department?: string;
+          designation?: string;
+          status?: string;
+          adminUid?: string;
+          employeeId?: string;
+          companyName?: string;
+        };
+
+        if (userData.role === 'admin') {
+          return {
+            id: firebaseUser.uid,
+            email: firebaseUser.email || userData.email || '',
+            name: userData.name || firebaseUser.email?.split('@')[0] || 'Admin',
+            role: 'admin',
+            createdAt: userData.createdAt || new Date().toISOString(),
+            profileImage: userData.profileImage,
+            department: userData.department || 'Management',
+            designation: userData.designation || 'Administrator',
+            status: userData.status || 'active',
+          };
+        }
+
+        if (userData.role === 'employee' || userData.role === 'team_leader' ||
+            userData.role === 'team_manager' || userData.role === 'client') {
+          return {
+            id: firebaseUser.uid,
+            email: firebaseUser.email || userData.email || '',
+            name: userData.name || firebaseUser.email?.split('@')[0] || 'User',
+            role: userData.role as User['role'],
+            createdAt: userData.createdAt || new Date().toISOString(),
+            profileImage: userData.profileImage,
+            department: userData.department,
+            designation: userData.designation,
+            status: userData.status || 'active',
+            adminUid: userData.adminUid,
+            employeeId: userData.employeeId,
+            companyName: userData.companyName,
+          };
+        }
+      }
+
+      // 2. Search for employee or client under all admins
+      const snapshot = await get(ref(database, 'users'));
+      if (snapshot.exists()) {
+        let foundData: EmployeeRecord | ClientRecord | null = null;
+        let adminUid = '';
+        let role: User['role'] = 'employee';
+
+        for (const [adminId, adminValue] of Object.entries(snapshot.val())) {
+          const adminData = adminValue as AdminNode;
+
+          // Search in employees
+          if (adminData.employees) {
+            for (const [empId, emp] of Object.entries(adminData.employees)) {
+              if (emp.email === firebaseUser.email) {
+                foundData = emp;
+                adminUid = adminId;
+                role = emp.role || 'employee';
+                break;
+              }
+            }
+          }
+
+          // If not found, search in clients
+          if (!foundData && adminData.clients) {
+            for (const [clientId, client] of Object.entries(adminData.clients)) {
+              if (client.email === firebaseUser.email) {
+                foundData = client;
+                adminUid = adminId;
+                role = 'client';
+                break;
+              }
+            }
+          }
+
+          if (foundData) break;
+        }
+
+        if (foundData) {
+          if (role === 'client') {
+            const clientData = foundData as ClientRecord;
+            return {
+              id: firebaseUser.uid,
+              email: firebaseUser.email || clientData.email,
+              name: clientData.name || firebaseUser.email?.split('@')[0] || 'Client',
+              role: 'client',
+              createdAt: clientData.createdAt || new Date().toISOString(),
+              profileImage: clientData.profileImage,
+              status: clientData.status || 'active',
+              adminUid: adminUid,
+              companyName: clientData.companyName,
+            };
+          } else {
+            const empData = foundData as EmployeeRecord;
+            return {
+              id: firebaseUser.uid,
+              email: firebaseUser.email || empData.email,
+              name: empData.name || firebaseUser.email?.split('@')[0] || 'Employee',
+              role: role,
+              createdAt: empData.createdAt || new Date().toISOString(),
+              profileImage: empData.profileImage,
+              department: empData.department,
+              designation: empData.designation,
+              status: empData.status || 'active',
+              adminUid: adminUid,
+              employeeId: empData.employeeId,
+            };
+          }
+        }
+      }
+      return null;
+    } catch (error) {
+      console.error('Error fetching user data:', error);
+      return null;
+    }
+  };
 
   const updateUserStatus = async (status: 'active' | 'inactive') => {
     if (!user) return;
@@ -124,155 +241,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Add these interfaces before fetchUserData (if not already present)
-interface EmployeeRecord {
-  email: string;
-  employeeId?: string;
-  name?: string;
-  createdAt?: string;
-  profileImage?: string;
-  department?: string;
-  designation?: string;
-  status?: string;
-  managedBy?: string;
-  role?: 'employee' | 'team_manager' | 'team_leader';
-}
-
-interface ClientRecord {
-  email: string;
-  name?: string;
-  phone?: string;
-  companyName?: string;
-  address?: string;
-  createdAt?: string;
-  status?: string;
-  addedBy?: string;
-}
-
-interface AdminNode {
-  employees?: Record<string, EmployeeRecord>;
-  clients?: Record<string, ClientRecord>;
-  [key: string]: unknown;
-}
-
-// Then the corrected fetchUserData:
-const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> => {
-  try {
-    const userRef = ref(database, `users/${firebaseUser.uid}`);
-    const userSnapshot = await get(userRef);
-
-    // 1. If direct profile exists (admin or previously stored)
-    if (userSnapshot.exists()) {
-      const userData = userSnapshot.val() as FirebaseUserData;
-      
-      if (userData.role === 'admin') {
-        return {
-          id: firebaseUser.uid,
-          email: firebaseUser.email || userData.email || '',
-          name: userData.name || firebaseUser.email?.split('@')[0] || 'Admin',
-          role: 'admin',
-          createdAt: userData.createdAt || new Date().toISOString(),
-          profileImage: userData.profileImage,
-          department: userData.department || 'Management',
-          designation: userData.designation || 'Administrator',
-          status: userData.status || 'active',
-        };
-      }
-      
-      // For employees, team leaders, managers, or clients with direct profile
-      if (userData.role === 'employee' || userData.role === 'team_leader' || 
-          userData.role === 'team_manager' || userData.role === 'client') {
-        return {
-          id: firebaseUser.uid,
-          email: firebaseUser.email || userData.email || '',
-          name: userData.name || firebaseUser.email?.split('@')[0] || 'User',
-          role: userData.role,
-          createdAt: userData.createdAt || new Date().toISOString(),
-          profileImage: userData.profileImage,
-          department: userData.department,
-          designation: userData.designation,
-          status: userData.status || 'active',
-          adminUid: userData.adminUid,
-          employeeId: userData.employeeId,
-        };
-      }
-    }
-
-    // 2. Search for employee or client under all admins
-    const snapshot = await get(ref(database, 'users'));
-    if (snapshot.exists()) {
-      let foundData: EmployeeRecord | ClientRecord | null = null;
-      let adminUid = '';
-      let role: User['role'] = 'employee';
-
-      for (const [adminId, adminValue] of Object.entries(snapshot.val())) {
-        const adminData = adminValue as AdminNode;
-        
-        // Search in employees
-        if (adminData.employees) {
-          for (const [empId, emp] of Object.entries(adminData.employees)) {
-            if (emp.email === firebaseUser.email) {
-              foundData = emp;
-              adminUid = adminId;
-              role = emp.role || 'employee';
-              break;
-            }
-          }
-        }
-        
-        // If not found, search in clients
-        if (!foundData && adminData.clients) {
-          for (const [clientId, client] of Object.entries(adminData.clients)) {
-            if (client.email === firebaseUser.email) {
-              foundData = client;
-              adminUid = adminId;
-              role = 'client';
-              break;
-            }
-          }
-        }
-        
-        if (foundData) break;
-      }
-
-      if (foundData) {
-        if (role === 'client') {
-          const clientData = foundData as ClientRecord;
-          return {
-            id: firebaseUser.uid,
-            email: firebaseUser.email || clientData.email,
-            name: clientData.name || firebaseUser.email?.split('@')[0] || 'Client',
-            role: 'client',
-            createdAt: clientData.createdAt || new Date().toISOString(),
-            profileImage: clientData.profileImage,
-            status: clientData.status || 'active',
-            adminUid: adminUid,
-            companyName: clientData.companyName,
-          };
-        } else {
-          const empData = foundData as EmployeeRecord;
-          return {
-            id: firebaseUser.uid,
-            email: firebaseUser.email || empData.email,
-            name: empData.name || firebaseUser.email?.split('@')[0] || 'Employee',
-            role: role,
-            createdAt: empData.createdAt || new Date().toISOString(),
-            profileImage: empData.profileImage,
-            department: empData.department,
-            designation: empData.designation,
-            status: empData.status || 'active',
-            adminUid: adminUid,
-            employeeId: empData.employeeId,
-          };
-        }
-      }
-    }
-    return null;
-  } catch (error) {
-    console.error('Error fetching user data:', error);
-    return null;
-  }
-};
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       if (firebaseUser) {
@@ -298,27 +266,20 @@ const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> =
       unsubscribe();
       if (presenceInterval) clearInterval(presenceInterval);
     };
-  }, [user?.id]); // ✅ add dependency to avoid stale closure
+  }, [user?.id]);
 
   const login = async (identifier: string, password: string, _role: string) => {
     setLoading(true);
     try {
       let email = identifier;
-      if (identifier.startsWith("EMP-")) {
-        const snapshot = await get(ref(database, "users"));
-        let foundEmail = "";
-        if (snapshot.exists()) {
-          snapshot.forEach((adminSnap) => {
-            const employees = adminSnap.child("employees").val() as Record<string, EmployeeData> | undefined;
-            if (employees) {
-              Object.values(employees).forEach((emp) => {
-                if (emp.employeeId === identifier) foundEmail = emp.email;
-              });
-            }
-          });
+
+      // If identifier does NOT contain '@', treat as employee ID
+      if (!identifier.includes('@')) {
+        const employeeRecord = await findEmployeeByEmployeeId(identifier);
+        if (!employeeRecord) {
+          return { success: false, message: 'Employee ID not found. Please check and try again.' };
         }
-        if (!foundEmail) return { success: false, message: "Employee ID not found" };
-        email = foundEmail;
+        email = employeeRecord.email;
       }
 
       const userCredential = await signInWithEmailAndPassword(auth, email, password);
@@ -397,24 +358,24 @@ const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> =
   };
 
   const resetPassword = async (email: string) => {
-  try {
-    await sendPasswordResetEmail(auth, email);
-    return { success: true };
-  } catch (error: unknown) {
-    console.error('Reset password error:', error);
-    let message = 'Failed to send reset email';
-    if (error instanceof Error) {
-      if (error.message.includes('auth/user-not-found')) {
-        message = 'No account found with this email address';
-      } else if (error.message.includes('auth/invalid-email')) {
-        message = 'Invalid email address';
-      } else {
-        message = error.message;
+    try {
+      await sendPasswordResetEmail(auth, email);
+      return { success: true };
+    } catch (error: unknown) {
+      console.error('Reset password error:', error);
+      let message = 'Failed to send reset email';
+      if (error instanceof Error) {
+        if (error.message.includes('auth/user-not-found')) {
+          message = 'No account found with this email address';
+        } else if (error.message.includes('auth/invalid-email')) {
+          message = 'Invalid email address';
+        } else {
+          message = error.message;
+        }
       }
+      return { success: false, message };
     }
-    return { success: false, message };
-  }
-};
+  };
 
   const changePassword = async (newPassword: string) => {
     try {
@@ -429,7 +390,6 @@ const fetchUserData = async (firebaseUser: FirebaseUser): Promise<User | null> =
     }
   };
 
-  // ✅ Memoize context value to prevent unnecessary re-renders and help Fast Refresh
   const contextValue = useMemo(() => ({
     user,
     login,
