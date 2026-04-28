@@ -109,7 +109,6 @@ interface FirebaseEmployeeData {
   [key: string]: unknown;
 }
 
-// ✅ Added 'breaks' property
 interface FirebaseAttendanceData {
   punchIn?: string;
   punchOut?: string;
@@ -171,7 +170,7 @@ const parseDurationToMinutes = (durationStr: string): number => {
   return Math.round(total);
 };
 
-// ✅ Calculates net worked hours (gross − breaks)
+// Calculates net worked hours (gross − breaks)
 const calculateNetWorkDuration = (
   punchIn: string,
   punchOut: string | null,
@@ -197,6 +196,41 @@ const calculateNetWorkDuration = (
   return `${hours}h ${minutes}m`;
 };
 
+// ✅ Helper: determine if employee was late based on punch-in time (9:40 AM threshold)
+const isLateArrival = (punchIn: string): boolean => {
+  if (!punchIn) return false;
+  const minutes = convertTimeToMinutes(punchIn);
+  const lateThreshold = 9 * 60 + 40; // 9:40 AM
+  return minutes > lateThreshold;
+};
+
+// ✅ Helper: generate a human-readable remark explaining the status
+const getRemark = (record: AttendanceRecordWithAdmin): string => {
+  const isLate = isLateArrival(record.punchIn);
+  
+  // No punch‑out yet → day incomplete
+  if (!record.punchOut) {
+    return isLate
+      ? `Punched in late (${record.punchIn}) but not yet punched out – final status pending.`
+      : `On time (${record.punchIn}) but not yet punched out – final status pending.`;
+  }
+
+  const netHoursStr = calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks);
+  const netHoursMatch = netHoursStr.match(/^(\d+)h/);
+  const netHours = netHoursMatch ? parseInt(netHoursMatch[1], 10) : 0;
+
+  if (record.status === 'half-day') {
+    return `Half‑day because net worked hours (${netHoursStr}) < 4`;
+  }
+  if (record.status === 'late') {
+    return `Punched in after 9:40 AM (${record.punchIn}) but worked ≥4 hours (net ${netHoursStr}) – marked as late.`;
+  }
+  if (isLate && record.status === 'present') {
+    return `Late arrival (${record.punchIn}) but worked ≥4 hours (net ${netHoursStr}) – marked as present.`;
+  }
+  return `On time and worked ≥4 hours (net ${netHoursStr}).`;
+};
+
 // ==================== COMPONENT ====================
 const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'admin' }) => {
   const { user } = useAuth();
@@ -205,7 +239,8 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
   const [displayedRecords, setDisplayedRecords] = useState<AttendanceRecordWithAdmin[]>([]);
   const [filteredRecords, setFilteredRecords] = useState<AttendanceRecordWithAdmin[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterDate, setFilterDate] = useState('');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -277,7 +312,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
               employeeId: employee.employeeId || employee.id,
               employeeName: employee.name,
               adminId: employee.adminId,
-              employeeUid: employee.id,        // store the original Firebase UID
+              employeeUid: employee.id,
               date: value.date || '',
               punchIn: value.punchIn || '',
               punchOut: value.punchOut || null,
@@ -306,7 +341,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     loadAllRecords();
   }, [employees]);
 
-  // Apply filters and paginate
+  // Apply filters and paginate (date range + status + search)
   useEffect(() => {
     let filtered = allRecords;
     if (searchTerm) {
@@ -316,8 +351,11 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
         record.employeeId?.toLowerCase().includes(term)
       );
     }
-    if (filterDate) {
-      filtered = filtered.filter(record => record.date?.split('T')[0] === filterDate);
+    if (filterDateFrom) {
+      filtered = filtered.filter(record => record.date?.split('T')[0] >= filterDateFrom);
+    }
+    if (filterDateTo) {
+      filtered = filtered.filter(record => record.date?.split('T')[0] <= filterDateTo);
     }
     if (filterStatus !== 'all') {
       filtered = filtered.filter(record => record.status === filterStatus);
@@ -325,7 +363,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     setFilteredRecords(filtered);
     setDisplayedRecords(filtered.slice(0, PAGE_SIZE));
     setHasMore(filtered.length > PAGE_SIZE);
-  }, [searchTerm, filterDate, filterStatus, allRecords]);
+  }, [searchTerm, filterDateFrom, filterDateTo, filterStatus, allRecords]);
 
   const loadMore = () => {
     if (!hasMore || loadingMore) return;
@@ -337,7 +375,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     setLoadingMore(false);
   };
 
-  // ✅ UPDATED: use employeeUid (real Firebase UID) instead of custom employeeId
+  // Mark as late (admin action)
   const markAsLate = async (recordId: string, employeeUid: string, adminId?: string) => {
     if (!adminId) {
       toast({ title: "Error", description: "Unable to determine admin", variant: "destructive" });
@@ -477,7 +515,12 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
     setExportLoading(true);
     try {
-      const headers = ['Employee Name', 'Employee ID', 'Date', 'Punch In', 'Punch Out', 'Total Hours', 'Total Break Time', 'Status', 'Work Mode', 'Marked Late By', 'Marked Late At', 'Marked Half Day By', 'Marked Half Day At', 'Admin ID', 'Breaks'];
+      const headers = [
+        'Employee Name', 'Employee ID', 'Date', 'Punch In', 'Punch Out',
+        'Net Hours', 'Break Time', 'Status', 'Late Arrival (Yes/No)', 'Remark',
+        'Work Mode', 'Marked Late By', 'Marked Late At', 'Marked Half Day By',
+        'Marked Half Day At', 'Admin ID'
+      ];
       const rows = filteredRecords.map(record => [
         record.employeeName,
         record.employeeId,
@@ -487,13 +530,14 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
         calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks),
         calculateTotalBreakTime(record.breaks),
         record.status,
+        isLateArrival(record.punchIn) ? 'Yes' : 'No',
+        getRemark(record),
         record.workMode || 'office',
         record.markedLateBy || '-',
         record.markedLateAt ? new Date(record.markedLateAt).toLocaleString() : '-',
         record.markedHalfDayBy || '-',
         record.markedHalfDayAt ? new Date(record.markedHalfDayAt).toLocaleString() : '-',
-        record.adminId || '-',
-        record.breaks ? Object.entries(record.breaks).map(([breakId, breakData]) => `Break ${breakId}: ${breakData.breakIn} to ${breakData.breakOut || 'ongoing'} (${breakData.duration || 'N/A'})`).join('; ') : 'No breaks'
+        record.adminId || '-'
       ]);
       const csvContent = [headers, ...rows].map(row => row.map(field => `"${String(field).replace(/"/g, '""')}"`).join(',')).join('\n');
       const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -511,80 +555,10 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
   };
 
-  const generateFullDailyReport = async () => {
-    if (!filterDate) {
-      toast({ title: "No Date Selected", description: "Please select a date", variant: "destructive" });
-      return;
-    }
-    setExportLoading(true);
-    try {
-      const adminId = user?.id;
-      if (!adminId) {
-        toast({ title: "Error", description: "Admin ID not found", variant: "destructive" });
-        return;
-      }
-      const employeesRef = ref(database, `users/${adminId}/employees`);
-      const employeesSnap = await get(employeesRef);
-      const employeesData = employeesSnap.val() as Record<string, FirebaseEmployeeData> | null;
-      if (!employeesData) {
-        toast({ title: "No Employees", description: "No employees found", variant: "destructive" });
-        return;
-      }
-      const presentList: PresentEmployee[] = [];
-      const absentList: AbsentEmployee[] = [];
-      for (const [empId, empData] of Object.entries(employeesData)) {
-        const employeeName = empData.name || 'Unknown';
-        const employeeDepartment = empData.department || 'No Department';
-        const attendanceRef = ref(database, `users/${adminId}/employees/${empId}/punching`);
-        const attendanceSnap = await get(attendanceRef);
-        const records = attendanceSnap.val() as Record<string, FirebaseAttendanceData> | null;
-        let foundRecord: FirebaseAttendanceData | null = null;
-        if (records) {
-          for (const rec of Object.values(records)) {
-            const recordDate = rec.date ? new Date(rec.date).toISOString().split('T')[0] : '';
-            if (recordDate === filterDate) { foundRecord = rec; break; }
-          }
-        }
-        if (foundRecord) {
-          const punchIn = foundRecord.punchIn || '—';
-          const punchOut = foundRecord.punchOut || '—';
-          const totalHours = (foundRecord.punchOut && foundRecord.punchOut !== '—') 
-            ? calculateNetWorkDuration(punchIn, punchOut, foundRecord.breaks) 
-            : '—';
-          const workMode = foundRecord.workMode || 'office';
-          const status = foundRecord.status || 'present';
-          presentList.push({ name: employeeName, department: employeeDepartment, punchIn, punchOut, totalHours, workMode, status });
-        } else {
-          absentList.push({ name: employeeName, department: employeeDepartment, status: 'Absent' });
-        }
-      }
-      const csvRows: string[] = [];
-      csvRows.push('"===== PRESENT EMPLOYEES ====="');
-      csvRows.push('"Employee Name","Department","Punch In","Punch Out","Total Hours","Work Mode","Status"');
-      for (const emp of presentList) csvRows.push(`"${emp.name}","${emp.department}","${emp.punchIn}","${emp.punchOut}","${emp.totalHours}","${emp.workMode}","${emp.status}"`);
-      csvRows.push('');
-      csvRows.push('"===== ABSENT EMPLOYEES ====="');
-      csvRows.push('"Employee Name","Department","Status"');
-      for (const emp of absentList) csvRows.push(`"${emp.name}","${emp.department}","${emp.status}"`);
-      const csvContent = csvRows.join('\n');
-      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `daily_attendance_report_${filterDate}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast({ title: "Report Generated", description: `Present: ${presentList.length}, Absent: ${absentList.length}` });
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to generate report", variant: "destructive" });
-    } finally {
-      setExportLoading(false);
-    }
-  };
-
   const clearFilters = () => {
     setSearchTerm('');
-    setFilterDate('');
+    setFilterDateFrom('');
+    setFilterDateTo('');
     setFilterStatus('all');
   };
 
@@ -658,10 +632,24 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
         <CardContent>
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div className="relative"><Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" /><Input placeholder="Search employee..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10" /></div>
-            <Input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
-            <Select value={filterStatus} onValueChange={setFilterStatus}><SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger><SelectContent><SelectItem value="all">All Status</SelectItem><SelectItem value="present">Present</SelectItem><SelectItem value="absent">Absent</SelectItem><SelectItem value="late">Late</SelectItem><SelectItem value="half-day">Half Day</SelectItem></SelectContent></Select>
-            <Button onClick={exportAttendance} disabled={exportLoading || filteredRecords.length === 0} className="w-full">{exportLoading ? <><Clock className="h-4 w-4 mr-2 animate-spin" /> Exporting...</> : <><Download className="h-4 w-4 mr-2" /> Export ({filteredRecords.length})</>}</Button>
-            <Button onClick={generateFullDailyReport} disabled={exportLoading || !filterDate} variant="outline" className="w-full">{exportLoading ? <Clock className="h-4 w-4 mr-2 animate-spin" /> : <Download className="h-4 w-4 mr-2" />} Full Report</Button>
+            <div className="flex gap-2 col-span-2">
+              <Input type="date" value={filterDateFrom} onChange={e => setFilterDateFrom(e.target.value)} placeholder="From" className="w-full" />
+              <span className="self-center">to</span>
+              <Input type="date" value={filterDateTo} onChange={e => setFilterDateTo(e.target.value)} placeholder="To" className="w-full" />
+            </div>
+            <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <SelectTrigger><SelectValue placeholder="Status" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Status</SelectItem>
+                <SelectItem value="present">Present</SelectItem>
+                <SelectItem value="absent">Absent</SelectItem>
+                <SelectItem value="late">Late</SelectItem>
+                <SelectItem value="half-day">Half Day</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button onClick={exportAttendance} disabled={exportLoading || filteredRecords.length === 0} className="w-full">
+              {exportLoading ? <><Clock className="h-4 w-4 mr-2 animate-spin" /> Exporting...</> : <><Download className="h-4 w-4 mr-2" /> Export ({filteredRecords.length})</>}
+            </Button>
           </div>
         </CardContent>
       </Card>
@@ -677,9 +665,9 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch Out</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Hours</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Net Hours</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Break Time</th>
-                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status & Late Info</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Work Mode</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Location</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Punch In Selfie</th>
@@ -694,15 +682,22 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{new Date(record.date).toLocaleDateString()}</td>
                     <td className="px-4 py-3 whitespace-nowrap"><span className="inline-flex items-center gap-1 text-sm text-green-600"><Clock className="h-3 w-3" /> {record.punchIn || '-'}</span></td>
                     <td className="px-4 py-3 whitespace-nowrap"><span className="inline-flex items-center gap-1 text-sm text-red-600"><Clock className="h-3 w-3" /> {record.punchOut || '-'}</span></td>
-                    {/* ✅ Total Hours now uses net work duration */}
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks)}</td>
                     <td className="px-4 py-3 whitespace-nowrap"><div className="group relative"><span className="cursor-help text-sm text-gray-700 underline decoration-dotted">{calculateTotalBreakTime(record.breaks)}</span><div className="absolute z-10 hidden group-hover:block bg-white p-3 border rounded-lg shadow-lg w-64">{renderBreaksTooltip(record.breaks)}</div></div></td>
                     <td className="px-4 py-3 whitespace-nowrap">
-                      <Badge className={`${getStatusColor(record.status)} text-xs font-medium`}>{record.status}</Badge>
+                      <div className="flex flex-wrap items-center gap-1">
+                        <Badge className={`${getStatusColor(record.status)} text-xs font-medium`}>{record.status}</Badge>
+                        {isLateArrival(record.punchIn) && (
+                          <Badge variant="outline" className="bg-yellow-100 text-yellow-700 text-xs border-yellow-200">Late arrival</Badge>
+                        )}
+                      </div>
                       {record.markedLateBy && <p className="text-xs text-gray-500 mt-1">Marked late by {record.markedLateBy}</p>}
                       {record.markedHalfDayBy && <p className="text-xs text-gray-500 mt-1">Marked half day by {record.markedHalfDayBy}</p>}
                       {record.status === 'half-day' && (
-                        <p className="text-xs text-purple-600 mt-1 italic">Net hours &lt; 8 after breaks</p>
+                        <p className="text-xs text-purple-600 mt-1 italic">Net hours &lt; 4 after breaks</p>
+                      )}
+                      {record.status === 'late' && (
+                        <p className="text-xs text-orange-600 mt-1 italic">Punched after 9:40 AM but worked ≥4h</p>
                       )}
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap"><Badge variant="outline" className="text-xs font-medium">{record.workMode || 'office'}</Badge></td>

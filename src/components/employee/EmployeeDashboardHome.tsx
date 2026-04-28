@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { 
-  Clock, 
-  Plane, 
-  FolderOpen, 
+import {
+  Clock,
+  Plane,
+  FolderOpen,
   Calendar,
   CheckCircle,
   Users,
@@ -34,7 +34,7 @@ import SelfieCapture from '../attendance/SelfieCapture';
 import { useWorkSession } from '../../contexts/WorkSessionContext';
 import { useIdleDetection } from '../../hooks/useIdleDetection';
 import ProjectsPopup from '../admin/popups/ProjectsPopup';
-import { Project ,Task} from '@/types/project';
+import { Project, Task } from '@/types/project';
 
 // ==================== TYPES ====================
 interface AttendanceRecord {
@@ -185,6 +185,7 @@ const EmployeeDashboardHome = () => {
   const [currentBreakId, setCurrentBreakId] = useState<string | null>(null);
   const [showSelfieCapture, setShowSelfieCapture] = useState(false);
   const [pendingPunchType, setPendingPunchType] = useState<'in' | 'out' | null>(null);
+  const [isAutoPunchOut, setIsAutoPunchOut] = useState(false); // ✅ new flag for auto punch-out
   const [currentLocation, setCurrentLocation] = useState<{ lat: number; lng: number; name: string } | null>(null);
   const [employeeProfile, setEmployeeProfile] = useState<{ workMode?: string } | null>(null);
   const [adminUid, setAdminUid] = useState<string | undefined>(undefined);
@@ -214,37 +215,37 @@ const EmployeeDashboardHome = () => {
   const lastNotifiedStatusRef = useRef<string | null>(null);
 
   // ========== FETCH EMPLOYEE ID IF MISSING ==========
-const [employeeIdDisplay, setEmployeeIdDisplay] = useState<string | undefined>(user?.employeeId);
+  const [employeeIdDisplay, setEmployeeIdDisplay] = useState<string | undefined>(user?.employeeId);
 
-useEffect(() => {
-  if (!user?.id || !user?.adminUid) return;
-  if (user.employeeId) {
-    setEmployeeIdDisplay(user.employeeId);
-    return;
-  }
-  const fetchEmpId = async () => {
-    try {
-      const adminUid = user.adminUid;
-      const empId = user.id;
-      console.log(`🔍 Fetching employee ID from: users/${adminUid}/employees/${empId}`);
-      const empRef = ref(database, `users/${adminUid}/employees/${empId}`);
-      const snap = await get(empRef);
-      const data = snap.val();
-      console.log('📦 Employee data from admin list:', data);
-      if (data && data.employeeId) {
-        setEmployeeIdDisplay(data.employeeId);
-        // Save to profile for future
-        await update(ref(database, `users/${empId}/profile`), { employeeId: data.employeeId });
-        console.log(`✅ Employee ID set to: ${data.employeeId}`);
-      } else {
-        console.log('❌ No employeeId found in admin list');
-      }
-    } catch (err) {
-      console.error('Error fetching employee ID:', err);
+  useEffect(() => {
+    if (!user?.id || !user?.adminUid) return;
+    if (user.employeeId) {
+      setEmployeeIdDisplay(user.employeeId);
+      return;
     }
-  };
-  fetchEmpId();
-}, [user]);
+    const fetchEmpId = async () => {
+      try {
+        const adminUid = user.adminUid;
+        const empId = user.id;
+        console.log(`🔍 Fetching employee ID from: users/${adminUid}/employees/${empId}`);
+        const empRef = ref(database, `users/${adminUid}/employees/${empId}`);
+        const snap = await get(empRef);
+        const data = snap.val();
+        console.log('📦 Employee data from admin list:', data);
+        if (data && data.employeeId) {
+          setEmployeeIdDisplay(data.employeeId);
+          // Save to profile for future
+          await update(ref(database, `users/${empId}/profile`), { employeeId: data.employeeId });
+          console.log(`✅ Employee ID set to: ${data.employeeId}`);
+        } else {
+          console.log('❌ No employeeId found in admin list');
+        }
+      } catch (err) {
+        console.error('Error fetching employee ID:', err);
+      }
+    };
+    fetchEmpId();
+  }, [user]);
 
   // Helper: convert time to minutes
   const formatMinutesToHours = (minutes: number): string => {
@@ -289,8 +290,8 @@ useEffect(() => {
   };
 
   const calculateTotalWorkedMinutes = (
-    punchInTime: string, 
-    punchOutTime: string, 
+    punchInTime: string,
+    punchOutTime: string,
     breaks?: Record<string, { breakOut?: string; duration?: string }>
   ): number => {
     if (!punchInTime || !punchOutTime) return 0;
@@ -811,7 +812,12 @@ useEffect(() => {
     }
   };
 
-  const performPunchOut = async (selfieImage: string, location: { lat: number; lng: number; name: string } | null): Promise<void> => {
+  // ✅ MODIFIED: performPunchOut now accepts an extra parameter `skipSelfieCheck`
+  const performPunchOut = async (selfieImage: string, location: { lat: number; lng: number; name: string } | null, skipSelfieCheck: boolean = false): Promise<void> => {
+    if (!skipSelfieCheck && !selfieImage) {
+      toast.error("Selfie verification required");
+      return;
+    }
     if (!user?.id || !user?.adminUid || !todayAttendance?.id) { toast.error("Cannot punch out - missing required data"); return; }
     if (todayAttendance.punchOut) { toast.error("You've already punched out today"); return; }
     if (currentBreakId) { toast.error("Please end your current break before punching out"); return; }
@@ -825,7 +831,8 @@ useEffect(() => {
       const punchInMinutes = convertTimeToMinutes(punchInTime);
       const lateThresholdMinutes = 9 * 60 + 40;
       const isLate = punchInMinutes > lateThresholdMinutes;
-      const isHalfDay = totalWorkedHours < 8;
+      const HALF_DAY_THRESHOLD_HOURS = 4; // change to any number
+      const isHalfDay = totalWorkedHours < HALF_DAY_THRESHOLD_HOURS;
       let newStatus = 'present';
       if (isHalfDay) newStatus = 'half-day';
       else if (isLate) newStatus = 'late';
@@ -853,7 +860,7 @@ useEffect(() => {
       await update(recordRef, updates);
       await punchOut();
       if (newStatus === 'late') toast.success("Punched out! Note: You were marked as late (after 9:40 AM)");
-      else if (newStatus === 'half-day') toast.success("Punched out! Note: Marked as half-day (less than 8 hours worked)");
+      else if (newStatus === 'half-day') toast.success("Punched out! Note: Marked as half-day (less than 4 hours worked)");
       else toast.success("Punched out successfully!");
     } catch (error) {
       console.error(error);
@@ -862,6 +869,33 @@ useEffect(() => {
       setLoading(false);
     }
   };
+
+  // Auto punch‑out function (used by beforeunload)
+  const autoPunchOut = async () => {
+    if (!todayAttendance || todayAttendance.punchOut) return;
+    const location = await getCurrentLocation();
+    await performPunchOut('', location, true); // skip selfie check
+    toast.success('Auto punched out');
+  };
+
+  // beforeunload event to auto punch out when closing window after 6:30 PM
+  useEffect(() => {
+    const handleBeforeUnload = async (event: BeforeUnloadEvent) => {
+      if (!todayAttendance?.punchOut && todayAttendance) {
+        const now = new Date();
+        const currentHour = now.getHours();
+        const currentMinute = now.getMinutes();
+        const afterWorkHours = currentHour > 18 || (currentHour === 18 && currentMinute >= 30);
+        if (afterWorkHours) {
+          event.preventDefault();
+          event.returnValue = 'Auto punch‑out in progress...';
+          await autoPunchOut();
+        }
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [todayAttendance]);
 
   const handlePunchIn = () => { setPendingPunchType('in'); setShowSelfieCapture(true); };
   const handlePunchOut = () => { setPendingPunchType('out'); setShowSelfieCapture(true); };
@@ -1144,7 +1178,7 @@ useEffect(() => {
                         )}
                       </span>
                       {todayAttendance.status === 'half-day' && (
-                        <span className="ml-2 text-purple-600 italic">(Net hours &lt; 8 → half‑day)</span>
+                        <span className="ml-2 text-purple-600 italic">(Net hours &lt; 4 → half‑day)</span>
                       )}
                     </div>
                   )}
