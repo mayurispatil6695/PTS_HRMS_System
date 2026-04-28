@@ -16,9 +16,11 @@ import { cn } from '../../../lib/utils';
 import { toast } from 'react-hot-toast';
 import type { Employee as BaseEmployee } from './EmployeeList';
 
+// Extended Employee interface with optional role and manager fields
 interface Employee extends BaseEmployee {
   role?: 'employee' | 'team_leader' | 'team_manager' | 'client';
   managerId?: string;
+  reportingManagerName?: string;
 }
 
 interface NewEmployee {
@@ -63,7 +65,7 @@ interface FirebaseUserData {
   [key: string]: unknown;
 }
 
-// ✅ Complete department designations
+// Department designations
 const departmentDesignations: Record<string, string[]> = {
   'Web Development': [
     'Frontend Developer', 'Backend Developer', 'Full Stack Developer','web developer',
@@ -144,6 +146,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
   const workModes = ['office', 'remote', 'hybrid'];
   const employmentTypes = ['full-time', 'part-time', 'freelancing', 'internship'];
 
+  // Fetch managers (users with role = team_manager)
   useEffect(() => {
     const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
@@ -169,6 +172,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     }
   }, [formData.department]);
 
+  // Populate form when editing existing employee
   useEffect(() => {
     if (employeeToEdit) {
       setFormData({
@@ -189,10 +193,10 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         bankAccountNumber: employeeToEdit.bankDetails?.accountNumber || '',
         bankName: employeeToEdit.bankDetails?.bankName || '',
         ifscCode: employeeToEdit.bankDetails?.ifscCode || '',
-        role: (employeeToEdit as any).role || 'employee',
-        managerId: (employeeToEdit as any).managerId || ''
+        role: employeeToEdit.role || 'employee',
+        managerId: employeeToEdit.managerId || ''
       });
-      setSelectedManagerId((employeeToEdit as any).managerId || '');
+      setSelectedManagerId(employeeToEdit.managerId || '');
       if (employeeToEdit.department && departmentDesignations[employeeToEdit.department]) {
         setDesignationsList(departmentDesignations[employeeToEdit.department]);
       }
@@ -257,23 +261,41 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     setLoading(true);
     setError(null);
 
+    // Resolve reporting manager name
+    let reportingManagerName = '';
+    if (selectedManagerId) {
+      const manager = managers.find(m => m.id === selectedManagerId);
+      reportingManagerName = manager?.name || '';
+    }
+
     try {
       if (employeeToEdit) {
+        // Update existing employee
         const employeeData = {
-          name: formData.name, email: formData.email, phone: formData.phone,
-          department: formData.department, designation: formData.designation,
-          profileImage: formData.profileImage, joiningDate: formData.joiningDate?.toISOString(),
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          department: formData.department,
+          designation: formData.designation,
+          profileImage: formData.profileImage,
+          joiningDate: formData.joiningDate?.toISOString(),
           salary: parseFloat(formData.salary),
           emergencyContact: { name: formData.emergencyContactName, phone: formData.emergencyContactNumber },
-          address: formData.address, workMode: formData.workMode, employmentType: formData.employmentType,
+          address: formData.address,
+          workMode: formData.workMode,
+          employmentType: formData.employmentType,
           bankDetails: { accountNumber: formData.bankAccountNumber, bankName: formData.bankName, ifscCode: formData.ifscCode },
-          role: formData.role, managerId: selectedManagerId, updatedAt: new Date().toISOString()
+          role: formData.role,
+          managerId: selectedManagerId,
+          reportingManagerName: reportingManagerName,
+          updatedAt: new Date().toISOString()
         };
         await update(ref(database, `users/${user.id}/employees/${employeeToEdit.id}`), employeeData);
         await update(ref(database, `users/${employeeToEdit.id}/profile`), employeeData);
         toast.success('Employee updated successfully!');
         onEditSuccess?.();
       } else {
+        // Create new employee
         const adminEmail = auth.currentUser?.email;
         const adminPassword = prompt("Please re-enter Admin password to create employee:");
         if (!adminPassword) { setError('Admin password is required'); setLoading(false); return; }
@@ -284,15 +306,27 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         const employeeId = await getNextEmployeeId();
 
         const employeeData = {
-          employeeId, name: formData.name, email: formData.email, phone: formData.phone,
-          department: formData.department, designation: formData.designation,
-          profileImage: formData.profileImage, joiningDate: formData.joiningDate?.toISOString(),
+          employeeId,
+          name: formData.name,
+          email: formData.email,
+          phone: formData.phone,
+          department: formData.department,
+          designation: formData.designation,
+          profileImage: formData.profileImage,
+          joiningDate: formData.joiningDate?.toISOString(),
           salary: parseFloat(formData.salary),
           emergencyContact: { name: formData.emergencyContactName, phone: formData.emergencyContactNumber },
-          address: formData.address, workMode: formData.workMode, employmentType: formData.employmentType,
+          address: formData.address,
+          workMode: formData.workMode,
+          employmentType: formData.employmentType,
           bankDetails: { accountNumber: formData.bankAccountNumber, bankName: formData.bankName, ifscCode: formData.ifscCode },
-          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-          role: formData.role, managerId: selectedManagerId, addedBy: user.id, status: 'active'
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+          role: formData.role,
+          managerId: selectedManagerId,
+          reportingManagerName: reportingManagerName,
+          addedBy: user.id,
+          status: 'active'
         };
         await set(ref(database, `users/${user.id}/employees/${employeeUid}`), { ...employeeData, adminUid: user.id });
         await set(ref(database, `users/${employeeUid}/profile`), { ...employeeData, adminUid: user.id });
@@ -379,7 +413,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
               </Select>
             </div>
             <div><label className="text-sm font-medium">Role</label>
-              <Select value={formData.role} onValueChange={(val: any) => setFormData({...formData, role: val})}>
+              <Select value={formData.role} onValueChange={(val: 'employee' | 'team_leader' | 'team_manager' | 'client') => setFormData({...formData, role: val})}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="employee">Employee</SelectItem>

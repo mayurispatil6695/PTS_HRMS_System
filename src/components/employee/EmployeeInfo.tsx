@@ -10,6 +10,9 @@ import { database } from '../../firebase';
 import { ref, get, update } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 
+// Helper type for Firebase timestamp (optional)
+type FirebaseTimestamp = { seconds: number; nanoseconds: number };
+
 interface EmployeeData {
   id: string;
   name: string;
@@ -22,9 +25,9 @@ interface EmployeeData {
   department: string;
   employeeId: string;
   isActive: boolean;
-  joiningDate?: string | number | { seconds: number; nanoseconds: number };
+  joiningDate?: string | number | FirebaseTimestamp;
   workMode?: string;
-  reportingManager?: string;
+  reportingManagerName?: string;   // ✅ corrected field name
   profileImage?: string;
   createdAt?: number;
   updatedAt?: number;
@@ -59,7 +62,22 @@ const EmployeeInfo = () => {
           const data = snapshot.val();
           setEmployeeData({
             id: user.id,
-            ...data
+            name: data.name || '',
+            email: data.email || '',
+            phone: data.phone || '',
+            address: data.address || '',
+            emergencyContact: data.emergencyContact,
+            emergencyPhone: typeof data.emergencyContact === 'object' ? data.emergencyContact.phone : data.emergencyPhone,
+            designation: data.designation || '',
+            department: data.department || '',
+            employeeId: data.employeeId || '',
+            isActive: data.status === 'active',
+            joiningDate: data.joiningDate,
+            workMode: data.workMode,
+            reportingManagerName: data.reportingManagerName || '',   // ✅ use correct field
+            profileImage: data.profileImage,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
           });
           setEditableData({
             phone: data.phone || '',
@@ -85,27 +103,24 @@ const EmployeeInfo = () => {
     fetchEmployeeData();
   }, [user]);
 
-  const formatDate = (date: any): string => {
+  // ✅ Fixed: no 'any' – union of possible date types
+  const formatDate = (date: string | number | FirebaseTimestamp | undefined): string => {
     if (!date) return 'Not available';
     
     try {
-      // Handle Firebase timestamp objects
+      let dateObj: Date;
       if (typeof date === 'object' && 'seconds' in date) {
-        return new Date(date.seconds * 1000).toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
+        dateObj = new Date(date.seconds * 1000);
+      } else if (typeof date === 'string' || typeof date === 'number') {
+        dateObj = new Date(date);
+      } else {
+        return 'Invalid date';
       }
-      // Handle string or number timestamps
-      if (typeof date === 'string' || typeof date === 'number') {
-        return new Date(date).toLocaleDateString('en-US', {
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric'
-        });
-      }
-      return 'Invalid date';
+      return dateObj.toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric'
+      });
     } catch (error) {
       console.error('Error formatting date:', error);
       return 'Invalid date';
@@ -223,11 +238,6 @@ const EmployeeInfo = () => {
                 <div className="w-24 h-24 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-full flex items-center justify-center text-white text-3xl font-bold">
                   {employeeData.name.split(' ').map(n => n[0]).join('')}
                 </div>
-                {/* <Badge 
-                  className={`absolute -bottom-2 -right-2 ${employeeData.isActive ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}
-                >
-                  {employeeData.isActive ? 'Active' : 'Inactive'}
-                </Badge> */}
               </div>
               <div className="flex-1 text-center md:text-left">
                 <h2 className="text-2xl font-bold text-gray-800">{employeeData.name}</h2>
@@ -462,7 +472,7 @@ const EmployeeInfo = () => {
                 <div className="flex items-center gap-3 p-2 bg-gray-50 rounded-lg">
                   <User className="h-5 w-5 text-gray-400" />
                   <span className="text-gray-800">
-                    {employeeData.reportingManager || 'Not assigned'}
+                    {employeeData.reportingManagerName || 'Not assigned'}
                   </span>
                 </div>
               </div>

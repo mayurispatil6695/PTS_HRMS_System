@@ -32,6 +32,9 @@ export interface Employee {
   employmentType?: string;
   bankDetails?: { accountNumber?: string; bankName?: string; ifscCode?: string };
   status?: string;
+  // ✅ Added fields for reporting manager
+  managerId?: string;
+  reportingManagerName?: string;
 }
 
 interface FirebaseEmployeeData {
@@ -52,6 +55,9 @@ interface FirebaseEmployeeData {
   workMode?: string;
   employmentType?: string;
   bankDetails?: { accountNumber?: string; bankName?: string; ifscCode?: string };
+  // ✅ Added fields
+  managerId?: string;
+  reportingManagerName?: string;
 }
 
 const EmployeeList: React.FC<{ onViewEmployee: (employee: Employee) => void }> = ({ onViewEmployee }) => {
@@ -71,69 +77,70 @@ const EmployeeList: React.FC<{ onViewEmployee: (employee: Employee) => void }> =
   const [editDialogOpen, setEditDialogOpen] = useState(false);
 
   // Fetch employees from ALL admins (like dashboard)
- useEffect(() => {
-  if (!user || user.role !== 'admin') return;
+  useEffect(() => {
+    if (!user || user.role !== 'admin') return;
 
-  const usersRef = ref(database, "users");
-  setLoading(true);
+    const usersRef = ref(database, "users");
+    setLoading(true);
 
-  const unsubscribe = onValue(usersRef, (snapshot) => {
-    const employeesMap = new Map<string, Employee>(); // ✅ deduplicate by employee ID
-    const deptSet = new Set<string>();
-    const desigSet = new Set<string>();
+    const unsubscribe = onValue(usersRef, (snapshot) => {
+      const employeesMap = new Map<string, Employee>();
+      const deptSet = new Set<string>();
+      const desigSet = new Set<string>();
 
-    snapshot.forEach((adminSnap) => {
-      const adminEmployees = adminSnap.child("employees").val() as Record<string, FirebaseEmployeeData> | null;
-      if (adminEmployees && typeof adminEmployees === 'object') {
-        Object.entries(adminEmployees).forEach(([empId, empData]) => {
-          // Skip inactive employees
-          if (empData.status === 'inactive') return;
+      snapshot.forEach((adminSnap) => {
+        const adminEmployees = adminSnap.child("employees").val() as Record<string, FirebaseEmployeeData> | null;
+        if (adminEmployees && typeof adminEmployees === 'object') {
+          Object.entries(adminEmployees).forEach(([empId, empData]) => {
+            if (empData.status === 'inactive') return;
+            if (employeesMap.has(empId)) return;
 
-          // If the employee is already in the map, skip (keep first occurrence)
-          if (employeesMap.has(empId)) return;
+            employeesMap.set(empId, {
+              id: empId,
+              name: empData.name || '',
+              email: empData.email || '',
+              phone: empData.phone || '',
+              department: empData.department || '',
+              designation: empData.designation || '',
+              employeeId: empData.employeeId || `EMP-${empId.slice(0, 8)}`,
+              isActive: empData.status === 'active',
+              status: empData.status || 'active',
+              createdAt: empData.createdAt || '',
+              profileImage: empData.profileImage,
+              addedBy: empData.addedBy,
+              joiningDate: empData.joiningDate,
+              salary: empData.salary,
+              emergencyContact: empData.emergencyContact,
+              address: empData.address,
+              workMode: empData.workMode,
+              employmentType: empData.employmentType,
+              bankDetails: empData.bankDetails,
+              // ✅ Read manager fields
+              managerId: empData.managerId || '',
+              reportingManagerName: empData.reportingManagerName || '',
+            });
 
-          employeesMap.set(empId, {
-            id: empId,
-            name: empData.name || '',
-            email: empData.email || '',
-            phone: empData.phone || '',
-            department: empData.department || '',
-            designation: empData.designation || '',
-            employeeId: empData.employeeId || `EMP-${empId.slice(0, 8)}`,
-            isActive: empData.status === 'active',
-            status: empData.status || 'active',
-            createdAt: empData.createdAt || '',
-            profileImage: empData.profileImage,
-            addedBy: empData.addedBy,
-            joiningDate: empData.joiningDate,
-            salary: empData.salary,
-            emergencyContact: empData.emergencyContact,
-            address: empData.address,
-            workMode: empData.workMode,
-            employmentType: empData.employmentType,
-            bankDetails: empData.bankDetails,
+            if (empData.department) deptSet.add(empData.department);
+            if (empData.designation) desigSet.add(empData.designation);
           });
+        }
+      });
 
-          if (empData.department) deptSet.add(empData.department);
-          if (empData.designation) desigSet.add(empData.designation);
-        });
-      }
+      setEmployees(Array.from(employeesMap.values()));
+      setFilteredEmployees(Array.from(employeesMap.values()));
+      setDepartments(Array.from(deptSet));
+      setDesignations(Array.from(desigSet));
+      setLoading(false);
+    }, (error) => {
+      console.error('Error fetching employees:', error);
+      setError('Failed to load employees');
+      setLoading(false);
     });
 
-    setEmployees(Array.from(employeesMap.values()));
-    setFilteredEmployees(Array.from(employeesMap.values()));
-    setDepartments(Array.from(deptSet));
-    setDesignations(Array.from(desigSet));
-    setLoading(false);
-  }, (error) => {
-    console.error('Error fetching employees:', error);
-    setError('Failed to load employees');
-    setLoading(false);
-  });
+    return () => unsubscribe();
+  }, [user]);
 
-  return () => unsubscribe();
-}, [user]);
-  // Filters
+  // Filters (unchanged)
   useEffect(() => {
     let result = [...employees];
     if (searchTerm) {
@@ -156,7 +163,7 @@ const EmployeeList: React.FC<{ onViewEmployee: (employee: Employee) => void }> =
   const currentEmployees = filteredEmployees.slice(indexOfFirstEmployee, indexOfLastEmployee);
   const totalPages = Math.ceil(filteredEmployees.length / itemsPerPage);
 
-  // Toggle status
+  // Toggle status (unchanged)
   const handleToggleStatus = async (employeeId: string) => {
     if (!user) return;
     try {
@@ -174,7 +181,7 @@ const EmployeeList: React.FC<{ onViewEmployee: (employee: Employee) => void }> =
     }
   };
 
-  // Delete from all admins
+  // Delete from all admins (unchanged)
   const handleDeleteEmployee = async (employeeId: string) => {
     if (!window.confirm('Are you sure you want to delete this employee?')) return;
     try {

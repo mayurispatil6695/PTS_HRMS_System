@@ -24,6 +24,7 @@ import { useAuth } from '../../../hooks/useAuth';
 import { Button } from '../../ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
 
+// ✅ Extended Employee interface with reporting manager
 interface Employee {
   id: string;
   name: string;
@@ -51,6 +52,7 @@ interface Employee {
   };
   addedBy?: string;
   status?: string;
+  reportingManagerName?: string;   // ✅ Added
 }
 
 interface SalarySlip {
@@ -92,6 +94,7 @@ const EmployeeDetailsDialog: React.FC<EmployeeDetailsDialogProps> = ({
     if (!employee || !user) return;
 
     setLoadingSalaries(true);
+    // ⚠️ Note: if your salary data is under users/${adminId}/employees/${employee.id}/salary, update this path
     const salaryRef = ref(database, `employees/${employee.id}/salary`);
 
     const fetchSalaries = onValue(salaryRef, (snapshot) => {
@@ -114,13 +117,10 @@ const EmployeeDetailsDialog: React.FC<EmployeeDetailsDialogProps> = ({
           sentAt: slip.sentAt
         });
       });
-
-      // Sort by year and month (newest first)
       salaryData.sort((a, b) => {
         if (a.year !== b.year) return b.year - a.year;
         return b.month - a.month;
       });
-
       setSalaryHistory(salaryData);
       setLoadingSalaries(false);
     }, (error) => {
@@ -158,8 +158,6 @@ const EmployeeDetailsDialog: React.FC<EmployeeDetailsDialogProps> = ({
   };
 
   const latestSalary = getLatestSalarySlip();
-
-  // Get the base salary - first try from latest salary slip, then from employee data
   const baseSalary = latestSalary?.basicSalary || employee.salary;
 
   return (
@@ -207,7 +205,6 @@ const EmployeeDetailsDialog: React.FC<EmployeeDetailsDialogProps> = ({
             </TabsList>
 
             <TabsContent value="profile">
-              {/* Main Details Grid */}
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {/* Personal Information */}
                 <div className="space-y-4 p-4 bg-gray-50 rounded-lg">
@@ -283,6 +280,16 @@ const EmployeeDetailsDialog: React.FC<EmployeeDetailsDialogProps> = ({
                           : 'Not specified'}
                       </p>
                     </div>
+                    {/* ✅ Reporting Manager added */}
+                    <div>
+                      <label className="text-sm font-medium text-gray-500 flex items-center gap-1">
+                        <User className="w-4 h-4" />
+                        Reporting Manager
+                      </label>
+                      <p className="font-semibold">
+                        {employee.reportingManagerName || 'Not assigned'}
+                      </p>
+                    </div>
                   </div>
                 </div>
 
@@ -339,7 +346,7 @@ const EmployeeDetailsDialog: React.FC<EmployeeDetailsDialogProps> = ({
 
               {/* Additional Info */}
               {employee.addedBy && (
-                <div className="text-sm text-gray-500">
+                <div className="text-sm text-gray-500 mt-4">
                   Added by admin ID: {employee.addedBy}
                 </div>
               )}

@@ -1,42 +1,30 @@
 import React, { useState } from 'react';
-import { useAuth } from '../../hooks/useAuth';
 import { motion } from 'framer-motion';
-import { useToast } from '../../hooks/use-toast';
+import AdminLoginPage from './AdminLoginPage';
 import LoginCard from './LoginCard';
+import { useAuth } from '../../hooks/useAuth';
+import { useToast } from '../../hooks/use-toast';
 
-const LoginPage = () => {
-  const [activeTab, setActiveTab] = useState<'admin' | 'employee'>('admin');
+const EnhancedLoginPage = () => {
+  const [activeView, setActiveView] = useState<'main' | 'admin'>('main');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const { toast } = useToast();
 
-  const handleLogin = async (email: string, password: string) => {
-    if (!email || !password) {
-      toast({
-        title: "Error",
-        description: "Please fill in all fields",
-        variant: "destructive",
-      });
-      return;
-    }
-
+  const handleEmployeeLogin = async (email: string, password: string) => {
     setLoading(true);
-    const success = await login(email, password, activeTab);
-    setLoading(false);
-
-    if (success) {
-      toast({
-        title: "Success",
-        description: "Login successful!",
-      });
+    const result = await login(email, password, 'employee');
+    if (result.success) {
+      toast({ title: "Success", description: "Login successful!" });
     } else {
-      toast({
-        title: "Error",
-        description: "Invalid credentials or inactive account",
-        variant: "destructive",
-      });
+      toast({ title: "Error", description: result.message || "Login failed", variant: "destructive" });
     }
+    setLoading(false);
   };
+
+  if (activeView === 'admin') {
+    return <AdminLoginPage onForgotPassword={() => setActiveView('main')} />;
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
@@ -61,7 +49,7 @@ const LoginPage = () => {
             transition={{ delay: 0.4 }}
             className="text-gray-600"
           >
-            PTS Management System
+            Pawar Technology Services Management System
           </motion.p>
         </div>
 
@@ -73,11 +61,12 @@ const LoginPage = () => {
           >
             <LoginCard
               userType="admin"
-              isActive={activeTab === 'admin'}
-              onActivate={() => setActiveTab('admin')}
-              onLogin={handleLogin}
-              onRegister={() => toast({ title: "Info", description: "Admin registration is not available here. Use your existing admin account." })}
-              loading={loading}
+              isActive={true}
+              onActivate={() => {}}
+              onLogin={() => setActiveView('admin')}
+              onRegister={() => {}}
+              loading={false}
+              isButton={true}
               hideRegister={true}
             />
           </motion.div>
@@ -89,11 +78,12 @@ const LoginPage = () => {
           >
             <LoginCard
               userType="employee"
-              isActive={activeTab === 'employee'}
-              onActivate={() => setActiveTab('employee')}
-              onLogin={handleLogin}
-              onRegister={() => toast({ title: "Info", description: "Employee registration is done by admin. Please contact your HR." })}
+              isActive={true}
+              onActivate={() => {}}
+              onLogin={handleEmployeeLogin}
+              onRegister={() => {}}
               loading={loading}
+              isButton={false}
               hideRegister={true}
             />
           </motion.div>
@@ -103,4 +93,4 @@ const LoginPage = () => {
   );
 };
 
-export default LoginPage;
+export default EnhancedLoginPage;

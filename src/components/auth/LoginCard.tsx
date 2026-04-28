@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { Users, UserCheck } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
@@ -65,21 +64,10 @@ const LoginCard: React.FC<LoginCardProps> = ({
         ) : (
           <LoginForm
             userType={userType}
-            onSubmit={onLogin}
+            onSuccess={onLogin}   // ✅ Fixed: was onSubmit, now matches LoginForm prop
             loading={loading}
           />
         )}
-        
-        {/* {!isAdmin && !hideRegister && (
-          <div className="mt-4 text-center">
-            <button
-              onClick={onRegister}
-              className="text-sm text-green-600 hover:text-green-800 transition-colors"
-            >
-              New Employee? Register here
-            </button>
-          </div>
-        )} */}
       </CardContent>
     </Card>
   );

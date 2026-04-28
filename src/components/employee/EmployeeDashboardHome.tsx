@@ -247,6 +247,13 @@ useEffect(() => {
 }, [user]);
 
   // Helper: convert time to minutes
+  const formatMinutesToHours = (minutes: number): string => {
+    if (minutes <= 0) return '0h 0m';
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
+  };
+
   const convertTimeToMinutes = (timeStr: string): number => {
     try {
       let hours = 0, minutes = 0;
@@ -268,8 +275,6 @@ useEffect(() => {
       return 0;
     }
   };
-
-
 
   const parseDurationToMinutes = (durationStr: string): number => {
     if (!durationStr) return 0;
@@ -427,27 +432,25 @@ useEffect(() => {
           if (status === 'in_progress' || status === 'active') active++;
           else if (status === 'completed') completed++;
           else if (status === 'on_hold') paused++;
-      // Add import at top (if not already present)
-// Inside the fetchProjectStats useEffect, replace the tasks assignment:
-projectsList.push({
-  id: projId,
-  name: proj.name || '',
-  description: proj.description || '',
-  department: proj.department || '',
-  assignedTeamLeader: proj.assignedTeamLeader || '',
-  assignedEmployees: proj.assignedEmployees || [],
-  tasks: proj.tasks ? Object.values(proj.tasks) as Task[] : [],  // ✅ cast to Task[]
-  startDate: proj.startDate || '',
-  endDate: proj.endDate || '',
-  priority: (proj.priority as 'low' | 'medium' | 'high' | 'urgent') || 'medium',
-  status: (status as 'not_started' | 'in_progress' | 'on_hold' | 'completed' | 'active') || 'not_started',
-  progress: proj.progress || 0,
-  createdAt: proj.createdAt || '',
-  createdBy: proj.createdBy || '',
-  projectType: proj.projectType || 'common',
-  specificDepartment: proj.specificDepartment,
-  clientId: proj.clientId,
-});
+          projectsList.push({
+            id: projId,
+            name: proj.name || '',
+            description: proj.description || '',
+            department: proj.department || '',
+            assignedTeamLeader: proj.assignedTeamLeader || '',
+            assignedEmployees: proj.assignedEmployees || [],
+            tasks: proj.tasks ? Object.values(proj.tasks) as Task[] : [],
+            startDate: proj.startDate || '',
+            endDate: proj.endDate || '',
+            priority: (proj.priority as 'low' | 'medium' | 'high' | 'urgent') || 'medium',
+            status: (status as 'not_started' | 'in_progress' | 'on_hold' | 'completed' | 'active') || 'not_started',
+            progress: proj.progress || 0,
+            createdAt: proj.createdAt || '',
+            createdBy: proj.createdBy || '',
+            projectType: proj.projectType || 'common',
+            specificDepartment: proj.specificDepartment,
+            clientId: proj.clientId,
+          });
         }
         setStats(prev => ({ ...prev, totalProjects: total, activeProjects: active, completedProjects: completed, pausedProjects: paused }));
         setEmployeeProjects(projectsList);
@@ -1114,6 +1117,39 @@ projectsList.push({
                     <Button onClick={handlePunchOut} className="bg-red-600 hover:bg-red-700" disabled={loading}><Camera className="h-4 w-4 mr-2" />{loading ? "Processing..." : "Punch Out with Selfie"}</Button>
                   ) : <div className="text-sm text-gray-500">Attendance completed for today</div>}
                 </div>
+
+                {/* ✅ Show net worked hours (gross − breaks) using formatMinutesToHours */}
+                <div className="mt-2 text-sm">
+                  {!todayAttendance.punchOut ? (
+                    <div className="text-gray-700">
+                      <span className="font-medium">Worked so far: </span>
+                      {formatMinutesToHours(
+                        calculateTotalWorkedMinutes(
+                          todayAttendance.punchIn,
+                          new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                          todayAttendance.breaks
+                        )
+                      )}
+                    </div>
+                  ) : (
+                    <div>
+                      <span className="font-medium text-gray-700">Total Worked: </span>
+                      <span className="font-semibold">
+                        {formatMinutesToHours(
+                          calculateTotalWorkedMinutes(
+                            todayAttendance.punchIn,
+                            todayAttendance.punchOut,
+                            todayAttendance.breaks
+                          )
+                        )}
+                      </span>
+                      {todayAttendance.status === 'half-day' && (
+                        <span className="ml-2 text-purple-600 italic">(Net hours &lt; 8 → half‑day)</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
                 <div className="border-t pt-4">
                   <h3 className="font-medium mb-3">Break Management</h3>
                   {todayAttendance.breaks && Object.entries(todayAttendance.breaks).length > 0 && (

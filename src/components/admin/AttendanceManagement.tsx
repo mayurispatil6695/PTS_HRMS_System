@@ -26,7 +26,7 @@ interface Employee {
   designation?: string;
   status: string;
   adminId?: string;
-  employeeId?: string;   // ✅ custom employee ID (e.g., EMP-00002)
+  employeeId?: string;   // custom employee ID (e.g., EMP-00002)
 }
 
 interface BreakRecord {
@@ -38,7 +38,7 @@ interface BreakRecord {
 
 interface AttendanceRecordWithAdmin {
   id: string;
-  employeeId: string;
+  employeeId: string;          // displayable employee ID (custom)
   employeeName: string;
   date: string;
   punchIn: string;
@@ -56,6 +56,7 @@ interface AttendanceRecordWithAdmin {
   markedHalfDayAt?: string;
   location?: { lat: number; lng: number; name: string };
   locationOut?: { lat: number; lng: number; name: string };
+  employeeUid?: string;        // actual Firebase UID of the employee (for updates)
 }
 
 interface Notification {
@@ -77,7 +78,7 @@ interface FirebaseEmployeeRaw {
   department?: string;
   designation?: string;
   status?: string;
-  employeeId?: string;   // ✅ added
+  employeeId?: string;
 }
 
 interface FirebaseAttendanceRaw {
@@ -108,12 +109,14 @@ interface FirebaseEmployeeData {
   [key: string]: unknown;
 }
 
+// ✅ Added 'breaks' property
 interface FirebaseAttendanceData {
   punchIn?: string;
   punchOut?: string;
   date?: string;
   status?: string;
   workMode?: string;
+  breaks?: Record<string, BreakRecord>;
   [key: string]: unknown;
 }
 
@@ -132,6 +135,67 @@ interface AbsentEmployee {
   department: string;
   status: string;
 }
+
+// ==================== HELPER FUNCTIONS ====================
+const convertTimeToMinutes = (timeStr: string): number => {
+  try {
+    let hours = 0, minutes = 0;
+    const trimmed = timeStr.trim().toUpperCase();
+    if (!trimmed.includes('AM') && !trimmed.includes('PM')) {
+      const parts = trimmed.split(':');
+      hours = parseInt(parts[0], 10);
+      minutes = parseInt(parts[1], 10);
+    } else {
+      const [time, period] = trimmed.split(' ');
+      const [h, m] = time.split(':').map(Number);
+      hours = h;
+      minutes = m;
+      if (period === 'PM' && hours < 12) hours += 12;
+      if (period === 'AM' && hours === 12) hours = 0;
+    }
+    return hours * 60 + minutes;
+  } catch {
+    return 0;
+  }
+};
+
+const parseDurationToMinutes = (durationStr: string): number => {
+  if (!durationStr) return 0;
+  const colonMatch = durationStr.match(/^(\d+):(\d+)$/);
+  if (colonMatch) return parseInt(colonMatch[1], 10) * 60 + parseInt(colonMatch[2], 10);
+  const hoursMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*h/i);
+  const minutesMatch = durationStr.match(/(\d+(?:\.\d+)?)\s*m/i);
+  let total = 0;
+  if (hoursMatch) total += parseFloat(hoursMatch[1]) * 60;
+  if (minutesMatch) total += parseFloat(minutesMatch[1]);
+  return Math.round(total);
+};
+
+// ✅ Calculates net worked hours (gross − breaks)
+const calculateNetWorkDuration = (
+  punchIn: string,
+  punchOut: string | null,
+  breaks?: Record<string, BreakRecord>
+): string => {
+  if (!punchOut) return 'N/A';
+  const startMin = convertTimeToMinutes(punchIn);
+  const endMin = convertTimeToMinutes(punchOut);
+  let totalMin = endMin - startMin;
+  if (totalMin < 0) totalMin += 24 * 60;
+  if (totalMin > 12 * 60) totalMin -= 24 * 60;
+  if (totalMin < 0) totalMin = 0;
+
+  let breakMin = 0;
+  if (breaks) {
+    Object.values(breaks).forEach(b => {
+      if (b.duration) breakMin += parseDurationToMinutes(b.duration);
+    });
+  }
+  const netMin = totalMin - breakMin;
+  const hours = Math.floor(netMin / 60);
+  const minutes = netMin % 60;
+  return `${hours}h ${minutes}m`;
+};
 
 // ==================== COMPONENT ====================
 const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'admin' }) => {
@@ -183,7 +247,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
                 designation: emp.designation || '',
                 status: emp.status || 'active',
                 adminId: adminId || '',
-                employeeId: emp.employeeId || '',   // ✅ store custom employee ID
+                employeeId: emp.employeeId || '',
               });
             });
           }
@@ -194,7 +258,7 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     return () => off(employeesRef);
   }, [user]);
 
-  // Load all attendance records from all employees (use custom employeeId)
+  // Load all attendance records from all employees
   useEffect(() => {
     if (!employees.length) return;
     const loadAllRecords = async () => {
@@ -210,9 +274,10 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
             const recordId = `${employee.id}-${key}`;
             recordsMap.set(recordId, {
               id: key,
-              employeeId: employee.employeeId || employee.id,   // ✅ use custom ID
+              employeeId: employee.employeeId || employee.id,
               employeeName: employee.name,
               adminId: employee.adminId,
+              employeeUid: employee.id,        // store the original Firebase UID
               date: value.date || '',
               punchIn: value.punchIn || '',
               punchOut: value.punchOut || null,
@@ -272,14 +337,14 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     setLoadingMore(false);
   };
 
-  // Mark as late
-  const markAsLate = async (recordId: string, employeeId: string, adminId?: string) => {
+  // ✅ UPDATED: use employeeUid (real Firebase UID) instead of custom employeeId
+  const markAsLate = async (recordId: string, employeeUid: string, adminId?: string) => {
     if (!adminId) {
       toast({ title: "Error", description: "Unable to determine admin", variant: "destructive" });
       return;
     }
     try {
-      const recordRef = ref(database, `users/${adminId}/employees/${employeeId}/punching/${recordId}`);
+      const recordRef = ref(database, `users/${adminId}/employees/${employeeUid}/punching/${recordId}`);
       await update(recordRef, {
         status: 'late',
         markedLateBy: user?.name || 'admin',
@@ -293,13 +358,13 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
   };
 
-  const markAsHalfDay = async (recordId: string, employeeId: string, adminId?: string) => {
+  const markAsHalfDay = async (recordId: string, employeeUid: string, adminId?: string) => {
     if (!adminId) {
       toast({ title: "Error", description: "Unable to determine admin", variant: "destructive" });
       return;
     }
     try {
-      const recordRef = ref(database, `users/${adminId}/employees/${employeeId}/punching/${recordId}`);
+      const recordRef = ref(database, `users/${adminId}/employees/${employeeUid}/punching/${recordId}`);
       await update(recordRef, {
         status: 'half-day',
         markedHalfDayBy: user?.name || 'admin',
@@ -313,13 +378,13 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
   };
 
-  const resetStatus = async (recordId: string, employeeId: string, adminId?: string) => {
+  const resetStatus = async (recordId: string, employeeUid: string, adminId?: string) => {
     if (!adminId) {
       toast({ title: "Error", description: "Unable to determine admin", variant: "destructive" });
       return;
     }
     try {
-      const recordRef = ref(database, `users/${adminId}/employees/${employeeId}/punching/${recordId}`);
+      const recordRef = ref(database, `users/${adminId}/employees/${employeeUid}/punching/${recordId}`);
       await update(recordRef, {
         status: 'present',
         markedLateBy: null,
@@ -333,14 +398,14 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
   };
 
-  const deleteAttendanceRecord = async (recordId: string, employeeId: string, adminId?: string) => {
+  const deleteAttendanceRecord = async (recordId: string, employeeUid: string, adminId?: string) => {
     if (!window.confirm('Delete this record?')) return;
     if (!adminId) {
       toast({ title: "Error", description: "Unable to determine admin", variant: "destructive" });
       return;
     }
     try {
-      const recordRef = ref(database, `users/${adminId}/employees/${employeeId}/punching/${recordId}`);
+      const recordRef = ref(database, `users/${adminId}/employees/${employeeUid}/punching/${recordId}`);
       await remove(recordRef);
       toast({ title: "Success", description: "Record deleted" });
     } catch (error) {
@@ -384,37 +449,6 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
     }
   };
 
-  const calculateTimeDuration = (startTime: string, endTime: string | null) => {
-    if (!endTime) return 'N/A';
-    const parseTime = (timeStr: string): number => {
-      let hours = 0, minutes = 0;
-      const trimmed = timeStr.trim().toUpperCase();
-      if (!trimmed.includes('AM') && !trimmed.includes('PM')) {
-        const parts = trimmed.split(':');
-        hours = parseInt(parts[0], 10);
-        minutes = parseInt(parts[1], 10);
-      } else {
-        const [time, period] = trimmed.split(' ');
-        const [h, m] = time.split(':').map(Number);
-        hours = h;
-        minutes = m;
-        if (period === 'PM' && hours < 12) hours += 12;
-        if (period === 'AM' && hours === 12) hours = 0;
-      }
-      return hours * 60 + minutes;
-    };
-    try {
-      const startMinutes = parseTime(startTime);
-      const endMinutes = parseTime(endTime);
-      let durationMinutes = endMinutes - startMinutes;
-      if (durationMinutes < 0) durationMinutes += 24 * 60;
-      if (durationMinutes > 12 * 60) durationMinutes -= 24 * 60;
-      const hours = Math.floor(durationMinutes / 60);
-      const minutes = durationMinutes % 60;
-      return `${hours}h ${minutes}m`;
-    } catch { return 'N/A'; }
-  };
-
   const calculateTotalBreakTime = (breaks: Record<string, BreakRecord> | undefined) => {
     if (!breaks) return 'N/A';
     let totalBreakMinutes = 0;
@@ -446,11 +480,11 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
       const headers = ['Employee Name', 'Employee ID', 'Date', 'Punch In', 'Punch Out', 'Total Hours', 'Total Break Time', 'Status', 'Work Mode', 'Marked Late By', 'Marked Late At', 'Marked Half Day By', 'Marked Half Day At', 'Admin ID', 'Breaks'];
       const rows = filteredRecords.map(record => [
         record.employeeName,
-        record.employeeId, // now shows custom ID
+        record.employeeId,
         new Date(record.date).toLocaleDateString(),
         record.punchIn || '-',
         record.punchOut || '-',
-        calculateTimeDuration(record.punchIn, record.punchOut),
+        calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks),
         calculateTotalBreakTime(record.breaks),
         record.status,
         record.workMode || 'office',
@@ -514,7 +548,9 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
         if (foundRecord) {
           const punchIn = foundRecord.punchIn || '—';
           const punchOut = foundRecord.punchOut || '—';
-          const totalHours = (foundRecord.punchOut && foundRecord.punchOut !== '—') ? calculateTimeDuration(punchIn, punchOut) : '—';
+          const totalHours = (foundRecord.punchOut && foundRecord.punchOut !== '—') 
+            ? calculateNetWorkDuration(punchIn, punchOut, foundRecord.breaks) 
+            : '—';
           const workMode = foundRecord.workMode || 'office';
           const status = foundRecord.status || 'present';
           presentList.push({ name: employeeName, department: employeeDepartment, punchIn, punchOut, totalHours, workMode, status });
@@ -658,22 +694,30 @@ const AttendanceManagement: React.FC<AttendanceManagementProps> = ({ role = 'adm
                     <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">{new Date(record.date).toLocaleDateString()}</td>
                     <td className="px-4 py-3 whitespace-nowrap"><span className="inline-flex items-center gap-1 text-sm text-green-600"><Clock className="h-3 w-3" /> {record.punchIn || '-'}</span></td>
                     <td className="px-4 py-3 whitespace-nowrap"><span className="inline-flex items-center gap-1 text-sm text-red-600"><Clock className="h-3 w-3" /> {record.punchOut || '-'}</span></td>
-                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{calculateTimeDuration(record.punchIn, record.punchOut)}</td>
+                    {/* ✅ Total Hours now uses net work duration */}
+                    <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks)}</td>
                     <td className="px-4 py-3 whitespace-nowrap"><div className="group relative"><span className="cursor-help text-sm text-gray-700 underline decoration-dotted">{calculateTotalBreakTime(record.breaks)}</span><div className="absolute z-10 hidden group-hover:block bg-white p-3 border rounded-lg shadow-lg w-64">{renderBreaksTooltip(record.breaks)}</div></div></td>
-                    <td className="px-4 py-3 whitespace-nowrap"><Badge className={`${getStatusColor(record.status)} text-xs font-medium`}>{record.status}</Badge>{record.markedLateBy && <p className="text-xs text-gray-500 mt-1">Marked late by {record.markedLateBy}</p>}{record.markedHalfDayBy && <p className="text-xs text-gray-500 mt-1">Marked half day by {record.markedHalfDayBy}</p>}</td>
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <Badge className={`${getStatusColor(record.status)} text-xs font-medium`}>{record.status}</Badge>
+                      {record.markedLateBy && <p className="text-xs text-gray-500 mt-1">Marked late by {record.markedLateBy}</p>}
+                      {record.markedHalfDayBy && <p className="text-xs text-gray-500 mt-1">Marked half day by {record.markedHalfDayBy}</p>}
+                      {record.status === 'half-day' && (
+                        <p className="text-xs text-purple-600 mt-1 italic">Net hours &lt; 8 after breaks</p>
+                      )}
+                    </td>
                     <td className="px-4 py-3 whitespace-nowrap"><Badge variant="outline" className="text-xs font-medium">{record.workMode || 'office'}</Badge></td>
                     <td className="px-4 py-3 text-sm text-gray-600">{record.location || record.locationOut ? (<div className="text-xs space-y-1">{record.location && <div>📍 In: {record.location.name?.slice(0, 40) || `${record.location.lat}, ${record.location.lng}`}</div>}{record.locationOut && <div>📍 Out: {record.locationOut.name?.slice(0, 40) || `${record.locationOut.lat}, ${record.locationOut.lng}`}</div>}</div>) : <span className="text-gray-400">—</span>}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{record.selfie ? <img src={record.selfie} alt="Punch In Selfie" className="w-8 h-8 rounded-full object-cover cursor-pointer border border-gray-300 hover:opacity-80" onClick={() => setImageModal({ src: record.selfie!, title: `Punch In Selfie - ${record.employeeName}` })} /> : <span className="text-gray-400 text-sm">—</span>}</td>
                     <td className="px-4 py-3 whitespace-nowrap">{record.selfieOut ? <img src={record.selfieOut} alt="Punch Out Selfie" className="w-8 h-8 rounded-full object-cover cursor-pointer border border-gray-300 hover:opacity-80" onClick={() => setImageModal({ src: record.selfieOut!, title: `Punch Out Selfie - ${record.employeeName}` })} /> : <span className="text-gray-400 text-sm">—</span>}</td>
                     <td className="px-4 py-3 whitespace-nowrap"><div className="flex gap-1">
                       {record.status === 'late' ? (
-                        <><Button size="sm" variant="outline" onClick={() => markAsHalfDay(record.id, record.employeeId, record.adminId)} className="text-purple-600 h-8 px-2 text-xs"><Sun className="h-3 w-3 mr-1" /> Half Day</Button><Button size="sm" variant="outline" onClick={() => resetStatus(record.id, record.employeeId, record.adminId)} className="text-green-600 h-8 px-2 text-xs">Reset</Button></>
+                        <><Button size="sm" variant="outline" onClick={() => markAsHalfDay(record.id, record.employeeUid!, record.adminId)} className="text-purple-600 h-8 px-2 text-xs"><Sun className="h-3 w-3 mr-1" /> Half Day</Button><Button size="sm" variant="outline" onClick={() => resetStatus(record.id, record.employeeUid!, record.adminId)} className="text-green-600 h-8 px-2 text-xs">Reset</Button></>
                       ) : record.status === 'half-day' ? (
-                        <><Button size="sm" variant="outline" onClick={() => markAsLate(record.id, record.employeeId, record.adminId)} className="text-yellow-600 h-8 px-2 text-xs"><AlertTriangle className="h-3 w-3 mr-1" /> Late</Button><Button size="sm" variant="outline" onClick={() => resetStatus(record.id, record.employeeId, record.adminId)} className="text-green-600 h-8 px-2 text-xs">Reset</Button></>
+                        <><Button size="sm" variant="outline" onClick={() => markAsLate(record.id, record.employeeUid!, record.adminId)} className="text-yellow-600 h-8 px-2 text-xs"><AlertTriangle className="h-3 w-3 mr-1" /> Late</Button><Button size="sm" variant="outline" onClick={() => resetStatus(record.id, record.employeeUid!, record.adminId)} className="text-green-600 h-8 px-2 text-xs">Reset</Button></>
                       ) : record.status === 'present' ? (
-                        <><Button size="sm" variant="outline" onClick={() => markAsLate(record.id, record.employeeId, record.adminId)} className="text-yellow-600 h-8 px-2 text-xs"><AlertTriangle className="h-3 w-3 mr-1" /> Late</Button><Button size="sm" variant="outline" onClick={() => markAsHalfDay(record.id, record.employeeId, record.adminId)} className="text-purple-600 h-8 px-2 text-xs"><Sun className="h-3 w-3 mr-1" /> Half Day</Button></>
+                        <><Button size="sm" variant="outline" onClick={() => markAsLate(record.id, record.employeeUid!, record.adminId)} className="text-yellow-600 h-8 px-2 text-xs"><AlertTriangle className="h-3 w-3 mr-1" /> Late</Button><Button size="sm" variant="outline" onClick={() => markAsHalfDay(record.id, record.employeeUid!, record.adminId)} className="text-purple-600 h-8 px-2 text-xs"><Sun className="h-3 w-3 mr-1" /> Half Day</Button></>
                       ) : null}
-                      <Button size="sm" variant="outline" onClick={() => deleteAttendanceRecord(record.id, record.employeeId, record.adminId)} className="text-red-600 h-8 px-2"><Trash2 className="h-3 w-3" /></Button>
+                      <Button size="sm" variant="outline" onClick={() => deleteAttendanceRecord(record.id, record.employeeUid!, record.adminId)} className="text-red-600 h-8 px-2"><Trash2 className="h-3 w-3" /></Button>
                     </div></td>
                   </tr>
                 ))}
