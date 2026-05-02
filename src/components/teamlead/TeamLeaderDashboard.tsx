@@ -58,8 +58,8 @@ const TeamLeaderDashboard = () => {
               <Route path="/" element={<TeamLeaderHome />} />
               <Route path="/projects" element={<ProjectManagement role="team_leader" userId={user?.id} department={user?.department} />} />
              
-              <Route path="/attendance" element={<AttendanceManagement role="team_leader" />} />
-              <Route path="/leaves" element={<LeaveManagement role="team_leader" />} />
+              <Route path="/attendance" element={<AttendanceManagement />} />
+              <Route path="/leaves" element={<LeaveManagement />} />
               <Route path="/meetings" element={<MeetingManagement role="team_leader" />} />
               <Route path="/idle-detection" element={<IdleDetectionPage role="team_leader" />} />
               <Route path="/reports" element={<ReportsManagement role="team_leader" />} />

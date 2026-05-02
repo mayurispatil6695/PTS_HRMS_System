@@ -31,6 +31,13 @@ interface ExistingTask {
   status: string;
 }
 
+// Firebase raw task shape
+interface FirebaseTaskData {
+  title?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
 const TaskCreateModal: React.FC<TaskCreateModalProps> = ({
   open, onOpenChange, projectId, projectName, employees, onTaskCreated
 }) => {
@@ -52,9 +59,9 @@ const TaskCreateModal: React.FC<TaskCreateModalProps> = ({
     const fetchTasks = async () => {
       const tasksRef = ref(database, `projects/${projectId}/tasks`);
       const snapshot = await get(tasksRef);
-      const tasks = snapshot.val() as Record<string, any> | null;
+      const tasks = snapshot.val() as Record<string, FirebaseTaskData> | null;
       if (tasks) {
-        const taskList = Object.entries(tasks).map(([id, task]) => ({
+        const taskList: ExistingTask[] = Object.entries(tasks).map(([id, task]) => ({
           id,
           title: task.title || 'Untitled',
           status: task.status || 'pending',
@@ -125,6 +132,11 @@ const TaskCreateModal: React.FC<TaskCreateModalProps> = ({
     }
   };
 
+  // Helper for priority select (type‑safe)
+  const handlePriorityChange = (value: string) => {
+    setFormData(prev => ({ ...prev, priority: value as 'low' | 'medium' | 'high' }));
+  };
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
@@ -174,7 +186,7 @@ const TaskCreateModal: React.FC<TaskCreateModalProps> = ({
             </div>
             <div>
               <Label>Priority</Label>
-              <Select value={formData.priority} onValueChange={(val: any) => setFormData({ ...formData, priority: val })}>
+              <Select value={formData.priority} onValueChange={handlePriorityChange}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="low">Low</SelectItem>

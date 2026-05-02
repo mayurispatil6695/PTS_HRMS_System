@@ -1,7 +1,7 @@
-
-import React, { useState, useEffect } from 'react';
+// src/components/admin/SettingsManagement.tsx
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
-import { Settings, Users, Calendar, Building, Shield, Bell } from 'lucide-react';
+import { Building, Calendar, Bell, Shield, Loader2 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -9,100 +9,266 @@ import { Switch } from '../ui/switch';
 import { Textarea } from '../ui/textarea';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
 import { toast } from '../ui/use-toast';
+import { ref, onValue, set, off } from 'firebase/database';
+import { database } from '../../firebase';
+import { useAuth } from '../../hooks/useAuth';
+import { addAuditLog } from '../../utils/auditLog'; // ✅ audit log
 
-const SettingsManagement = () => {
-  const [companySettings, setCompanySettings] = useState({
-    companyName: 'PTS System',
-    companyEmail: 'pawartechnologyservices@gmail.com',
-    companyPhone: '+91 9096649556',
-    companyAddress: 'Pune, India',
-    workingHours: '9:00 AM - 6:00 PM',
-    weeklyHours: 40,
-    leavePolicyUrl: ''
-  });
+// ========== TYPE DEFINITIONS ==========
+interface CompanySettings {
+  companyName: string;
+  companyEmail: string;
+  companyPhone: string;
+  companyAddress: string;
+  workingHours: string;
+  weeklyHours: number;
+  leavePolicyUrl: string;
+}
 
-  const [leaveSettings, setLeaveSettings] = useState({
-    casualLeaves: 12,
-    sickLeaves: 12,
-    earnedLeaves: 24,
-    maternityLeaves: 180,
-    paternityLeaves: 15,
-    autoApproval: false,
-    maxConsecutiveDays: 30
-  });
+interface LeaveSettings {
+  casualLeaves: number;
+  sickLeaves: number;
+  earnedLeaves: number;
+  maternityLeaves: number;
+  paternityLeaves: number;
+  autoApproval: boolean;                 // toggle for short casual leaves
+  shortLeaveMaxDays: number;             // ✅ new field – max days for auto‑approval
+  maxConsecutiveDays: number;
+}
 
-  const [notificationSettings, setNotificationSettings] = useState({
-    emailNotifications: true,
-    smsNotifications: false,
-    pushNotifications: true,
-    leaveReminders: true,
-    attendanceAlerts: true,
-    salarySlipNotifications: true
-  });
+interface NotificationSettings {
+  emailNotifications: boolean;
+  smsNotifications: boolean;
+  pushNotifications: boolean;
+  leaveReminders: boolean;
+  attendanceAlerts: boolean;
+  salarySlipNotifications: boolean;
+}
 
-  const [securitySettings, setSecuritySettings] = useState({
-    twoFactorAuth: false,
-    sessionTimeout: 30,
-    passwordComplexity: true,
-    loginAttempts: 3,
-    autoLogout: true
-  });
+interface SecuritySettings {
+  twoFactorAuth: boolean;
+  sessionTimeout: number;
+  passwordComplexity: boolean;
+  loginAttempts: number;
+  autoLogout: boolean;
+}
 
+// Default values
+const DEFAULT_COMPANY: CompanySettings = {
+  companyName: 'PTS System',
+  companyEmail: 'pawartechnologyservices@gmail.com',
+  companyPhone: '+91 9096649556',
+  companyAddress: 'Pune, India',
+  workingHours: '9:30 AM - 6:30 PM',
+  weeklyHours: 40,
+  leavePolicyUrl: ''
+};
+
+const DEFAULT_LEAVE: LeaveSettings = {
+  casualLeaves: 12,
+  sickLeaves: 12,
+  earnedLeaves: 24,
+  maternityLeaves: 180,
+  paternityLeaves: 15,
+  autoApproval: false,
+  shortLeaveMaxDays: 2,                 // ✅ default 2 days
+  maxConsecutiveDays: 30
+};
+
+const DEFAULT_NOTIFICATION: NotificationSettings = {
+  emailNotifications: true,
+  smsNotifications: false,
+  pushNotifications: true,
+  leaveReminders: true,
+  attendanceAlerts: true,
+  salarySlipNotifications: true
+};
+
+const DEFAULT_SECURITY: SecuritySettings = {
+  twoFactorAuth: false,
+  sessionTimeout: 30,
+  passwordComplexity: true,
+  loginAttempts: 3,
+  autoLogout: true
+};
+
+const toNumber = (val: unknown, defaultValue: number): number => {
+  if (typeof val === 'number') return val;
+  if (typeof val === 'string') {
+    const parsed = parseInt(val, 10);
+    return isNaN(parsed) ? defaultValue : parsed;
+  }
+  return defaultValue;
+};
+
+// ========== MAIN COMPONENT ==========
+const SettingsManagement: React.FC = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+
+  const [company, setCompany] = useState<CompanySettings>(DEFAULT_COMPANY);
+  const [leave, setLeave] = useState<LeaveSettings>(DEFAULT_LEAVE);
+  const [notification, setNotification] = useState<NotificationSettings>(DEFAULT_NOTIFICATION);
+  const [security, setSecurity] = useState<SecuritySettings>(DEFAULT_SECURITY);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const initialLoadDone = useRef(false);
+
+  // Fetch settings from Firebase
   useEffect(() => {
-    // Load settings from localStorage
-    const savedCompanySettings = localStorage.getItem('company_settings');
-    const savedLeaveSettings = localStorage.getItem('leave_settings');
-    const savedNotificationSettings = localStorage.getItem('notification_settings');
-    const savedSecuritySettings = localStorage.getItem('security_settings');
-
-    if (savedCompanySettings) {
-      setCompanySettings(JSON.parse(savedCompanySettings));
+    if (!isAdmin) {
+      setLoading(false);
+      return;
     }
-    if (savedLeaveSettings) {
-      setLeaveSettings(JSON.parse(savedLeaveSettings));
+
+    const settingsRef = ref(database, 'settings');
+    const unsubscribe = onValue(settingsRef, (snapshot) => {
+      const data = snapshot.val() as {
+        company?: CompanySettings;
+        leave?: LeaveSettings;
+        notification?: NotificationSettings;
+        security?: SecuritySettings;
+      } | null;
+      if (data) {
+        if (data.company) setCompany(prev => ({ ...prev, ...data.company }));
+        if (data.leave) {
+          setLeave(prev => ({
+            ...prev,
+            ...data.leave,
+            casualLeaves: toNumber(data.leave.casualLeaves, DEFAULT_LEAVE.casualLeaves),
+            sickLeaves: toNumber(data.leave.sickLeaves, DEFAULT_LEAVE.sickLeaves),
+            earnedLeaves: toNumber(data.leave.earnedLeaves, DEFAULT_LEAVE.earnedLeaves),
+            maternityLeaves: toNumber(data.leave.maternityLeaves, DEFAULT_LEAVE.maternityLeaves),
+            paternityLeaves: toNumber(data.leave.paternityLeaves, DEFAULT_LEAVE.paternityLeaves),
+            shortLeaveMaxDays: toNumber(data.leave.shortLeaveMaxDays, DEFAULT_LEAVE.shortLeaveMaxDays),
+            maxConsecutiveDays: toNumber(data.leave.maxConsecutiveDays, DEFAULT_LEAVE.maxConsecutiveDays),
+          }));
+        }
+        if (data.notification) setNotification(prev => ({ ...prev, ...data.notification }));
+        if (data.security) {
+          setSecurity(prev => ({
+            ...prev,
+            ...data.security,
+            sessionTimeout: toNumber(data.security.sessionTimeout, DEFAULT_SECURITY.sessionTimeout),
+            loginAttempts: toNumber(data.security.loginAttempts, DEFAULT_SECURITY.loginAttempts),
+          }));
+        }
+      }
+      setLoading(false);
+      initialLoadDone.current = true;
+    }, (error) => {
+      console.error(error);
+      toast({ title: 'Error', description: 'Failed to load settings', variant: 'destructive' });
+      setLoading(false);
+    });
+    return () => off(settingsRef);
+  }, [isAdmin]);
+
+  // Save helpers with audit logging
+  const saveCompanySettings = useCallback(async () => {
+    if (!isAdmin) {
+      toast({ title: 'Access Denied', description: 'Only admin can change settings', variant: 'destructive' });
+      return;
     }
-    if (savedNotificationSettings) {
-      setNotificationSettings(JSON.parse(savedNotificationSettings));
+    setSaving('company');
+    try {
+      await set(ref(database, 'settings/company'), company);
+      await addAuditLog({
+        action: 'settings_company_updated',
+        performedBy: user?.id || 'unknown',
+        performedByName: user?.name || 'Admin',
+        details: { changedFields: Object.keys(company) },
+      });
+      toast({ title: 'Settings Saved', description: 'Company settings updated.' });
+    } catch (err) {
+      console.error(err);
+      toast({ title: 'Error', description: 'Failed to save', variant: 'destructive' });
+    } finally {
+      setSaving(null);
     }
-    if (savedSecuritySettings) {
-      setSecuritySettings(JSON.parse(savedSecuritySettings));
+  }, [isAdmin, company, user]);
+
+  const saveLeaveSettings = useCallback(async () => {
+    if (!isAdmin) return;
+    setSaving('leave');
+    try {
+      await set(ref(database, 'settings/leave'), leave);
+      await addAuditLog({
+        action: 'settings_leave_updated',
+        performedBy: user?.id || 'unknown',
+        performedByName: user?.name || 'Admin',
+        details: {
+          autoApproveShortLeaves: leave.autoApproval,
+          shortLeaveMaxDays: leave.shortLeaveMaxDays,
+        },
+      });
+      toast({ title: 'Settings Saved', description: 'Leave policy updated.' });
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to save leave settings', variant: 'destructive' });
+    } finally {
+      setSaving(null);
     }
-  }, []);
+  }, [isAdmin, leave, user]);
 
-  const saveCompanySettings = () => {
-    localStorage.setItem('company_settings', JSON.stringify(companySettings));
-    toast({
-      title: "Settings Saved",
-      description: "Company settings have been updated successfully."
-    });
-  };
+  const saveNotificationSettings = useCallback(async () => {
+    if (!isAdmin) return;
+    setSaving('notification');
+    try {
+      await set(ref(database, 'settings/notification'), notification);
+      await addAuditLog({
+        action: 'settings_notification_updated',
+        performedBy: user?.id || 'unknown',
+        performedByName: user?.name || 'Admin',
+        details: { changedFields: Object.keys(notification) },
+      });
+      toast({ title: 'Settings Saved', description: 'Notification settings updated.' });
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to save', variant: 'destructive' });
+    } finally {
+      setSaving(null);
+    }
+  }, [isAdmin, notification, user]);
 
-  const saveLeaveSettings = () => {
-    localStorage.setItem('leave_settings', JSON.stringify(leaveSettings));
-    toast({
-      title: "Settings Saved",
-      description: "Leave policy settings have been updated successfully."
-    });
-  };
+  const saveSecuritySettings = useCallback(async () => {
+    if (!isAdmin) return;
+    setSaving('security');
+    try {
+      await set(ref(database, 'settings/security'), security);
+      await addAuditLog({
+        action: 'settings_security_updated',
+        performedBy: user?.id || 'unknown',
+        performedByName: user?.name || 'Admin',
+        details: { changedFields: Object.keys(security) },
+      });
+      toast({ title: 'Settings Saved', description: 'Security settings updated.' });
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to save', variant: 'destructive' });
+    } finally {
+      setSaving(null);
+    }
+  }, [isAdmin, security, user]);
 
-  const saveNotificationSettings = () => {
-    localStorage.setItem('notification_settings', JSON.stringify(notificationSettings));
-    toast({
-      title: "Settings Saved",
-      description: "Notification settings have been updated successfully."
-    });
-  };
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="h-8 w-8 animate-spin text-gray-500" />
+      </div>
+    );
+  }
 
-  const saveSecuritySettings = () => {
-    localStorage.setItem('security_settings', JSON.stringify(securitySettings));
-    toast({
-      title: "Settings Saved",
-      description: "Security settings have been updated successfully."
-    });
-  };
+  if (!isAdmin) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center">
+          <Shield className="h-12 w-12 mx-auto text-gray-400 mb-3" />
+          <p className="text-gray-600">You do not have permission to view settings.</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 px-4 pb-20 sm:px-6 sm:pb-0">
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
@@ -110,345 +276,122 @@ const SettingsManagement = () => {
       >
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Settings Management</h1>
-          <p className="text-gray-600">Configure system settings and policies</p>
+          <p className="text-gray-600 text-sm">Configure system settings and policies</p>
         </div>
       </motion.div>
 
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.1 }}
-      >
-        <Tabs defaultValue="company" className="space-y-4">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="company" className="flex items-center gap-2">
-              <Building className="h-4 w-4" />
-              Company
-            </TabsTrigger>
-            <TabsTrigger value="leave" className="flex items-center gap-2">
-              <Calendar className="h-4 w-4" />
-              Leave Policy
-            </TabsTrigger>
-            <TabsTrigger value="notifications" className="flex items-center gap-2">
-              <Bell className="h-4 w-4" />
-              Notifications
-            </TabsTrigger>
-            <TabsTrigger value="security" className="flex items-center gap-2">
-              <Shield className="h-4 w-4" />
-              Security
-            </TabsTrigger>
-          </TabsList>
+      <Tabs defaultValue="company" className="space-y-4">
+        <TabsList className="flex flex-wrap gap-2 h-auto">
+          <TabsTrigger value="company" className="flex items-center gap-2 text-sm"><Building className="h-4 w-4" /> Company</TabsTrigger>
+          <TabsTrigger value="leave" className="flex items-center gap-2 text-sm"><Calendar className="h-4 w-4" /> Leave Policy</TabsTrigger>
+          <TabsTrigger value="notifications" className="flex items-center gap-2 text-sm"><Bell className="h-4 w-4" /> Notifications</TabsTrigger>
+          <TabsTrigger value="security" className="flex items-center gap-2 text-sm"><Shield className="h-4 w-4" /> Security</TabsTrigger>
+        </TabsList>
 
-          <TabsContent value="company">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Building className="h-4 w-4" />
-                  Company Information
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Company Name</label>
-                    <Input
-                      value={companySettings.companyName}
-                      onChange={(e) => setCompanySettings({...companySettings, companyName: e.target.value})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Company Email</label>
-                    <Input
-                      type="email"
-                      value={companySettings.companyEmail}
-                      onChange={(e) => setCompanySettings({...companySettings, companyEmail: e.target.value})}
-                    />
-                  </div>
-                </div>
+        {/* Company Tab */}
+        <TabsContent value="company">
+          <Card>
+            <CardHeader><CardTitle>Company Information</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Company Name</label><Input value={company.companyName} onChange={e => setCompany({...company, companyName: e.target.value})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Company Email</label><Input type="email" value={company.companyEmail} onChange={e => setCompany({...company, companyEmail: e.target.value})} /></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Company Phone</label><Input value={company.companyPhone} onChange={e => setCompany({...company, companyPhone: e.target.value})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Working Hours</label><Input value={company.workingHours} onChange={e => setCompany({...company, workingHours: e.target.value})} /></div>
+              </div>
+              <div><label className="text-sm font-medium mb-1 block">Company Address</label><Textarea value={company.companyAddress} onChange={e => setCompany({...company, companyAddress: e.target.value})} /></div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Weekly Hours</label><Input type="number" value={company.weeklyHours} onChange={e => setCompany({...company, weeklyHours: parseInt(e.target.value) || 0})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Leave Policy URL</label><Input value={company.leavePolicyUrl} onChange={e => setCompany({...company, leavePolicyUrl: e.target.value})} /></div>
+              </div>
+              <Button onClick={saveCompanySettings} disabled={saving === 'company'}>{saving === 'company' ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}Save Company Settings</Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Company Phone</label>
-                    <Input
-                      value={companySettings.companyPhone}
-                      onChange={(e) => setCompanySettings({...companySettings, companyPhone: e.target.value})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Working Hours</label>
-                    <Input
-                      value={companySettings.workingHours}
-                      onChange={(e) => setCompanySettings({...companySettings, workingHours: e.target.value})}
-                    />
-                  </div>
-                </div>
+        {/* Leave Policy Tab */}
+        <TabsContent value="leave">
+          <Card>
+            <CardHeader><CardTitle>Leave Policy Configuration</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Casual Leaves (per year)</label><Input type="number" value={leave.casualLeaves} onChange={e => setLeave({...leave, casualLeaves: parseInt(e.target.value) || 0})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Sick Leaves (per year)</label><Input type="number" value={leave.sickLeaves} onChange={e => setLeave({...leave, sickLeaves: parseInt(e.target.value) || 0})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Earned Leaves (per year)</label><Input type="number" value={leave.earnedLeaves} onChange={e => setLeave({...leave, earnedLeaves: parseInt(e.target.value) || 0})} /></div>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Maternity Leaves (days)</label><Input type="number" value={leave.maternityLeaves} onChange={e => setLeave({...leave, maternityLeaves: parseInt(e.target.value) || 0})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Paternity Leaves (days)</label><Input type="number" value={leave.paternityLeaves} onChange={e => setLeave({...leave, paternityLeaves: parseInt(e.target.value) || 0})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Max Consecutive Days</label><Input type="number" value={leave.maxConsecutiveDays} onChange={e => setLeave({...leave, maxConsecutiveDays: parseInt(e.target.value) || 0})} /></div>
+              </div>
 
-                <div>
-                  <label className="text-sm font-medium mb-1 block">Company Address</label>
-                  <Textarea
-                    value={companySettings.companyAddress}
-                    onChange={(e) => setCompanySettings({...companySettings, companyAddress: e.target.value})}
-                  />
-                </div>
+              {/* Auto‑approve short casual leaves */}
+              <div className="flex items-center justify-between">
+                <div><label className="text-sm font-medium">Auto‑Approve Short Casual Leaves</label><p className="text-xs text-gray-500">Automatically approve casual leaves ≤ Max Days</p></div>
+                <Switch checked={leave.autoApproval} onCheckedChange={checked => setLeave({...leave, autoApproval: checked})} />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Max Days for Auto‑Approve</label><Input type="number" min={1} max={10} value={leave.shortLeaveMaxDays} onChange={e => setLeave({...leave, shortLeaveMaxDays: parseInt(e.target.value) || 2})} /></div>
+              </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Weekly Hours</label>
-                    <Input
-                      type="number"
-                      value={companySettings.weeklyHours}
-                      onChange={(e) => setCompanySettings({...companySettings, weeklyHours: parseInt(e.target.value)})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Leave Policy URL</label>
-                    <Input
-                      value={companySettings.leavePolicyUrl}
-                      onChange={(e) => setCompanySettings({...companySettings, leavePolicyUrl: e.target.value})}
-                    />
-                  </div>
-                </div>
+              <Button onClick={saveLeaveSettings} disabled={saving === 'leave'}>{saving === 'leave' ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}Save Leave Settings</Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-                <Button onClick={saveCompanySettings}>
-                  Save Company Settings
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
+        {/* Notifications Tab */}
+        <TabsContent value="notifications">
+          <Card>
+            <CardHeader><CardTitle>Notification Preferences</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-4">
+                {[
+                  { key: 'emailNotifications', label: 'Email Notifications', desc: 'Send notifications via email' },
+                  { key: 'smsNotifications', label: 'SMS Notifications', desc: 'Send notifications via SMS' },
+                  { key: 'pushNotifications', label: 'Push Notifications', desc: 'Send browser push notifications' },
+                  { key: 'leaveReminders', label: 'Leave Reminders', desc: 'Remind about pending leave requests' },
+                  { key: 'attendanceAlerts', label: 'Attendance Alerts', desc: 'Alert about attendance irregularities' },
+                  { key: 'salarySlipNotifications', label: 'Salary Slip Notifications', desc: 'Notify when salary slips are generated' },
+                ].map(({ key, label, desc }) => (
+                  <div key={key} className="flex items-center justify-between">
+                    <div><label className="text-sm font-medium">{label}</label><p className="text-xs text-gray-500">{desc}</p></div>
+                    <Switch checked={notification[key as keyof NotificationSettings] as boolean} onCheckedChange={checked => setNotification({...notification, [key]: checked})} />
+                  </div>
+                ))}
+              </div>
+              <Button onClick={saveNotificationSettings} disabled={saving === 'notification'}>{saving === 'notification' ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}Save Notification Settings</Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-          <TabsContent value="leave">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4" />
-                  Leave Policy Configuration
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Casual Leaves (per year)</label>
-                    <Input
-                      type="number"
-                      value={leaveSettings.casualLeaves}
-                      onChange={(e) => setLeaveSettings({...leaveSettings, casualLeaves: parseInt(e.target.value)})}
-                    />
+        {/* Security Tab */}
+        <TabsContent value="security">
+          <Card>
+            <CardHeader><CardTitle>Security Configuration</CardTitle></CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-4">
+                {[
+                  { key: 'twoFactorAuth', label: 'Two-Factor Authentication', desc: 'Require 2FA for admin accounts' },
+                  { key: 'passwordComplexity', label: 'Password Complexity', desc: 'Enforce strong password requirements' },
+                  { key: 'autoLogout', label: 'Auto Logout', desc: 'Automatically logout inactive sessions' },
+                ].map(({ key, label, desc }) => (
+                  <div key={key} className="flex items-center justify-between">
+                    <div><label className="text-sm font-medium">{label}</label><p className="text-xs text-gray-500">{desc}</p></div>
+                    <Switch checked={security[key as keyof SecuritySettings] as boolean} onCheckedChange={checked => setSecurity({...security, [key]: checked})} />
                   </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Sick Leaves (per year)</label>
-                    <Input
-                      type="number"
-                      value={leaveSettings.sickLeaves}
-                      onChange={(e) => setLeaveSettings({...leaveSettings, sickLeaves: parseInt(e.target.value)})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Earned Leaves (per year)</label>
-                    <Input
-                      type="number"
-                      value={leaveSettings.earnedLeaves}
-                      onChange={(e) => setLeaveSettings({...leaveSettings, earnedLeaves: parseInt(e.target.value)})}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Maternity Leaves (days)</label>
-                    <Input
-                      type="number"
-                      value={leaveSettings.maternityLeaves}
-                      onChange={(e) => setLeaveSettings({...leaveSettings, maternityLeaves: parseInt(e.target.value)})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Paternity Leaves (days)</label>
-                    <Input
-                      type="number"
-                      value={leaveSettings.paternityLeaves}
-                      onChange={(e) => setLeaveSettings({...leaveSettings, paternityLeaves: parseInt(e.target.value)})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Max Consecutive Days</label>
-                    <Input
-                      type="number"
-                      value={leaveSettings.maxConsecutiveDays}
-                      onChange={(e) => setLeaveSettings({...leaveSettings, maxConsecutiveDays: parseInt(e.target.value)})}
-                    />
-                  </div>
-                </div>
-
-                <div className="flex items-center space-x-2">
-                  <Switch
-                    checked={leaveSettings.autoApproval}
-                    onCheckedChange={(checked) => setLeaveSettings({...leaveSettings, autoApproval: checked})}
-                  />
-                  <label className="text-sm font-medium">Enable Auto Approval for Short Leaves</label>
-                </div>
-
-                <Button onClick={saveLeaveSettings}>
-                  Save Leave Settings
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="notifications">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Bell className="h-4 w-4" />
-                  Notification Preferences
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Email Notifications</label>
-                      <p className="text-xs text-gray-500">Send notifications via email</p>
-                    </div>
-                    <Switch
-                      checked={notificationSettings.emailNotifications}
-                      onCheckedChange={(checked) => setNotificationSettings({...notificationSettings, emailNotifications: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">SMS Notifications</label>
-                      <p className="text-xs text-gray-500">Send notifications via SMS</p>
-                    </div>
-                    <Switch
-                      checked={notificationSettings.smsNotifications}
-                      onCheckedChange={(checked) => setNotificationSettings({...notificationSettings, smsNotifications: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Push Notifications</label>
-                      <p className="text-xs text-gray-500">Send browser push notifications</p>
-                    </div>
-                    <Switch
-                      checked={notificationSettings.pushNotifications}
-                      onCheckedChange={(checked) => setNotificationSettings({...notificationSettings, pushNotifications: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Leave Reminders</label>
-                      <p className="text-xs text-gray-500">Remind about pending leave requests</p>
-                    </div>
-                    <Switch
-                      checked={notificationSettings.leaveReminders}
-                      onCheckedChange={(checked) => setNotificationSettings({...notificationSettings, leaveReminders: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Attendance Alerts</label>
-                      <p className="text-xs text-gray-500">Alert about attendance irregularities</p>
-                    </div>
-                    <Switch
-                      checked={notificationSettings.attendanceAlerts}
-                      onCheckedChange={(checked) => setNotificationSettings({...notificationSettings, attendanceAlerts: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Salary Slip Notifications</label>
-                      <p className="text-xs text-gray-500">Notify when salary slips are generated</p>
-                    </div>
-                    <Switch
-                      checked={notificationSettings.salarySlipNotifications}
-                      onCheckedChange={(checked) => setNotificationSettings({...notificationSettings, salarySlipNotifications: checked})}
-                    />
-                  </div>
-                </div>
-
-                <Button onClick={saveNotificationSettings}>
-                  Save Notification Settings
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
-
-          <TabsContent value="security">
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Shield className="h-4 w-4" />
-                  Security Configuration
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Two-Factor Authentication</label>
-                      <p className="text-xs text-gray-500">Require 2FA for admin accounts</p>
-                    </div>
-                    <Switch
-                      checked={securitySettings.twoFactorAuth}
-                      onCheckedChange={(checked) => setSecuritySettings({...securitySettings, twoFactorAuth: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Password Complexity</label>
-                      <p className="text-xs text-gray-500">Enforce strong password requirements</p>
-                    </div>
-                    <Switch
-                      checked={securitySettings.passwordComplexity}
-                      onCheckedChange={(checked) => setSecuritySettings({...securitySettings, passwordComplexity: checked})}
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <label className="text-sm font-medium">Auto Logout</label>
-                      <p className="text-xs text-gray-500">Automatically logout inactive sessions</p>
-                    </div>
-                    <Switch
-                      checked={securitySettings.autoLogout}
-                      onCheckedChange={(checked) => setSecuritySettings({...securitySettings, autoLogout: checked})}
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Session Timeout (minutes)</label>
-                    <Input
-                      type="number"
-                      value={securitySettings.sessionTimeout}
-                      onChange={(e) => setSecuritySettings({...securitySettings, sessionTimeout: parseInt(e.target.value)})}
-                    />
-                  </div>
-                  <div>
-                    <label className="text-sm font-medium mb-1 block">Max Login Attempts</label>
-                    <Input
-                      type="number"
-                      value={securitySettings.loginAttempts}
-                      onChange={(e) => setSecuritySettings({...securitySettings, loginAttempts: parseInt(e.target.value)})}
-                    />
-                  </div>
-                </div>
-
-                <Button onClick={saveSecuritySettings}>
-                  Save Security Settings
-                </Button>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
-      </motion.div>
+                ))}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div><label className="text-sm font-medium mb-1 block">Session Timeout (minutes)</label><Input type="number" value={security.sessionTimeout} onChange={e => setSecurity({...security, sessionTimeout: parseInt(e.target.value) || 0})} /></div>
+                <div><label className="text-sm font-medium mb-1 block">Max Login Attempts</label><Input type="number" value={security.loginAttempts} onChange={e => setSecurity({...security, loginAttempts: parseInt(e.target.value) || 0})} /></div>
+              </div>
+              <Button onClick={saveSecuritySettings} disabled={saving === 'security'}>{saving === 'security' ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}Save Security Settings</Button>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

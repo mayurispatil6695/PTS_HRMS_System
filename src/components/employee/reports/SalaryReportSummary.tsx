@@ -3,10 +3,15 @@ import React from 'react';
 import { FileText, BarChart3, Calendar } from 'lucide-react';
 import { formatCurrency } from '../../../utils/reportUtils';
 
-interface SalaryReportSummaryProps {
-  reportData: any;
+interface SalaryReportData {
+  totalSlips: number;
+  totalEarnings: number;
+  avgSalary: number;
 }
 
+interface SalaryReportSummaryProps {
+  reportData: SalaryReportData;
+}
 const SalaryReportSummary: React.FC<SalaryReportSummaryProps> = ({ reportData }) => {
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">

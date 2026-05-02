@@ -1,11 +1,11 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, memo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../../ui/dialog';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../ui/select';
 import { Avatar, AvatarFallback, AvatarImage } from '../../ui/avatar';
 import { Plus, Upload, Camera, User, Phone, Calendar, DollarSign, Edit } from 'lucide-react';
-import { ref, set, update, push, onValue, off, get, runTransaction } from 'firebase/database';
+import { ref, set, update, onValue, off, get, runTransaction } from 'firebase/database';
 import { getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword } from 'firebase/auth';
 import { auth, database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
@@ -14,15 +14,17 @@ import { Calendar as CalendarComp } from '../../ui/calendar';
 import { format } from 'date-fns';
 import { cn } from '../../../lib/utils';
 import { toast } from 'react-hot-toast';
-import type { Employee as BaseEmployee } from './EmployeeList';
 
-// Extended Employee interface with optional role and manager fields
-interface Employee extends BaseEmployee {
-  role?: 'employee' | 'team_leader' | 'team_manager' | 'client';
-  managerId?: string;
-  reportingManagerName?: string;
-}
+// ✅ Central types
+import type { Employee } from '@/types/employee';
+import type { FirebaseUserData } from '@/types/admin';
 
+// ✅ Department designations
+import { DEPARTMENT_DESIGNATIONS } from '../../../constants/departmentDesignations';
+
+// -------------------------------------------------------------------
+// Dialog‑specific types (keep local – not needed elsewhere)
+// -------------------------------------------------------------------
 interface NewEmployee {
   name: string;
   email: string;
@@ -44,7 +46,6 @@ interface NewEmployee {
   role: 'employee' | 'team_leader' | 'team_manager' | 'client';
   managerId: string;
 }
-
 interface AddEmployeeDialogProps {
   departments: string[];
   designations: string[];
@@ -56,52 +57,10 @@ interface AddEmployeeDialogProps {
   onOpenChange?: (open: boolean) => void;
 }
 
-interface FirebaseUserData {
-  role?: string;
-  name?: string;
-  email?: string;
-  profile?: { role?: string; name?: string; [key: string]: unknown };
-  employee?: { role?: string; name?: string; [key: string]: unknown };
-  [key: string]: unknown;
-}
-
-// Department designations
-const departmentDesignations: Record<string, string[]> = {
-  'Web Development': [
-    'Frontend Developer', 'Backend Developer', 'Full Stack Developer','web developer',
-    'Web Development Intern', 'Senior Web Developer', 'WordPress Developer','web team manager'
-  ],
-  'Software Development': [
-    'Software Developer', 'Software Engineer', 'Senior Software Developer',
-    'Software Development Manager', 'Software Development Intern', 'System Analyst'
-  ],
-  'Digital Marketing': [
-    'SEO Specialist', 'Social Media Manager', 'Content Writer',
-    'Digital Marketing Head', 'PPC Analyst', 'Email Marketing Specialist'
-  ],
-  'Cyber Security': [
-    'Security Analyst', 'Penetration Tester', 'Security Engineer',
-    'Cyber Security Intern', 'Compliance Officer'
-  ],
-  'Sales': [
-    'Sales Executive', 'Sales Manager', 'Business Development Manager',
-    'Account Manager', 'Sales Intern'
-  ],
-  'Product Designing': [
-    'UI/UX Designer', 'Product Designer', 'Graphic Designer',
-    'Design Intern', 'Senior Product Designer'
-  ],
-  'Graphic Designing': [
-    'Graphic Designer', 'Senior Graphic Designer', 'Creative Director',
-    'Motion Graphics Designer', 'Design Intern'
-  ],
-  'Artificial Intelligence': [
-    'AI Engineer', 'ML Engineer', 'Data Scientist',
-    'AI Research Intern', 'NLP Engineer'
-  ]
-};
-
-const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
+// -------------------------------------------------------------------
+// Component
+// -------------------------------------------------------------------
+const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = memo(({
   departments,
   onSuccess,
   employeeToEdit,
@@ -143,8 +102,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
   const open = isControlled ? externalOpen : internalOpen;
   const setOpen = isControlled ? externalOnOpenChange || (() => {}) : setInternalOpen;
 
-  const workModes = ['office', 'remote', 'hybrid'];
-  const employmentTypes = ['full-time', 'part-time', 'freelancing', 'internship'];
+  const workModes = ['office', 'remote', 'hybrid'] as const;
+  const employmentTypes = ['full-time', 'part-time', 'freelancing', 'internship'] as const;
 
   // Fetch managers (users with role = team_manager)
   useEffect(() => {
@@ -164,8 +123,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
   }, []);
 
   useEffect(() => {
-    if (formData.department && departmentDesignations[formData.department]) {
-      setDesignationsList(departmentDesignations[formData.department]);
+    if (formData.department && DEPARTMENT_DESIGNATIONS[formData.department]) {
+      setDesignationsList(DEPARTMENT_DESIGNATIONS[formData.department]);
       setFormData(prev => ({ ...prev, designation: '' }));
     } else {
       setDesignationsList([]);
@@ -197,8 +156,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
         managerId: employeeToEdit.managerId || ''
       });
       setSelectedManagerId(employeeToEdit.managerId || '');
-      if (employeeToEdit.department && departmentDesignations[employeeToEdit.department]) {
-        setDesignationsList(departmentDesignations[employeeToEdit.department]);
+      if (employeeToEdit.department && DEPARTMENT_DESIGNATIONS[employeeToEdit.department]) {
+        setDesignationsList(DEPARTMENT_DESIGNATIONS[employeeToEdit.department]);
       }
     } else {
       setFormData({
@@ -212,14 +171,19 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     }
   }, [employeeToEdit]);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImageUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       const reader = new FileReader();
-      reader.onload = () => setFormData(prev => ({ ...prev, profileImage: reader.result as string }));
+      reader.onload = (event) => {
+        const result = event.target?.result;
+        if (typeof result === 'string') {
+          setFormData(prev => ({ ...prev, profileImage: result }));
+        }
+      };
       reader.readAsDataURL(file);
     }
-  };
+  }, []);
 
   const getNextEmployeeId = async (): Promise<string> => {
     const counterRef = ref(database, 'counters/employeeId');
@@ -232,7 +196,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     return `EMP-${nextNumber.toString().padStart(5, '0')}`;
   };
 
-  const handleSubmit = async () => {
+  const handleSubmit = useCallback(async () => {
     if (!user || user.role !== 'admin') {
       setError('Only admins can add/edit employees');
       return;
@@ -261,7 +225,6 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     setLoading(true);
     setError(null);
 
-    // Resolve reporting manager name
     let reportingManagerName = '';
     if (selectedManagerId) {
       const manager = managers.find(m => m.id === selectedManagerId);
@@ -284,10 +247,14 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
           address: formData.address,
           workMode: formData.workMode,
           employmentType: formData.employmentType,
-          bankDetails: { accountNumber: formData.bankAccountNumber, bankName: formData.bankName, ifscCode: formData.ifscCode },
+          bankDetails: {
+            accountNumber: formData.bankAccountNumber,
+            bankName: formData.bankName,
+            ifscCode: formData.ifscCode
+          },
           role: formData.role,
           managerId: selectedManagerId,
-          reportingManagerName: reportingManagerName,
+          reportingManagerName,
           updatedAt: new Date().toISOString()
         };
         await update(ref(database, `users/${user.id}/employees/${employeeToEdit.id}`), employeeData);
@@ -319,12 +286,16 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
           address: formData.address,
           workMode: formData.workMode,
           employmentType: formData.employmentType,
-          bankDetails: { accountNumber: formData.bankAccountNumber, bankName: formData.bankName, ifscCode: formData.ifscCode },
+          bankDetails: {
+            accountNumber: formData.bankAccountNumber,
+            bankName: formData.bankName,
+            ifscCode: formData.ifscCode
+          },
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
           role: formData.role,
           managerId: selectedManagerId,
-          reportingManagerName: reportingManagerName,
+          reportingManagerName,
           addedBy: user.id,
           status: 'active'
         };
@@ -340,7 +311,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [user, formData, employeeToEdit, selectedManagerId, managers, onSuccess, onEditSuccess, setOpen]);
 
   const isSubmitDisabled = loading || !formData.name || !formData.email ||
     (!employeeToEdit && !formData.password) || !formData.department || !formData.designation ||
@@ -413,7 +384,7 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
               </Select>
             </div>
             <div><label className="text-sm font-medium">Role</label>
-              <Select value={formData.role} onValueChange={(val: 'employee' | 'team_leader' | 'team_manager' | 'client') => setFormData({...formData, role: val})}>
+              <Select value={formData.role} onValueChange={(val: NewEmployee['role']) => setFormData({...formData, role: val})}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="employee">Employee</SelectItem>
@@ -477,6 +448,8 @@ const AddEmployeeDialog: React.FC<AddEmployeeDialogProps> = ({
       </DialogContent>
     </Dialog>
   );
-};
+});
+
+AddEmployeeDialog.displayName = 'AddEmployeeDialog';
 
 export default AddEmployeeDialog;

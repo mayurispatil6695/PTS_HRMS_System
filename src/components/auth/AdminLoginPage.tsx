@@ -1,6 +1,6 @@
+// src/components/auth/AdminLoginPage.tsx
 import React, { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
-import { useToast } from '../../hooks/use-toast';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -8,6 +8,7 @@ import { Label } from '../ui/label';
 import { Users, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
+import { toast } from '../ui/use-toast';
 
 interface AdminLoginPageProps {
   onForgotPassword: () => void;
@@ -17,15 +18,10 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
   const navigate = useNavigate();
   const { user, login, logout } = useAuth();
 
-  // Form state
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
-
-  // UI state
   const [loading, setLoading] = useState(false);
-
-  const { toast } = useToast();
 
   // Redirect if already logged in AND has admin role
   useEffect(() => {
@@ -33,7 +29,6 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
       if (user.role === 'admin') {
         navigate('/dashboard');
       } else {
-        // Logout non-admin users immediately
         logout();
         toast({
           title: "Access Denied",
@@ -42,7 +37,7 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
         });
       }
     }
-  }, [user, navigate, logout, toast]);
+  }, [user, navigate, logout]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,13 +54,8 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
     setLoading(true);
     try {
       const result = await login(email, password, 'admin');
-
       if (result.success) {
-        // The useEffect above will handle redirection or access denial based on role
-        toast({
-          title: "Success",
-          description: "Login successful!",
-        });
+        toast({ title: "Success", description: "Login successful!" });
       } else {
         toast({
           title: "Error",
@@ -73,11 +63,8 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
           variant: "destructive",
         });
       }
-    } catch (error: unknown) {
-      let errorMessage = "Login failed";
-      if (error instanceof Error) {
-        errorMessage = error.message;
-      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : "Login failed";
       toast({
         title: "Error",
         description: errorMessage,
@@ -118,6 +105,7 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="pl-10"
+                    disabled={loading}
                   />
                 </div>
               </div>
@@ -133,11 +121,13 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     className="pl-10 pr-10"
+                    disabled={loading}
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
                     className="absolute right-3 top-3 text-gray-400 hover:text-gray-600"
+                    disabled={loading}
                   >
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>
@@ -160,15 +150,6 @@ const AdminLoginPage: React.FC<AdminLoginPageProps> = ({ onForgotPassword }) => 
                 ) : 'Sign In as Admin'}
               </Button>
             </form>
-
-            {/* <div className="mt-4 text-center">
-              <button
-                onClick={onForgotPassword}
-                className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
-              >
-                Forgot Password?
-              </button>
-            </div> */}
           </CardContent>
         </Card>
       </motion.div>

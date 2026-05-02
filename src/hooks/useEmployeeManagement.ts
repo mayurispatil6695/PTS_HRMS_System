@@ -1,9 +1,11 @@
+// src/hooks/useEmployeeManagement.ts
 import { useState, useEffect } from 'react';
 import bcrypt from 'bcryptjs';
 import { useToast } from './use-toast';
 import { ref, onValue, set, update, remove, get } from "firebase/database";
 import { database } from "../firebase";
 import { useAuth } from './useAuth';
+import { addAuditLog } from '../utils/auditLog';
 
 interface Employee {
   id: string;
@@ -67,14 +69,13 @@ export const useEmployeeManagement = () => {
     'Manager'
   ];
 
-  // ✅ Load employees – admin reads from global "employees" node, others from their admin's sub‑node
+  // Load employees – admin reads from global "employees" node, others from their admin's sub‑node
   useEffect(() => {
     if (!currentUser) return;
 
     setLoading(true);
     
     if (isAdmin) {
-      // ADMIN: Single source of truth – global employees node
       const employeesRef = ref(database, "employees");
       const unsubscribe = onValue(employeesRef, (snapshot) => {
         const data = snapshot.val();
@@ -92,7 +93,6 @@ export const useEmployeeManagement = () => {
       });
       return () => unsubscribe();
     } else {
-      // REGULAR USER: Employees added by their admin
       const adminId = currentUser.adminUid || currentUser.id;
       const employeesRef = ref(database, `users/${adminId}/employees`);
       const unsubscribe = onValue(employeesRef, (snapshot) => {
@@ -113,7 +113,7 @@ export const useEmployeeManagement = () => {
     }
   }, [currentUser, isAdmin]);
 
-  // ✅ Filtering logic
+  // Filtering logic
   useEffect(() => {
     let filtered = employees;
 
@@ -138,7 +138,7 @@ export const useEmployeeManagement = () => {
     setFilteredEmployees(filtered);
   }, [employees, searchTerm, filterDepartment, filterStatus]);
 
-  // ✅ Add Employee
+  // Add Employee
   const addEmployee = async (newEmployee: NewEmployee) => {
     if (!newEmployee.name || !newEmployee.email || !newEmployee.phone || 
         !newEmployee.department || !newEmployee.designation || !newEmployee.password) {
@@ -179,25 +179,35 @@ export const useEmployeeManagement = () => {
         adminId: currentUser.id,
       };
 
-      // Store hashed password separately (not in Employee interface)
       const hashedPassword = bcrypt.hashSync(newEmployee.password, 10);
       const isFirstTimeLogin = true;
 
       if (isAdmin) {
-        // ADMIN: Save to global employees node
         await set(ref(database, `employees/${id}`), employee);
-        // Also store password and first‑login flag
         await set(ref(database, `employees/${id}/hashedPassword`), hashedPassword);
         await set(ref(database, `employees/${id}/isFirstTimeLogin`), isFirstTimeLogin);
-        // Backward compatibility: also save to admin's own employee list
         await set(ref(database, `users/${currentUser.id}/employees/${id}`), employee);
       } else {
-        // REGULAR USER: Save only to their admin's employee list
         const adminId = currentUser.adminUid || currentUser.id;
         await set(ref(database, `users/${adminId}/employees/${id}`), employee);
         await set(ref(database, `users/${adminId}/employees/${id}/hashedPassword`), hashedPassword);
         await set(ref(database, `users/${adminId}/employees/${id}/isFirstTimeLogin`), isFirstTimeLogin);
       }
+
+      // ✅ Audit log: employee added
+      await addAuditLog({
+        action: 'employee_added',
+        performedBy: currentUser.id,
+        performedByName: currentUser.name || 'Admin',
+        targetId: id,
+        details: {
+          name: newEmployee.name,
+          email: newEmployee.email,
+          role: newEmployee.role,
+          department: newEmployee.department,
+          designation: newEmployee.designation,
+        },
+      });
 
       toast({
         title: "Success",
@@ -215,25 +225,36 @@ export const useEmployeeManagement = () => {
     }
   };
 
-  // ✅ Toggle Status
+  // Toggle Status
   const toggleEmployeeStatus = async (employeeId: string) => {
     try {
       const employee = employees.find(emp => emp.id === employeeId);
       if (!employee) return;
 
+      const newStatus = !employee.isActive;
       if (isAdmin) {
-        // ADMIN: Update global node
-        await update(ref(database, `employees/${employeeId}`), { isActive: !employee.isActive });
-        // Also try to update in the admin's own employee list (if exists)
+        await update(ref(database, `employees/${employeeId}`), { isActive: newStatus });
         const adminId = employee.addedBy || currentUser?.id;
         if (adminId) {
-          await update(ref(database, `users/${adminId}/employees/${employeeId}`), { isActive: !employee.isActive })
-            .catch(() => {}); // ignore if not found
+          await update(ref(database, `users/${adminId}/employees/${employeeId}`), { isActive: newStatus }).catch(() => {});
         }
       } else {
         const adminId = currentUser?.adminUid || currentUser?.id;
-        await update(ref(database, `users/${adminId}/employees/${employeeId}`), { isActive: !employee.isActive });
+        await update(ref(database, `users/${adminId}/employees/${employeeId}`), { isActive: newStatus });
       }
+
+      // ✅ Audit log: status toggled
+      await addAuditLog({
+        action: 'employee_status_toggled',
+        performedBy: currentUser?.id || 'unknown',
+        performedByName: currentUser?.name || 'System',
+        targetId: employeeId,
+        details: {
+          employeeName: employee.name,
+          oldStatus: employee.isActive ? 'active' : 'inactive',
+          newStatus: newStatus ? 'active' : 'inactive',
+        },
+      });
 
       toast({ title: "Success", description: "Employee status updated successfully" });
     } catch (error) {
@@ -242,7 +263,7 @@ export const useEmployeeManagement = () => {
     }
   };
 
-  // ✅ Delete Employee
+  // Delete Employee
   const deleteEmployee = async (employeeId: string) => {
     try {
       const employee = employees.find(emp => emp.id === employeeId);
@@ -259,6 +280,19 @@ export const useEmployeeManagement = () => {
         await remove(ref(database, `users/${adminId}/employees/${employeeId}`));
       }
 
+      // ✅ Audit log: employee deleted
+      await addAuditLog({
+        action: 'employee_deleted',
+        performedBy: currentUser?.id || 'unknown',
+        performedByName: currentUser?.name || 'System',
+        targetId: employeeId,
+        details: {
+          employeeName: employee.name,
+          email: employee.email,
+          role: employee.role,
+        },
+      });
+
       toast({ title: "Success", description: "Employee deleted successfully" });
     } catch (error) {
       console.error('Error deleting employee:', error);
@@ -266,7 +300,7 @@ export const useEmployeeManagement = () => {
     }
   };
 
-  // ✅ Update Employee
+  // Update Employee
   const updateEmployee = async (employeeId: string, updatedData: Partial<Employee>) => {
     try {
       const employee = employees.find(emp => emp.id === employeeId);
@@ -292,7 +326,7 @@ export const useEmployeeManagement = () => {
     }
   };
 
-  // ✅ Get employees by admin (admin only)
+  // Get employees by admin (admin only)
   const getEmployeesByAdmin = () => {
     if (!isAdmin) return {};
     const groupedByAdmin: Record<string, Employee[]> = {};
@@ -304,7 +338,7 @@ export const useEmployeeManagement = () => {
     return groupedByAdmin;
   };
 
-  // ✅ Export – fixed column order
+  // Export
   const exportData = () => {
     const headers = ['Name', 'Email', 'Phone', 'Department', 'Designation', 'Employee ID', 'Role', 'Status', 'Added By', 'Created At'];
     const rows = filteredEmployees.map(emp => [

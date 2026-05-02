@@ -1,4 +1,3 @@
-
 import React from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import { Badge } from '../../ui/badge';
@@ -6,17 +5,8 @@ import { Button } from '../../ui/button';
 import { Plane, User } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-interface LeaveRequest {
-  id: string;
-  employeeName: string;
-  employeeId: string;
-  leaveType: string;
-  startDate: string;
-  endDate: string;
-  reason: string;
-  status: 'pending' | 'approved' | 'rejected';
-  appliedAt: string;
-}
+// ✅ Import central LeaveRequest type
+import type { LeaveRequest } from '@/types/popup';
 
 interface LeavePopupProps {
   isOpen: boolean;
@@ -45,9 +35,9 @@ const LeavePopup: React.FC<LeavePopupProps> = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2 text-xl sm:text-2xl">
             <Plane className="h-5 w-5" />
             Pending Leave Requests ({leaveRequests.length})
           </DialogTitle>
@@ -56,32 +46,34 @@ const LeavePopup: React.FC<LeavePopupProps> = ({
         <div className="space-y-4">
           {leaveRequests.map((request) => (
             <div key={request.id} className="border rounded-lg p-4 hover:shadow-md transition-shadow">
-              <div className="flex items-start justify-between">
+              <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                 <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    <User className="h-4 w-4" />
-                    <h3 className="font-semibold">{request.employeeName}</h3>
-                    <Badge className="bg-yellow-100 text-yellow-700">
+                  <div className="flex flex-wrap items-center gap-2 mb-2">
+                    <div className="flex items-center gap-1">
+                      <User className="h-4 w-4" />
+                      <h3 className="font-semibold">{request.employeeName}</h3>
+                    </div>
+                    <Badge className="bg-yellow-100 text-yellow-700 text-xs">
                       {request.status}
                     </Badge>
                   </div>
                   
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-3 text-sm">
                     <p><span className="font-medium">Employee ID:</span> {request.employeeId}</p>
                     <p><span className="font-medium">Leave Type:</span> {request.leaveType}</p>
                     <p><span className="font-medium">Duration:</span> {calculateDays(request.startDate, request.endDate)} days</p>
                     <p><span className="font-medium">Applied:</span> {new Date(request.appliedAt).toLocaleDateString()}</p>
                   </div>
                   
-                  <div className="mb-3">
-                    <p className="text-sm"><span className="font-medium">Period:</span> {new Date(request.startDate).toLocaleDateString()} - {new Date(request.endDate).toLocaleDateString()}</p>
-                    <p className="text-sm"><span className="font-medium">Reason:</span> {request.reason}</p>
+                  <div className="mb-3 text-sm">
+                    <p><span className="font-medium">Period:</span> {new Date(request.startDate).toLocaleDateString()} - {new Date(request.endDate).toLocaleDateString()}</p>
+                    <p className="mt-1"><span className="font-medium">Reason:</span> {request.reason}</p>
                   </div>
                 </div>
                 
                 <Button
                   onClick={() => handleViewRequest(request.id)}
-                  className="ml-4"
+                  className="w-full sm:w-auto"
                 >
                   Review Request
                 </Button>

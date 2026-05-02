@@ -1,3 +1,4 @@
+// src/components/manager/ManagerDashboardHome.tsx
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Badge } from '../ui/badge';
@@ -44,6 +45,19 @@ interface RecentAttendance {
   name: string;
   status: string;
   punchIn: string;
+}
+
+// Firebase raw leave data
+interface FirebaseLeaveData {
+  leaveType?: string;
+  startDate?: string;
+  endDate?: string;
+  reason?: string;
+  status?: string;
+  appliedAt?: string;
+  approvedAt?: string;
+  rejectedAt?: string;
+  approvedBy?: string;
 }
 
 // Helper: get current time string (HH:MM AM/PM)
@@ -105,23 +119,22 @@ const ManagerDashboardHome = () => {
         }
       }
 
-      // Pending leaves
+      // Pending leaves – now using typed data
       let pendingLeaves = 0;
       const leaveReqs: LeaveRequest[] = [];
       for (const empId of employeeIds) {
         const leavesRef = ref(database, `users/${adminId}/employees/${empId}/leaves`);
         const leavesSnap = await get(leavesRef);
-        const leaves = leavesSnap.val() as Record<string, any> | null;
+        const leaves = leavesSnap.val() as Record<string, FirebaseLeaveData> | null;
         if (leaves) {
           for (const [leaveId, leave] of Object.entries(leaves)) {
-            const l = leave as { status?: string; leaveType?: string; startDate?: string };
-            if (l.status === 'pending') {
+            if (leave.status === 'pending') {
               pendingLeaves++;
               leaveReqs.push({
                 id: leaveId,
                 employeeName: employees[empId]?.name || empId,
-                leaveType: l.leaveType || 'Leave',
-                startDate: l.startDate || '',
+                leaveType: leave.leaveType || 'Leave',
+                startDate: leave.startDate || '',
                 status: 'pending',
               });
             }
@@ -140,7 +153,10 @@ const ManagerDashboardHome = () => {
       setLoading(false);
     };
 
-    fetchDashboardData();
+    fetchDashboardData().catch(err => {
+      console.error(err);
+      setLoading(false);
+    });
 
     // Real-time idle count from activity node
     const activityRef = ref(database, 'activity');

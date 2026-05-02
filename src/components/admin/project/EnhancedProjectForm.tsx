@@ -1,5 +1,4 @@
-// src/components/admin/project/EnhancedProjectForm.tsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, memo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../../ui/card';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
@@ -14,7 +13,14 @@ import { useAuth } from '../../../hooks/useAuth';
 import { toast } from '../../ui/use-toast';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import { Checkbox } from '../../ui/checkbox';
-// ✅ TaskTemplate interface (matching Firebase structure)
+
+// ✅ Central types
+import type { Employee } from '@/types/employee';
+import type { Task } from '@/types/project';
+
+// -------------------------------------------------------------------
+// Local interfaces (match Firebase storage structure)
+// -------------------------------------------------------------------
 interface TaskTemplate {
   id: string;
   name: string;
@@ -25,28 +31,6 @@ interface TaskTemplate {
   dueDateOffsetDays: number;
   createdBy: string;
   createdAt: string;
-}
-
-interface Employee {
-  id: string;
-  name: string;
-  email: string;
-  department: string;
-  designation: string;
-  isActive: boolean;
-}
-
-interface Task {
-  id: string;
-  title: string;
-  description: string;
-  assignedTo: string;
-  priority: 'low' | 'medium' | 'high';
-  dueDate: string;
-  status: string;
-  createdAt: string;
-  employeeName?: string;
-  dependsOn?: string[];
 }
 
 interface Subtask {
@@ -64,16 +48,26 @@ interface Attachment {
   date: string;
 }
 
-interface ExtendedTask extends Task {
-  subtasks?: Subtask[];
-  timeSpent?: number;
-  timerActive?: boolean;
-  timerStart?: number | null;
-  attachments?: Attachment[];
-  tags?: string[];
-  mentions?: string[];
+// ✅ ExtendedTask – does NOT extend Task, matches what we store in Firebase
+interface ExtendedTask {
+  id: string;
+  title: string;
+  description: string;
+  assignedTo: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
+  dueDate: string;
+  status: string;
+  createdAt: string;
+  dependsOn?: string[];
   employeeName?: string;
   department?: string;
+  subtasks: Subtask[];
+  timeSpent: number;
+  timerActive: boolean;
+  timerStart: number | null;
+  attachments: Attachment[];
+  tags: string[];
+  mentions: string[];
 }
 
 interface ProjectUpdate {
@@ -126,7 +120,154 @@ interface EnhancedProjectFormProps {
   department?: string;
 }
 
-const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
+// -------------------------------------------------------------------
+// Subcomponent: Task creation row (memoised)
+// -------------------------------------------------------------------
+const TaskFormRow = memo(({
+  newTask,
+  assignedEmployees,
+  existingTasks,
+  onNewTaskChange,
+  onAddTask,
+  onDependencyChange,
+  dependencyPopoverOpen,
+  onDependencyPopoverChange
+}: {
+  newTask: { title: string; description: string; assignedTo: string; priority: 'low' | 'medium' | 'high'; dueDate: string; dependsOn: string[] };
+  assignedEmployees: Employee[];
+  existingTasks: Task[];
+  onNewTaskChange: (updates: Partial<typeof newTask>) => void;
+  onAddTask: () => void;
+  onDependencyChange: (taskId: string, checked: boolean) => void;
+  dependencyPopoverOpen: boolean;
+  onDependencyPopoverChange: (open: boolean) => void;
+}) => {
+  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
+  const [selectedTemplate, setSelectedTemplate] = useState('');
+
+  useEffect(() => {
+    const templatesRef = ref(database, 'taskTemplates');
+    const unsubscribe = onValue(templatesRef, (snapshot) => {
+      const data = snapshot.val();
+      if (data) {
+        const list = Object.entries(data).map(([id, val]) => ({ id, ...(val as Omit<TaskTemplate, 'id'>) })) as TaskTemplate[];
+        setTemplates(list);
+      } else {
+        setTemplates([]);
+      }
+    });
+    return () => off(templatesRef);
+  }, []);
+
+  const applyTemplate = useCallback((templateId: string) => {
+    const template = templates.find(t => t.id === templateId);
+    if (!template) return;
+    const dueDate = new Date();
+    dueDate.setDate(dueDate.getDate() + template.dueDateOffsetDays);
+    onNewTaskChange({
+      title: template.title,
+      description: template.description,
+      priority: template.priority,
+      dueDate: dueDate.toISOString().split('T')[0],
+    });
+  }, [templates, onNewTaskChange]);
+
+  const handleTemplateChange = useCallback((val: string) => {
+    setSelectedTemplate(val);
+    applyTemplate(val);
+  }, [applyTemplate]);
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-gray-50 rounded">
+      <Select value={selectedTemplate} onValueChange={handleTemplateChange}>
+        <SelectTrigger className="w-full"><SelectValue placeholder="Apply template" /></SelectTrigger>
+        <SelectContent>
+          {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
+        </SelectContent>
+      </Select>
+
+      <Input placeholder="Task title" value={newTask.title} onChange={e => onNewTaskChange({ title: e.target.value })} />
+      <Input type="date" value={newTask.dueDate} onChange={e => onNewTaskChange({ dueDate: e.target.value })} />
+
+      <Select value={newTask.assignedTo} onValueChange={val => onNewTaskChange({ assignedTo: val })}>
+        <SelectTrigger><SelectValue placeholder="Assign to" /></SelectTrigger>
+        <SelectContent>
+          {assignedEmployees.map(emp => (
+            <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+
+      <Select value={newTask.priority} onValueChange={val => onNewTaskChange({ priority: val as 'low' | 'medium' | 'high' })}>
+        <SelectTrigger><SelectValue /></SelectTrigger>
+        <SelectContent>
+          <SelectItem value="low">Low</SelectItem>
+          <SelectItem value="medium">Medium</SelectItem>
+          <SelectItem value="high">High</SelectItem>
+        </SelectContent>
+      </Select>
+
+      <div className="md:col-span-2">
+        <Label className="text-sm">Depends on (optional)</Label>
+        <Popover open={dependencyPopoverOpen} onOpenChange={onDependencyPopoverChange}>
+          <PopoverTrigger asChild>
+            <Button variant="outline" className="w-full justify-start">
+              {newTask.dependsOn.length === 0 
+                ? "Select dependencies" 
+                : `${newTask.dependsOn.length} task(s) selected`}
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent className="w-full p-2 max-h-48 overflow-auto">
+            {existingTasks.length === 0 ? (
+              <p className="text-xs text-gray-500">No tasks added yet</p>
+            ) : (
+              existingTasks.map(t => (
+                <div key={t.id} className="flex items-center gap-2 py-1">
+                  <Checkbox
+                    checked={newTask.dependsOn.includes(t.id)}
+                    onCheckedChange={(checked) => onDependencyChange(t.id, !!checked)}
+                  />
+                  <span className="text-sm">{t.title}</span>
+                </div>
+              ))
+            )}
+          </PopoverContent>
+        </Popover>
+        {newTask.dependsOn.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-1">
+            {newTask.dependsOn.map(depId => {
+              const depTask = existingTasks.find(t => t.id === depId);
+              return (
+                <Badge key={depId} variant="secondary" className="text-xs">
+                  {depTask?.title || depId}
+                  <button
+                    className="ml-1 text-red-500 hover:text-red-700"
+                    onClick={() => onDependencyChange(depId, false)}
+                  >×</button>
+                </Badge>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="md:col-span-2">
+        <Textarea placeholder="Task description" value={newTask.description} onChange={e => onNewTaskChange({ description: e.target.value })} />
+      </div>
+
+      <Button type="button" onClick={onAddTask} disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate} className="md:col-span-2">
+        <Plus className="h-4 w-4 mr-1" /> Add Task
+      </Button>
+    </div>
+  );
+});
+
+TaskFormRow.displayName = 'TaskFormRow';
+
+// -------------------------------------------------------------------
+// Main Component
+// -------------------------------------------------------------------
+const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = memo(({
   onSuccess,
   onCancel,
   role = 'admin',
@@ -135,17 +276,9 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
 }) => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
-  const [filteredEmployees, setFilteredEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [newTask, setNewTask] = useState({
-    title: '',
-    description: '',
-    assignedTo: '',
-    priority: 'medium' as 'low' | 'medium' | 'high',
-    dueDate: '',
-    dependsOn: [] as string[]
-  });
+  const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
 
   const [formData, setFormData] = useState<ProjectFormData>({
     name: '',
@@ -163,14 +296,18 @@ const EnhancedProjectForm: React.FC<EnhancedProjectFormProps> = ({
     specificDepartment: ''
   });
 
+  const [newTask, setNewTask] = useState({
+    title: '',
+    description: '',
+    assignedTo: '',
+    priority: 'medium' as 'low' | 'medium' | 'high',
+    dueDate: '',
+    dependsOn: [] as string[]
+  });
+
   const departments = ['Software Development', 'Digital Marketing', 'Cyber Security', 'Sales', 'Product Designing', 'Web Development', 'Graphic Designing', 'Artificial Intelligence'];
 
-  // Template state
-  const [selectedTemplate, setSelectedTemplate] = useState('');
-  const [templates, setTemplates] = useState<TaskTemplate[]>([]);
-const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
-
-  // Fetch all employees
+  // Fetch employees
   useEffect(() => {
     if (!user) return;
     setLoading(true);
@@ -194,12 +331,12 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
 
           employeesData.push({
             id: uid || '',
-            name: profile.name || '',
+            name: profile.name,
             email: profile.email || '',
             department: profile.department || '',
             designation: profile.designation || '',
             isActive: true,
-          });
+          } as Employee);
         });
         setEmployees(employeesData);
         setLoading(false);
@@ -212,70 +349,34 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
     return () => off(usersRef);
   }, [user, role, department]);
 
-  // Fetch task templates
-  useEffect(() => {
-    const templatesRef = ref(database, 'taskTemplates');
-    const unsubscribe = onValue(templatesRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const list = Object.entries(data).map(([id, val]) => ({
-          id,
-          ...(val as Omit<TaskTemplate, 'id'>)
-        })) as TaskTemplate[];
-        setTemplates(list);
-      } else {
-        setTemplates([]);
-      }
-    });
-    return () => off(templatesRef);
-  }, []);
-
-  // ✅ Apply template to the NEW TASK form (not to the whole project)
-  const applyTemplate = (templateId: string) => {
-    const template = templates.find(t => t.id === templateId);
-    if (!template) return;
-    const dueDate = new Date();
-    dueDate.setDate(dueDate.getDate() + template.dueDateOffsetDays);
-    setNewTask({
-      ...newTask,
-      title: template.title,
-      description: template.description,
-      priority: template.priority,
-      dueDate: dueDate.toISOString().split('T')[0],
-    });
-    // If you want to add subtasks, you can store them in a separate state
-  };
-
-  // Auto-set team leader for team leader role
+  // Auto-set team leader for team_leader role
   useEffect(() => {
     if (role === 'team_leader' && userId) {
       setFormData(prev => ({ ...prev, assignedTeamLeader: userId }));
     }
   }, [role, userId]);
 
-  useEffect(() => {
-    if (formData.projectType === 'common') {
-      setFilteredEmployees(employees);
-    } else if (formData.projectType === 'department' && formData.specificDepartment) {
-      setFilteredEmployees(employees.filter(emp => emp.department === formData.specificDepartment));
-    } else {
-      setFilteredEmployees([]);
+  const filteredEmployees = useMemo(() => {
+    if (formData.projectType === 'common') return employees;
+    if (formData.projectType === 'department' && formData.specificDepartment) {
+      return employees.filter(emp => emp.department === formData.specificDepartment);
     }
+    return [];
   }, [employees, formData.projectType, formData.specificDepartment]);
 
-  const teamLeaders = filteredEmployees.filter(emp => emp.designation === 'Team Lead');
-  const developers = filteredEmployees.filter(emp => emp.designation !== 'Team Lead');
+  const teamLeaders = useMemo(() => filteredEmployees.filter(emp => emp.designation === 'Team Lead'), [filteredEmployees]);
+  const developers = useMemo(() => filteredEmployees.filter(emp => emp.designation !== 'Team Lead'), [filteredEmployees]);
 
-  const handleEmployeeToggle = (employeeId: string) => {
+  const handleEmployeeToggle = useCallback((employeeId: string) => {
     setFormData(prev => ({
       ...prev,
       assignedEmployees: prev.assignedEmployees.includes(employeeId)
         ? prev.assignedEmployees.filter(id => id !== employeeId)
         : [...prev.assignedEmployees, employeeId]
     }));
-  };
+  }, []);
 
-  const addTask = () => {
+  const addTask = useCallback(() => {
     if (!newTask.title || !newTask.assignedTo || !newTask.dueDate) return;
     const task: Task = {
       id: Date.now().toString(),
@@ -284,20 +385,20 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
       assignedTo: newTask.assignedTo,
       priority: newTask.priority,
       dueDate: newTask.dueDate,
-      status: 'todo',
+      status: 'pending',
       createdAt: new Date().toISOString(),
-      dependsOn: newTask.dependsOn
+      dependsOn: newTask.dependsOn,
     };
     setFormData(prev => ({ ...prev, tasks: [...prev.tasks, task] }));
     setNewTask({ title: '', description: '', assignedTo: '', priority: 'medium', dueDate: '', dependsOn: [] });
-    setSelectedTemplate('');
-  };
+    setDependencyPopoverOpen(false);
+  }, [newTask]);
 
-  const removeTask = (taskId: string) => {
+  const removeTask = useCallback((taskId: string) => {
     setFormData(prev => ({ ...prev, tasks: prev.tasks.filter(task => task.id !== taskId) }));
-  };
+  }, []);
 
-  const handleProjectTypeChange = (value: string) => {
+  const handleProjectTypeChange = useCallback((value: string) => {
     setFormData(prev => ({
       ...prev,
       projectType: value as 'common' | 'department',
@@ -306,9 +407,9 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
       assignedEmployees: [],
       tasks: []
     }));
-  };
+  }, []);
 
-  const handleDepartmentChange = (value: string) => {
+  const handleDepartmentChange = useCallback((value: string) => {
     setFormData(prev => ({
       ...prev,
       specificDepartment: value,
@@ -316,9 +417,22 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
       assignedEmployees: [],
       tasks: []
     }));
-  };
+  }, []);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleNewTaskChange = useCallback((updates: Partial<typeof newTask>) => {
+    setNewTask(prev => ({ ...prev, ...updates }));
+  }, []);
+
+  const handleDependencyChange = useCallback((taskId: string, checked: boolean) => {
+    setNewTask(prev => ({
+      ...prev,
+      dependsOn: checked
+        ? [...prev.dependsOn, taskId]
+        : prev.dependsOn.filter(id => id !== taskId)
+    }));
+  }, []);
+
+  const handleSubmit = useCallback(async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
 
@@ -355,7 +469,15 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
       formData.tasks.forEach(task => {
         const assignedEmployee = employees.find(e => e.id === task.assignedTo);
         projectData.tasks[task.id] = {
-          ...task,
+          id: task.id,
+          title: task.title,
+          description: task.description || '',
+          assignedTo: task.assignedTo,
+          priority: task.priority,
+          dueDate: task.dueDate,
+          status: task.status,
+          createdAt: task.createdAt,
+          dependsOn: task.dependsOn,
           employeeName: assignedEmployee?.name || '',
           department: assignedEmployee?.department || '',
           subtasks: [],
@@ -405,12 +527,12 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
       console.error(error);
       toast({ variant: "destructive", title: "Error", description: "Failed to create project" });
     }
-  };
+  }, [user, formData, employees, onSuccess, onCancel]);
+
+  const isTeamLeaderSelectDisabled = role === 'team_leader';
 
   if (loading) return <div>Loading employees...</div>;
   if (error) return <div className="text-red-500">{error}</div>;
-
-  const isTeamLeaderSelectDisabled = role === 'team_leader';
 
   return (
     <Card>
@@ -473,91 +595,19 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
             </div>
           </div>
 
-          {/* TASKS SECTION WITH TEMPLATES & DEPENDENCIES */}
+          {/* TASKS SECTION */}
           <div className="border-t pt-4">
             <Label className="text-lg">Tasks</Label>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 p-2 bg-gray-50 rounded">
-              <Select value={selectedTemplate} onValueChange={(val) => { setSelectedTemplate(val); applyTemplate(val); }}>
-                <SelectTrigger className="w-full"><SelectValue placeholder="Apply template" /></SelectTrigger>
-                <SelectContent>
-                  {templates.map(t => <SelectItem key={t.id} value={t.id}>{t.name}</SelectItem>)}
-                </SelectContent>
-              </Select>
-              <Input placeholder="Task title" value={newTask.title} onChange={e => setNewTask({ ...newTask, title: e.target.value })} />
-              <Input type="date" value={newTask.dueDate} onChange={e => setNewTask({ ...newTask, dueDate: e.target.value })} />
-              <Select value={newTask.assignedTo} onValueChange={val => setNewTask({ ...newTask, assignedTo: val })}>
-                <SelectTrigger><SelectValue placeholder="Assign to" /></SelectTrigger>
-                <SelectContent>
-                  {formData.assignedEmployees.map(eid => {
-                    const emp = employees.find(e => e.id === eid);
-                    return emp ? <SelectItem key={eid} value={eid}>{emp.name}</SelectItem> : null;
-                  })}
-                </SelectContent>
-              </Select>
-              <Select value={newTask.priority} onValueChange={val => setNewTask({ ...newTask, priority: val as 'low' | 'medium' | 'high' })}>
-                <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent>
-              </Select>
-
-              {/* DEPENDENCIES */}
-             
-<div className="md:col-span-2">
-  <Label className="text-sm">Depends on (optional)</Label>
-  <Popover open={dependencyPopoverOpen} onOpenChange={setDependencyPopoverOpen}>
-    <PopoverTrigger asChild>
-      <Button variant="outline" className="w-full justify-start">
-        {newTask.dependsOn.length === 0 
-          ? "Select dependencies" 
-          : `${newTask.dependsOn.length} task(s) selected`}
-      </Button>
-    </PopoverTrigger>
-    <PopoverContent className="w-full p-2 max-h-48 overflow-auto">
-      {formData.tasks.length === 0 ? (
-        <p className="text-xs text-gray-500">No tasks added yet</p>
-      ) : (
-        formData.tasks.map(t => (
-          <div key={t.id} className="flex items-center gap-2 py-1">
-            <Checkbox
-              checked={newTask.dependsOn.includes(t.id)}
-              onCheckedChange={(checked) => {
-                if (checked) {
-                  setNewTask(prev => ({ ...prev, dependsOn: [...prev.dependsOn, t.id] }));
-                } else {
-                  setNewTask(prev => ({ ...prev, dependsOn: prev.dependsOn.filter(id => id !== t.id) }));
-                }
-              }}
+            <TaskFormRow
+              newTask={newTask}
+              assignedEmployees={developers.filter(dev => formData.assignedEmployees.includes(dev.id))}
+              existingTasks={formData.tasks}
+              onNewTaskChange={handleNewTaskChange}
+              onAddTask={addTask}
+              onDependencyChange={handleDependencyChange}
+              dependencyPopoverOpen={dependencyPopoverOpen}
+              onDependencyPopoverChange={setDependencyPopoverOpen}
             />
-            <span className="text-sm">{t.title}</span>
-          </div>
-        ))
-      )}
-    </PopoverContent>
-  </Popover>
-  {newTask.dependsOn.length > 0 && (
-    <div className="flex flex-wrap gap-1 mt-1">
-      {newTask.dependsOn.map(depId => {
-        const depTask = formData.tasks.find(t => t.id === depId);
-        return (
-          <Badge key={depId} variant="secondary" className="text-xs">
-            {depTask?.title || depId}
-            <button
-              className="ml-1 text-red-500 hover:text-red-700"
-              onClick={() => setNewTask(prev => ({ ...prev, dependsOn: prev.dependsOn.filter(id => id !== depId) }))}
-            >×</button>
-          </Badge>
-        );
-      })}
-    </div>
-  )}
-</div>
-
-              <div className="md:col-span-2">
-                <Textarea placeholder="Task description" value={newTask.description} onChange={e => setNewTask({ ...newTask, description: e.target.value })} />
-              </div>
-              <Button type="button" onClick={addTask} disabled={!newTask.title || !newTask.assignedTo || !newTask.dueDate} className="md:col-span-2">
-                <Plus className="h-4 w-4 mr-1" /> Add Task
-              </Button>
-            </div>
 
             {/* List of added tasks */}
             {formData.tasks.map(task => {
@@ -588,6 +638,8 @@ const [dependencyPopoverOpen, setDependencyPopoverOpen] = useState(false);
       </CardContent>
     </Card>
   );
-};
+});
+
+EnhancedProjectForm.displayName = 'EnhancedProjectForm';
 
 export default EnhancedProjectForm;

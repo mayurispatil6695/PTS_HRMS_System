@@ -1,3 +1,4 @@
+// src/components/manager/TeamDashboard.tsx
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Badge } from '../ui/badge';
@@ -7,6 +8,41 @@ import { Users, CheckCircle, TrendingUp } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
 import { ref, get } from 'firebase/database';
+import { toast } from 'react-hot-toast';
+
+// ========== TYPES ==========
+interface EmployeeData {
+  name?: string;
+  department?: string;
+  email?: string;
+  status?: string;
+  managerId?: string;
+  [key: string]: unknown;
+}
+
+interface AttendanceRecord {
+  date?: string;
+  status?: string;
+}
+
+interface LeaveRecord {
+  status?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+interface ProjectTask {
+  assignedTo?: string;
+  status?: string;
+}
+
+interface Project {
+  tasks?: Record<string, ProjectTask>;
+}
+
+interface FirebaseProjects {
+  [projectId: string]: Project;
+}
 
 interface TeamMember {
   id: string;
@@ -27,103 +63,117 @@ const TeamDashboard: React.FC = () => {
   const [stats, setStats] = useState({ totalMembers: 0, presentToday: 0, avgCompletion: 0 });
 
   useEffect(() => {
-    if (!user?.adminUid) return;
+    if (!user?.adminUid || !user?.id) {
+      setLoading(false);
+      return;
+    }
+
     const loadTeamData = async () => {
       setLoading(true);
-      const employeesRef = ref(database, `users/${user.adminUid}/employees`);
-      const snapshot = await get(employeesRef);
-      const allEmployees = snapshot.val() as Record<string, any> | null;
-      if (!allEmployees) {
-        setTeamMembers([]);
-        setLoading(false);
-        return;
-      }
-
-      // ✅ Filter employees where managerId === current user's id
-      const myTeamEntries = Object.entries(allEmployees).filter(([, emp]) => emp.managerId === user.id);
-
-      const today = new Date().toISOString().split('T')[0];
-      const members: TeamMember[] = [];
-
-      for (const [empId, empData] of myTeamEntries) {
-        if (empData.status !== 'active') continue;
-
-        // Today's attendance
-        const attendanceRef = ref(database, `users/${user.adminUid}/employees/${empId}/punching`);
-        const attendanceSnap = await get(attendanceRef);
-        let todayStatus: TeamMember['todayStatus'] = 'absent';
-        if (attendanceSnap.val()) {
-          const records = Object.values(attendanceSnap.val()) as any[];
-          const todayRecord = records.find(r => r.date?.startsWith(today));
-          if (todayRecord) {
-            if (todayRecord.status === 'present') todayStatus = 'present';
-            else if (todayRecord.status === 'late') todayStatus = 'late';
-            else if (todayRecord.status === 'on-leave') todayStatus = 'on-leave';
-          }
+      try {
+        const employeesRef = ref(database, `users/${user.adminUid}/employees`);
+        const snapshot = await get(employeesRef);
+        const allEmployees = snapshot.val() as Record<string, EmployeeData> | null;
+        if (!allEmployees) {
+          setTeamMembers([]);
+          setLoading(false);
+          return;
         }
 
-        // Leave balance (20 days per year – sum approved days this year)
-        const leavesRef = ref(database, `users/${user.adminUid}/employees/${empId}/leaves`);
-        const leavesSnap = await get(leavesRef);
-        let usedDays = 0;
-        if (leavesSnap.val()) {
-          const leaves = Object.values(leavesSnap.val()) as any[];
-          const thisYear = new Date().getFullYear();
-          leaves.forEach(leave => {
-            if (leave.status === 'approved' && new Date(leave.startDate).getFullYear() === thisYear) {
-              const start = new Date(leave.startDate);
-              const end = new Date(leave.endDate);
-              const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
-              usedDays += days;
+        // Filter employees where managerId === current user's id
+        const myTeamEntries = Object.entries(allEmployees).filter(
+          ([, emp]) => emp.managerId === user.id
+        );
+
+        const today = new Date().toISOString().split('T')[0];
+        const members: TeamMember[] = [];
+
+        for (const [empId, empData] of myTeamEntries) {
+          if (empData.status !== 'active') continue;
+
+          // Today's attendance
+          let todayStatus: TeamMember['todayStatus'] = 'absent';
+          const attendanceRef = ref(database, `users/${user.adminUid}/employees/${empId}/punching`);
+          const attendanceSnap = await get(attendanceRef);
+          const attendanceRecords = attendanceSnap.val() as Record<string, AttendanceRecord> | null;
+          if (attendanceRecords) {
+            const records = Object.values(attendanceRecords);
+            const todayRecord = records.find(r => r.date?.startsWith(today));
+            if (todayRecord) {
+              if (todayRecord.status === 'present') todayStatus = 'present';
+              else if (todayRecord.status === 'late') todayStatus = 'late';
+              else if (todayRecord.status === 'on-leave') todayStatus = 'on-leave';
             }
-          });
-        }
-        const leaveBalance = 20 - usedDays;
+          }
 
-        // Task completion rate
-        const projectsSnap = await get(ref(database, 'projects'));
-        let totalTasks = 0;
-        let completedTasks = 0;
-        if (projectsSnap.val()) {
-          const projects = projectsSnap.val() as Record<string, any>;
-          for (const proj of Object.values(projects)) {
-            if (proj.tasks) {
-              for (const task of Object.values(proj.tasks) as any[]) {
-                if (task.assignedTo === empId) {
-                  totalTasks++;
-                  if (task.status === 'completed') completedTasks++;
+          // Leave balance (20 days per year – sum approved days this year)
+          let usedDays = 0;
+          const leavesRef = ref(database, `users/${user.adminUid}/employees/${empId}/leaves`);
+          const leavesSnap = await get(leavesRef);
+          const leaves = leavesSnap.val() as Record<string, LeaveRecord> | null;
+          if (leaves) {
+            const thisYear = new Date().getFullYear();
+            for (const leave of Object.values(leaves)) {
+              if (leave.status === 'approved' && new Date(leave.startDate!).getFullYear() === thisYear) {
+                const start = new Date(leave.startDate!);
+                const end = new Date(leave.endDate!);
+                const days = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+                usedDays += days;
+              }
+            }
+          }
+          const leaveBalance = Math.max(0, 20 - usedDays);
+
+          // Task completion rate (across all projects)
+          let totalTasks = 0;
+          let completedTasks = 0;
+          const projectsSnap = await get(ref(database, 'projects'));
+          const projects = projectsSnap.val() as FirebaseProjects | null;
+          if (projects) {
+            for (const proj of Object.values(projects)) {
+              if (proj.tasks) {
+                for (const task of Object.values(proj.tasks)) {
+                  if (task.assignedTo === empId) {
+                    totalTasks++;
+                    if (task.status === 'completed') completedTasks++;
+                  }
                 }
               }
             }
           }
+          const taskCompletionRate = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
+
+          members.push({
+            id: empId,
+            name: empData.name || empId,
+            department: empData.department || 'No Department',
+            email: empData.email || '',
+            todayStatus,
+            leaveBalance,
+            taskCompletionRate,
+            totalTasks,
+            completedTasks,
+          });
         }
-        const taskCompletionRate = totalTasks > 0 ? (completedTasks / totalTasks) * 100 : 0;
 
-        members.push({
-          id: empId,
-          name: empData.name || empId,
-          department: empData.department || 'No Department',
-          email: empData.email || '',
-          todayStatus,
-          leaveBalance: leaveBalance > 0 ? leaveBalance : 0,
-          taskCompletionRate,
-          totalTasks,
-          completedTasks,
+        setTeamMembers(members);
+        setStats({
+          totalMembers: members.length,
+          presentToday: members.filter(m => m.todayStatus === 'present').length,
+          avgCompletion: members.reduce((sum, m) => sum + m.taskCompletionRate, 0) / (members.length || 1),
         });
+      } catch (error) {
+        console.error(error);
+        toast.error('Failed to load team data');
+      } finally {
+        setLoading(false);
       }
-
-      setTeamMembers(members);
-      setStats({
-        totalMembers: members.length,
-        presentToday: members.filter(m => m.todayStatus === 'present').length,
-        avgCompletion: members.reduce((sum, m) => sum + m.taskCompletionRate, 0) / (members.length || 1),
-      });
-      setLoading(false);
     };
+
     loadTeamData();
   }, [user]);
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: TeamMember['todayStatus']) => {
     switch (status) {
       case 'present': return <Badge className="bg-green-100 text-green-700">Present</Badge>;
       case 'late': return <Badge className="bg-yellow-100 text-yellow-700">Late</Badge>;
@@ -153,7 +203,14 @@ const TeamDashboard: React.FC = () => {
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead className="border-b">
-                <tr><th className="text-left p-2">Employee</th><th className="text-left p-2">Department</th><th className="text-left p-2">Today's Status</th><th className="text-left p-2">Leave Balance</th><th className="text-left p-2">Task Completion</th><th className="text-left p-2">Actions</th></tr>
+                <tr>
+                  <th className="text-left p-2">Employee</th>
+                  <th className="text-left p-2">Department</th>
+                  <th className="text-left p-2">Today's Status</th>
+                  <th className="text-left p-2">Leave Balance</th>
+                  <th className="text-left p-2">Task Completion</th>
+                  <th className="text-left p-2">Actions</th>
+                </tr>
               </thead>
               <tbody>
                 {teamMembers.map(member => (

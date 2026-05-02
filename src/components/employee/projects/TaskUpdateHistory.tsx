@@ -6,7 +6,7 @@ interface Update {
   timestamp: string;
   updatedBy: string;
   updatedByRole?: string;
-  changes: { field: string; oldValue: any; newValue: any }[];
+  changes: { field: string; oldValue: unknown; newValue: unknown }[];
   note?: string;
 }
 
@@ -27,8 +27,8 @@ const TaskUpdateHistory: React.FC<{ updates: Update[] }> = ({ updates }) => {
             {update.changes.map((change, i) => (
               <p key={i}>
                 Changed <span className="font-medium">{change.field}</span> from
-                <span className="italic"> "{change.oldValue}"</span> to
-                <span className="font-medium"> "{change.newValue}"</span>
+                <span className="italic"> "{String(change.oldValue)}"</span> to
+                <span className="font-medium"> "{String(change.newValue)}"</span>
               </p>
             ))}
             {update.note && <p className="mt-1 italic">Note: "{update.note}"</p>}

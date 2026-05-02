@@ -1,34 +1,4 @@
-
-export interface User {
-  id: string;
-  email: string;
-  name: string;
-  role: 'admin' | 'employee' | 'team_manager' | 'team_leader' | 'client'; 
-  department: string;
-  designation: string;
-  employeeId: string;
-  isActive: boolean;
-  phone?: string;
-  address?: string;
-  emergencyContact?: string;
-  emergencyPhone?: string;
-  joinDate?: string;
-  workMode?: string;
-  reportingManager?: string;
-  updatedAt?: string;
-  password?: string;
-  profileImage?: string;
-  hashedPassword?: string;
-}
-
-export interface AuthContextType {
-  user: User | null;
-  login: (email: string, password: string, role: string) => Promise<{ success: boolean; message?: string }>;
-  logout: () => void;
-  loading: boolean;
-  resetPassword: (email: string, newPassword: string, otp: string) => Promise<boolean>;
-  changePassword: (currentPassword: string, newPassword: string) => Promise<boolean>;
-}
+// src/types/auth.ts
 
 export interface OtpData {
   email: string;
@@ -44,4 +14,16 @@ export interface PredefinedAdmin {
   name: string;
   designation: string;
   phone?: string;
+}
+// src/types/auth.ts
+export interface LoginCredentials {
+  email: string;
+  password: string;
+  role: 'admin' | 'employee' | 'team_manager' | 'team_leader' | 'client';
+}
+
+export interface PasswordResetRequest {
+  email: string;
+  newPassword: string;
+  otp?: string;
 }

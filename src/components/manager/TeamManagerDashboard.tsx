@@ -10,7 +10,6 @@ import ManagerDashboardHome from './ManagerDashboardHome';
 import AttendanceManagement from '../admin/AttendanceManagement';
 import LeaveManagement from '../admin/LeaveManagement';
 import ProjectManagement from '../admin/ProjectManagement';
-
 import PerformanceReviews from '../admin/PerformanceReviews';
 import MeetingManagement from '../admin/MeetingManagement';
 import IdleDetectionPage from '../admin/IdleDetectionPage';
@@ -64,19 +63,17 @@ const TeamManagerDashboard = () => {
             <Routes>
               <Route path="/" element={<ManagerDashboardHome />} />
 
-              {/* Components that expect role="manager" */}
-              <Route path="/attendance" element={<AttendanceManagement role="manager" />} />
-              <Route path="/leaves" element={<LeaveManagement role="manager" />} />
+              {/* These components already use useAuth to determine role – no role prop needed */}
+              <Route path="/attendance" element={<AttendanceManagement />} />
+              <Route path="/leaves" element={<LeaveManagement />} />
               <Route path="/reviews" element={<PerformanceReviews role="manager" />} />
               <Route path="/meetings" element={<MeetingManagement role="manager" />} />
               <Route path="/idle-detection" element={<IdleDetectionPage role="manager" />} />
               <Route path="/reports" element={<ReportsManagement role="manager" />} />
-
-              {/* Components that expect role="team_manager" */}
               <Route path="/projects" element={<ProjectManagement role="team_manager" />} />
               <Route path="/chat" element={<ChatManagement role="team_manager" />} />
 
-              {/* Other manager‑specific components (no role prop needed) */}
+              {/* Manager‑specific components */}
               <Route path="/team-dashboard" element={<TeamDashboard />} />
               <Route path="/leave-calendar" element={<LeaveCalendar />} />
               <Route path="/manager-reviews" element={<ManagerReviews />} />

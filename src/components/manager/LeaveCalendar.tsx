@@ -1,3 +1,4 @@
+// src/components/employee/LeaveCalendar.tsx
 import React, { useState, useEffect } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
@@ -6,10 +7,32 @@ import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
 import { ref, get } from 'firebase/database';
 
+// --- Types ---
 interface LeaveEvent {
   date: string;
   employeeName: string;
   leaveType: string;
+}
+
+interface FirebaseEmployeeData {
+  name?: string;
+  email?: string;
+  department?: string;
+  designation?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
+interface FirebaseLeaveData {
+  leaveType?: string;
+  startDate?: string;
+  endDate?: string;
+  reason?: string;
+  status?: string;
+  appliedAt?: string;
+  approvedAt?: string;
+  rejectedAt?: string;
+  approvedBy?: string;
 }
 
 const LeaveCalendar: React.FC = () => {
@@ -17,49 +40,64 @@ const LeaveCalendar: React.FC = () => {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [leaveEvents, setLeaveEvents] = useState<Record<string, LeaveEvent[]>>({});
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
-  const firstDayOfMonth = new Date(year, month, 1);
 
   useEffect(() => {
-    if (!user?.adminUid) return;
+    if (!user?.adminUid) {
+      setLoading(false);
+      return;
+    }
     const loadLeaves = async () => {
       setLoading(true);
+      setError(null);
       const startOfMonth = new Date(year, month, 1);
       const endOfMonth = new Date(year, month + 1, 0);
       const events: Record<string, LeaveEvent[]> = {};
 
-      const employeesRef = ref(database, `users/${user.adminUid}/employees`);
-      const empSnap = await get(employeesRef);
-      const employees = empSnap.val() as Record<string, any> | null;
-      if (!employees) {
-        setLeaveEvents({});
-        setLoading(false);
-        return;
-      }
+      try {
+        const employeesRef = ref(database, `users/${user.adminUid}/employees`);
+        const empSnap = await get(employeesRef);
+        const employees = empSnap.val() as Record<string, FirebaseEmployeeData> | null;
 
-      for (const [empId, empData] of Object.entries(employees)) {
-        const leavesRef = ref(database, `users/${user.adminUid}/employees/${empId}/leaves`);
-        const leavesSnap = await get(leavesRef);
-        const leaves = leavesSnap.val() as Record<string, any> | null;
-        if (leaves) {
+        if (!employees) {
+          setLeaveEvents({});
+          setLoading(false);
+          return;
+        }
+
+        for (const [empId, empData] of Object.entries(employees)) {
+          const leavesRef = ref(database, `users/${user.adminUid}/employees/${empId}/leaves`);
+          const leavesSnap = await get(leavesRef);
+          const leaves = leavesSnap.val() as Record<string, FirebaseLeaveData> | null;
+          if (!leaves) continue;
+
           Object.values(leaves).forEach(leave => {
             if (leave.status !== 'approved') return;
-            const start = new Date(leave.startDate);
-            const end = new Date(leave.endDate);
+            const start = new Date(leave.startDate!);
+            const end = new Date(leave.endDate!);
             for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
               const dateStr = d.toISOString().split('T')[0];
               if (d >= startOfMonth && d <= endOfMonth) {
                 if (!events[dateStr]) events[dateStr] = [];
-                events[dateStr].push({ date: dateStr, employeeName: empData.name || empId, leaveType: leave.leaveType });
+                events[dateStr].push({
+                  date: dateStr,
+                  employeeName: empData.name || empId,
+                  leaveType: leave.leaveType || '',
+                });
               }
             }
           });
         }
+        setLeaveEvents(events);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load leave data');
+      } finally {
+        setLoading(false);
       }
-      setLeaveEvents(events);
-      setLoading(false);
     };
     loadLeaves();
   }, [user, year, month]);
@@ -76,35 +114,77 @@ const LeaveCalendar: React.FC = () => {
   const prevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
   const nextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
 
-  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
 
-  if (loading) return <div>Loading calendar...</div>;
+  if (loading) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-gray-900 mx-auto"></div>
+          <p className="mt-2 text-gray-500">Loading calendar...</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="py-8 text-center text-red-500">
+          <p>{error}</p>
+          <Button variant="outline" onClick={() => window.location.reload()} className="mt-2">
+            Retry
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  const firstDayOfMonth = new Date(year, month, 1);
+  const daysInMonth = getDaysInMonth();
 
   return (
     <Card>
       <CardHeader>
-        <div className="flex justify-between items-center">
+        <div className="flex justify-between items-center flex-wrap gap-2">
           <CardTitle>Leave Calendar – {monthNames[month]} {year}</CardTitle>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={prevMonth}><ChevronLeft className="h-4 w-4" /></Button>
-            <Button variant="outline" size="sm" onClick={nextMonth}><ChevronRight className="h-4 w-4" /></Button>
+            <Button variant="outline" size="sm" onClick={prevMonth}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" size="sm" onClick={nextMonth}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
           </div>
         </div>
       </CardHeader>
       <CardContent>
         <div className="grid grid-cols-7 gap-2 text-center font-medium mb-2">
-          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => <div key={day}>{day}</div>)}
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(day => (
+            <div key={day}>{day}</div>
+          ))}
         </div>
         <div className="grid grid-cols-7 gap-2">
-          {Array(firstDayOfMonth.getDay()).fill(null).map((_, i) => <div key={`empty-${i}`} className="h-24 border rounded p-1 bg-gray-50"></div>)}
-          {getDaysInMonth().map(date => {
+          {Array(firstDayOfMonth.getDay())
+            .fill(null)
+            .map((_, i) => (
+              <div key={`empty-${i}`} className="h-24 border rounded p-1 bg-gray-50"></div>
+            ))}
+          {daysInMonth.map(date => {
             const dateStr = date.toISOString().split('T')[0];
             const events = leaveEvents[dateStr] || [];
             return (
               <div key={dateStr} className="h-24 border rounded p-1 overflow-y-auto">
                 <div className="font-semibold text-sm">{date.getDate()}</div>
                 {events.map((ev, idx) => (
-                  <div key={idx} className="text-xs bg-blue-100 rounded mt-1 p-0.5 truncate" title={`${ev.employeeName} (${ev.leaveType})`}>
+                  <div
+                    key={idx}
+                    className="text-xs bg-blue-100 rounded mt-1 p-0.5 truncate"
+                    title={`${ev.employeeName} (${ev.leaveType})`}
+                  >
                     {ev.employeeName}
                   </div>
                 ))}

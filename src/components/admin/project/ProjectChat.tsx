@@ -1,9 +1,9 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { ref, onValue, push, set, get, remove } from 'firebase/database';
 import { database } from '../../../firebase';
 import { useAuth } from '../../../hooks/useAuth';
 import { Button } from '../../ui/button';
-import { Send, Paperclip, File, Image, X, Trash2 } from 'lucide-react';
+import { Send, Paperclip, File, X, Trash2 } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 interface ChatMessage {
@@ -17,11 +17,14 @@ interface ChatMessage {
   fileType?: string;
 }
 
+// Firebase message shape (without `id`)
+type FirebaseMessage = Omit<ChatMessage, 'id'>;
+
 interface ProjectChatProps {
   projectId: string;
 }
 
-const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
+const ProjectChat: React.FC<ProjectChatProps> = memo(({ projectId }) => {
   const { user } = useAuth();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState('');
@@ -31,37 +34,32 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
-  // Check if current user is admin or team lead of this project
+  // Check role once on mount
   useEffect(() => {
     const checkRole = async () => {
       if (!user?.id) return;
       const userRef = ref(database, `users/${user.id}`);
       const userSnap = await get(userRef);
       const userData = userSnap.val();
-      const role = userData?.role;
-      if (role === 'admin') {
+      if (userData?.role === 'admin') {
         setIsAdminOrTeamLead(true);
         return;
       }
-      // Check if user is team lead of this project
       const projectRef = ref(database, `projects/${projectId}`);
       const projectSnap = await get(projectRef);
       const project = projectSnap.val();
-      if (project?.assignedTeamLeader === user.id) {
-        setIsAdminOrTeamLead(true);
-      } else {
-        setIsAdminOrTeamLead(false);
-      }
+      setIsAdminOrTeamLead(project?.assignedTeamLeader === user.id);
     };
     checkRole();
   }, [user, projectId]);
 
+  // Listen for messages
   useEffect(() => {
     const chatRef = ref(database, `chats/${projectId}/messages`);
     const unsubscribe = onValue(chatRef, (snapshot) => {
-      const data = snapshot.val();
+      const data = snapshot.val() as Record<string, FirebaseMessage> | null;
       if (data) {
-        const msgs = Object.entries(data).map(([id, msg]: [string, any]) => ({
+        const msgs: ChatMessage[] = Object.entries(data).map(([id, msg]) => ({
           id,
           ...msg,
         }));
@@ -74,11 +72,10 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
     return () => unsubscribe();
   }, [projectId]);
 
-  const scrollToBottom = () => {
+  const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
+  }, []);
 
-  // Cloudinary upload
   const uploadFileToCloudinary = async (file: File): Promise<string | null> => {
     try {
       const formData = new FormData();
@@ -97,8 +94,7 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
     }
   };
 
-  // Send notifications
-  const sendChatNotifications = async (messageText: string, senderName: string, fileUrl?: string) => {
+  const sendChatNotifications = useCallback(async (messageText: string, senderName: string, fileUrl?: string) => {
     try {
       const projectRef = ref(database, `projects/${projectId}`);
       const projectSnap = await get(projectRef);
@@ -136,15 +132,13 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
     } catch (error) {
       console.error('Error sending chat notifications:', error);
     }
-  };
+  }, [projectId, user]);
 
-  const sendMessage = async () => {
+  const sendMessage = useCallback(async () => {
     if ((!newMessage.trim() && !selectedFile) || !user?.id) return;
     setUploading(true);
     try {
-      let fileUrl = null;
-      let fileName = null;
-      let fileType = null;
+      let fileUrl = null, fileName = null, fileType = null;
       if (selectedFile) {
         fileUrl = await uploadFileToCloudinary(selectedFile);
         if (fileUrl) {
@@ -174,11 +168,9 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
     } finally {
       setUploading(false);
     }
-  };
+  }, [newMessage, selectedFile, user, projectId, sendChatNotifications]);
 
-  // ✅ Delete message
-  const deleteMessage = async (messageId: string, messageUserId: string) => {
-    // Check permission: sender, admin, or team lead
+  const deleteMessage = useCallback(async (messageId: string, messageUserId: string) => {
     const canDelete = messageUserId === user?.id || isAdminOrTeamLead;
     if (!canDelete) {
       toast.error('You are not authorized to delete this message');
@@ -186,88 +178,83 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
     }
     if (!confirm('Delete this message?')) return;
     try {
-      const messageRef = ref(database, `chats/${projectId}/messages/${messageId}`);
-      await remove(messageRef);
+      await remove(ref(database, `chats/${projectId}/messages/${messageId}`));
       toast.success('Message deleted');
     } catch (error) {
       console.error(error);
       toast.error('Failed to delete message');
     }
-  };
+  }, [user, isAdminOrTeamLead, projectId]);
 
-  const handleKeyPress = (e: React.KeyboardEvent) => {
+  const handleKeyPress = useCallback((e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
     }
-  };
+  }, [sendMessage]);
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setSelectedFile(e.target.files[0]);
-    }
-  };
+  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) setSelectedFile(e.target.files[0]);
+  }, []);
 
-  const removeSelectedFile = () => {
+  const removeSelectedFile = useCallback(() => {
     setSelectedFile(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
-  };
+  }, []);
 
-  const isImage = (url: string) => {
-    return /\.(jpg|jpeg|png|gif|webp)$/i.test(url);
-  };
+  const isImage = (url: string) => /\.(jpg|jpeg|png|gif|webp)$/i.test(url);
 
   return (
     <div className="border rounded-lg p-3 bg-white h-[450px] flex flex-col">
       <h4 className="font-semibold text-sm mb-2 border-b pb-1">💬 Team Chat</h4>
       <div className="flex-1 overflow-y-auto space-y-2 mb-3">
-        {messages.length === 0 ? (
+        {messages.length === 0 && (
           <p className="text-gray-400 text-xs text-center">No messages yet. Start the conversation!</p>
-        ) : (
-          messages.map((msg) => {
-            const isSender = msg.userId === user?.id;
-            const showDelete = isSender || isAdminOrTeamLead;
-            return (
-              <div
-                key={msg.id}
-                className={`text-sm p-2 rounded-lg max-w-[80%] relative group ${
-                  isSender ? 'bg-blue-100 ml-auto text-right' : 'bg-gray-100'
-                }`}
-              >
-                <div className="font-semibold text-xs text-gray-600">{msg.userName}</div>
-                {msg.text && <div>{msg.text}</div>}
-                {msg.fileUrl && (
-                  <div className="mt-1">
-                    {msg.fileType?.startsWith('image/') || isImage(msg.fileUrl) ? (
-                      <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">
-                        <img src={msg.fileUrl} alt="attachment" className="max-w-full max-h-32 rounded border" />
-                      </a>
-                    ) : (
-                      <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-blue-500">
-                        <File className="h-4 w-4" />
-                        {msg.fileName}
-                      </a>
-                    )}
-                  </div>
-                )}
-                <div className="text-[10px] text-gray-400 mt-1">
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </div>
-                {showDelete && (
-                  <button
-                    onClick={() => deleteMessage(msg.id, msg.userId)}
-                    className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white rounded-full p-1 shadow"
-                    title="Delete message"
-                  >
-                    <Trash2 className="h-3 w-3 text-red-500" />
-                  </button>
-                )}
-              </div>
-            );
-          })
         )}
+        {messages.map((msg) => {
+          const isSender = msg.userId === user?.id;
+          const showDelete = isSender || isAdminOrTeamLead;
+          return (
+            <div
+              key={msg.id}
+              className={`text-sm p-2 rounded-lg max-w-[80%] relative group ${
+                isSender ? 'bg-blue-100 ml-auto text-right' : 'bg-gray-100'
+              }`}
+            >
+              <div className="font-semibold text-xs text-gray-600">{msg.userName}</div>
+              {msg.text && <div>{msg.text}</div>}
+              {msg.fileUrl && (
+                <div className="mt-1">
+                  {msg.fileType?.startsWith('image/') || isImage(msg.fileUrl) ? (
+                    <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer">
+                      <img src={msg.fileUrl} alt="attachment" className="max-w-full max-h-32 rounded border" />
+                    </a>
+                  ) : (
+                    <a href={msg.fileUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 text-blue-500">
+                      <File className="h-4 w-4" />
+                      {msg.fileName}
+                    </a>
+                  )}
+                </div>
+              )}
+              <div className="text-[10px] text-gray-400 mt-1">
+                {new Date(msg.timestamp).toLocaleTimeString()}
+              </div>
+              {showDelete && (
+                <button
+                  onClick={() => deleteMessage(msg.id, msg.userId)}
+                  className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity bg-white rounded-full p-1 shadow"
+                  title="Delete message"
+                >
+                  <Trash2 className="h-3 w-3 text-red-500" />
+                </button>
+              )}
+            </div>
+          );
+        })}
         <div ref={messagesEndRef} />
       </div>
+
       {selectedFile && (
         <div className="flex items-center gap-2 p-2 bg-gray-100 rounded mb-2">
           <Paperclip className="h-4 w-4" />
@@ -277,7 +264,8 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
           </button>
         </div>
       )}
-      <div className="flex gap-2">
+
+      <div className="flex flex-col sm:flex-row gap-2">
         <input
           type="file"
           ref={fileInputRef}
@@ -287,7 +275,7 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
         />
         <label
           htmlFor={`file-upload-${projectId}`}
-          className="p-2 border rounded cursor-pointer hover:bg-gray-50"
+          className="p-2 border rounded cursor-pointer hover:bg-gray-50 self-start sm:self-auto"
         >
           <Paperclip className="h-4 w-4" />
         </label>
@@ -300,12 +288,14 @@ const ProjectChat: React.FC<ProjectChatProps> = ({ projectId }) => {
           placeholder="Type your message..."
           disabled={uploading}
         />
-        <Button size="sm" onClick={sendMessage} disabled={uploading} className="self-end">
+        <Button size="sm" onClick={sendMessage} disabled={uploading} className="self-end sm:self-auto">
           <Send className="h-4 w-4" />
         </Button>
       </div>
     </div>
   );
-};
+});
+
+ProjectChat.displayName = 'ProjectChat';
 
 export default ProjectChat;

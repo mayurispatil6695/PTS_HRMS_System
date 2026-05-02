@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+// src/components/manager/ManagerReview.tsx
+import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
@@ -13,6 +14,7 @@ import { database } from '../../firebase';
 import { ref, onValue, off, set, get, update, push } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 
+// ========== TYPES ==========
 interface Cycle {
   id: string;
   name: string;
@@ -38,6 +40,60 @@ interface Goal {
   weight: number;
 }
 
+interface SelfReviewData {
+  ratings?: Record<string, number>;
+  answers?: Record<string, string>;
+  submittedAt?: string;
+}
+
+interface PiPTask {
+  title: string;
+  dueDate: string;
+}
+
+// Firebase raw shapes
+interface FirebaseCycle {
+  name?: string;
+  startDate?: string;
+  endDate?: string;
+}
+
+interface FirebaseEmployee {
+  name?: string;
+  department?: string;
+  designation?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
+interface FirebaseTemplate {
+  competencies?: Competency[];
+  openQuestions?: string[];
+}
+
+interface FirebaseProject {
+  tasks?: Record<string, FirebaseTask>;
+}
+
+interface FirebaseTask {
+  assignedTo?: string;
+  status?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+interface FirebaseDailyTask {
+  status?: string;
+  updatedAt?: string;
+  [key: string]: unknown;
+}
+
+interface FirebaseAttendanceRecord {
+  date?: string;
+  status?: string;
+}
+
+// ========== COMPONENT ==========
 const ManagerReview: React.FC = () => {
   const { user } = useAuth();
   const [cycles, setCycles] = useState<Cycle[]>([]);
@@ -49,75 +105,125 @@ const ManagerReview: React.FC = () => {
   const [ratings, setRatings] = useState<Record<string, number>>({});
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [goals, setGoals] = useState<Goal[]>([]);
-  const [selfReview, setSelfReview] = useState<any>(null);
+  const [selfReview, setSelfReview] = useState<SelfReviewData | null>(null);
   const [submitted, setSubmitted] = useState(false);
   const [showPIP, setShowPIP] = useState(false);
-  const [pipTasks, setPipTasks] = useState<{ title: string; dueDate: string }[]>([]);
+  const [pipTasks, setPipTasks] = useState<PiPTask[]>([]);
   const [newPipTask, setNewPipTask] = useState({ title: '', dueDate: '' });
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   // Fetch cycles
   useEffect(() => {
     const cyclesRef = ref(database, 'performanceCycles');
-    const unsubscribe = onValue(cyclesRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const list = Object.entries(data).map(([id, val]: [string, any]) => ({
-          id,
-          name: val.name,
-          startDate: val.startDate,
-          endDate: val.endDate,
-        }));
-        setCycles(list);
-        if (list.length > 0 && !selectedCycleId) setSelectedCycleId(list[0].id);
+    const unsubscribe = onValue(
+      cyclesRef,
+      (snapshot) => {
+        const data = snapshot.val() as Record<string, FirebaseCycle> | null;
+        if (data) {
+          const list: Cycle[] = Object.entries(data).map(([id, val]) => ({
+            id,
+            name: val.name || id,
+            startDate: val.startDate || '',
+            endDate: val.endDate || '',
+          }));
+          setCycles(list);
+          if (list.length > 0 && !selectedCycleId) setSelectedCycleId(list[0].id);
+        } else {
+          setCycles([]);
+        }
+        setError(null);
+      },
+      (err) => {
+        console.error(err);
+        setError('Failed to load cycles');
       }
-    });
+    );
     return () => off(cyclesRef);
   }, []);
 
-  // Fetch employees under this manager
+  // Fetch employees (non-team‑lead, active)
   useEffect(() => {
     if (!user?.adminUid) return;
     const teamRef = ref(database, `users/${user.adminUid}/employees`);
-    const unsubscribe = onValue(teamRef, (snapshot) => {
-      const data = snapshot.val();
-      if (data) {
-        const empList = Object.entries(data)
-          .filter(([, val]: [string, any]) => val.designation !== 'Team Lead' && val.status === 'active')
-          .map(([id, val]: [string, any]) => ({ id, name: val.name, department: val.department }));
-        setEmployees(empList);
+    const unsubscribe = onValue(
+      teamRef,
+      (snapshot) => {
+        const data = snapshot.val() as Record<string, FirebaseEmployee> | null;
+        if (data) {
+          const empList: Employee[] = Object.entries(data)
+            .filter(
+              ([, val]) => val.designation !== 'Team Lead' && val.status === 'active'
+            )
+            .map(([id, val]) => ({
+              id,
+              name: val.name || id,
+              department: val.department || '',
+            }));
+          setEmployees(empList);
+        } else {
+          setEmployees([]);
+        }
+      },
+      (err) => {
+        console.error(err);
+        toast.error('Failed to load employees');
       }
-    });
+    );
     return () => off(teamRef);
-  }, [user]);
+  }, [user?.adminUid]);
 
-  // Load template, goals, self‑review, manager review for selected employee
+  // Load template, goals, self‑review, existing manager review
   useEffect(() => {
     if (!selectedCycleId || !selectedEmployee) return;
+
     const loadData = async () => {
       setLoading(true);
+      setError(null);
       try {
+        // Template
         const templateRef = ref(database, `reviewTemplates/${selectedCycleId}`);
         const templateSnap = await get(templateRef);
-        const template = templateSnap.val();
+        const template = templateSnap.val() as FirebaseTemplate | null;
         if (template) {
           setCompetencies(template.competencies || []);
           setOpenQuestions(template.openQuestions || []);
+        } else {
+          setCompetencies([]);
+          setOpenQuestions([]);
         }
+
+        // Goals
         const goalsRef = ref(database, `employeeGoals/${selectedCycleId}/${selectedEmployee.id}`);
         const goalsSnap = await get(goalsRef);
-        if (goalsSnap.val()) setGoals(Object.values(goalsSnap.val()));
+        const goalsData = goalsSnap.val() as Record<string, Omit<Goal, 'id'>> | null;
+        if (goalsData) {
+          const goalList: Goal[] = Object.entries(goalsData).map(([id, val]) => ({ id, ...val }));
+          setGoals(goalList);
+        } else {
+          setGoals([]);
+        }
+
+        // Self review
         const selfRef = ref(database, `reviews/${selectedCycleId}/${selectedEmployee.id}/self`);
         const selfSnap = await get(selfRef);
-        setSelfReview(selfSnap.val());
+        const selfVal = selfSnap.val() as SelfReviewData | null;
+        setSelfReview(selfVal);
+
+        // Manager's existing review
         const mgrRef = ref(database, `reviews/${selectedCycleId}/${selectedEmployee.id}/manager`);
         const mgrSnap = await get(mgrRef);
-        if (mgrSnap.val()) {
-          const data = mgrSnap.val();
-          setRatings(data.ratings || {});
-          setAnswers(data.answers || {});
+        if (mgrSnap.exists()) {
+          const mgrData = mgrSnap.val() as {
+            ratings?: Record<string, number>;
+            answers?: Record<string, string>;
+            pip?: { tasks?: PiPTask[] };
+          };
+          setRatings(mgrData.ratings || {});
+          setAnswers(mgrData.answers || {});
           setSubmitted(true);
-          if (data.pip) setShowPIP(true);
+          if (mgrData.pip?.tasks) setPipTasks(mgrData.pip.tasks);
+          setShowPIP(!!mgrData.pip);
         } else {
           setRatings({});
           setAnswers({});
@@ -127,6 +233,8 @@ const ManagerReview: React.FC = () => {
         }
       } catch (err) {
         console.error(err);
+        setError('Failed to load review data');
+        toast.error('Failed to load data');
       } finally {
         setLoading(false);
       }
@@ -145,11 +253,11 @@ const ManagerReview: React.FC = () => {
 
     // 1. Project tasks
     const projectsSnap = await get(ref(database, 'projects'));
-    const projects = projectsSnap.val();
+    const projects = projectsSnap.val() as Record<string, FirebaseProject> | null;
     if (projects) {
-      for (const proj of Object.values(projects) as any[]) {
+      for (const proj of Object.values(projects)) {
         if (proj.tasks) {
-          for (const task of Object.values(proj.tasks) as any[]) {
+          for (const task of Object.values(proj.tasks)) {
             if (task.assignedTo === employeeId) {
               totalAssignedCount++;
               if (task.status === 'completed') {
@@ -164,14 +272,14 @@ const ManagerReview: React.FC = () => {
       }
     }
 
-    // 2. Standalone tasks (dailyTasks)
+    // 2. Standalone daily tasks
     const adminId = user?.adminUid;
     if (adminId) {
       const dailyTasksRef = ref(database, `users/${adminId}/employees/${employeeId}/dailyTasks`);
       const snap = await get(dailyTasksRef);
-      const dailyTasks = snap.val();
+      const dailyTasks = snap.val() as Record<string, FirebaseDailyTask> | null;
       if (dailyTasks) {
-        for (const task of Object.values(dailyTasks) as any[]) {
+        for (const task of Object.values(dailyTasks)) {
           totalAssignedCount++;
           if (task.status === 'completed') {
             const completedAt = task.updatedAt ? new Date(task.updatedAt) : null;
@@ -183,7 +291,7 @@ const ManagerReview: React.FC = () => {
       }
     }
 
-    if (totalAssignedCount === 0) return 100; // no tasks → full score for this component
+    if (totalAssignedCount === 0) return 100; // no tasks → full score
     return (completedCount / totalAssignedCount) * 100;
   };
 
@@ -194,16 +302,16 @@ const ManagerReview: React.FC = () => {
     const startDate = new Date(cycle.startDate);
     const endDate = new Date(cycle.endDate);
     const adminId = user?.adminUid;
-    if (!adminId) return 100;
+    if (!adminId) return 0;
 
     const attendanceRef = ref(database, `users/${adminId}/employees/${employeeId}/punching`);
     const snap = await get(attendanceRef);
-    const records = snap.val();
+    const records = snap.val() as Record<string, FirebaseAttendanceRecord> | null;
     if (!records) return 0;
 
-    // Count working days (Monday‑Friday, exclude weekends)
+    // Working days (Monday‑Friday, exclude weekends)
     const workingDays: string[] = [];
-    let current = new Date(startDate);
+    const current = new Date(startDate);
     while (current <= endDate) {
       const dayOfWeek = current.getDay();
       if (dayOfWeek !== 0 && dayOfWeek !== 6) {
@@ -213,7 +321,7 @@ const ManagerReview: React.FC = () => {
     }
 
     let presentCount = 0;
-    for (const rec of Object.values(records) as any[]) {
+    for (const rec of Object.values(records)) {
       const recordDate = rec.date?.split('T')[0];
       if (recordDate && workingDays.includes(recordDate) && (rec.status === 'present' || rec.status === 'late' || rec.status === 'half-day')) {
         presentCount++;
@@ -256,7 +364,7 @@ const ManagerReview: React.FC = () => {
     const attendance = await fetchAttendance(selectedEmployee.id);
 
     // Final composition: 70% competencies, 20% goals, 5% task, 5% attendance
-    const final = compScore * 0.7 + goalScore + (taskCompletion * 0.05) + (attendance * 0.05);
+    const final = compScore * 0.7 + goalScore + taskCompletion * 0.05 + attendance * 0.05;
     return Math.round(final);
   };
 
@@ -304,15 +412,18 @@ const ManagerReview: React.FC = () => {
       });
     } catch (err) {
       console.error(err);
-      toast.error('Failed to submit');
+      toast.error('Failed to submit review');
     } finally {
       setLoading(false);
     }
   };
 
   const addPipTask = () => {
-    if (!newPipTask.title || !newPipTask.dueDate) return;
-    setPipTasks([...pipTasks, newPipTask]);
+    if (!newPipTask.title || !newPipTask.dueDate) {
+      toast.error('Please enter title and due date');
+      return;
+    }
+    setPipTasks([...pipTasks, { title: newPipTask.title, dueDate: newPipTask.dueDate }]);
     setNewPipTask({ title: '', dueDate: '' });
   };
 
@@ -320,7 +431,23 @@ const ManagerReview: React.FC = () => {
     setPipTasks(pipTasks.filter((_, i) => i !== idx));
   };
 
-  if (loading) return <div className="flex justify-center p-8">Loading...</div>;
+  // Memoize cycles to avoid unnecessary re‑renders (optional)
+  const cycleOptions = useMemo(() => cycles, [cycles]);
+
+  if (error) {
+    return (
+      <div className="text-center py-8 text-red-500">
+        <p>{error}</p>
+        <Button variant="outline" onClick={() => window.location.reload()}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  if (loading && !selectedEmployee) {
+    return <div className="flex justify-center p-8">Loading...</div>;
+  }
 
   return (
     <div className="space-y-6">
@@ -330,18 +457,25 @@ const ManagerReview: React.FC = () => {
         <div>
           <Label>Review Cycle</Label>
           <Select value={selectedCycleId} onValueChange={setSelectedCycleId}>
-            <SelectTrigger><SelectValue /></SelectTrigger>
+            <SelectTrigger><SelectValue placeholder="Select cycle" /></SelectTrigger>
             <SelectContent>
-              {cycles.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+              {cycleOptions.map(c => (
+                <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
         <div>
           <Label>Employee</Label>
-          <Select value={selectedEmployee?.id || ''} onValueChange={(id) => setSelectedEmployee(employees.find(e => e.id === id) || null)}>
+          <Select
+            value={selectedEmployee?.id || ''}
+            onValueChange={(id) => setSelectedEmployee(employees.find(e => e.id === id) || null)}
+          >
             <SelectTrigger><SelectValue placeholder="Select employee" /></SelectTrigger>
             <SelectContent>
-              {employees.map(emp => <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>)}
+              {employees.map(emp => (
+                <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>
+              ))}
             </SelectContent>
           </Select>
         </div>
@@ -357,7 +491,7 @@ const ManagerReview: React.FC = () => {
                   {Object.entries(selfReview.ratings || {}).map(([comp, rating]) => (
                     <div key={comp} className="flex justify-between">
                       <span>{comp}</span>
-                      <span>{'★'.repeat(rating as number)}{'☆'.repeat(5 - (rating as number))}</span>
+                      <span>{'★'.repeat(rating)}{'☆'.repeat(5 - rating)}</span>
                     </div>
                   ))}
                   {Object.entries(selfReview.answers || {}).map(([q, a]) => (
@@ -381,7 +515,13 @@ const ManagerReview: React.FC = () => {
                     <div><span>{comp.name}</span> <span className="text-sm text-gray-500">(Weight: {comp.weight}%)</span></div>
                     <div className="flex gap-1">
                       {[1,2,3,4,5].map(star => (
-                        <button key={star} type="button" onClick={() => handleRating(comp.name, star)} disabled={submitted}>
+                        <button
+                          key={star}
+                          type="button"
+                          onClick={() => handleRating(comp.name, star)}
+                          disabled={submitted}
+                          className="focus:outline-none"
+                        >
                           <Star className={`h-5 w-5 ${ratings[comp.name] >= star ? 'fill-yellow-500 text-yellow-500' : 'text-gray-300'}`} />
                         </button>
                       ))}
@@ -408,7 +548,11 @@ const ManagerReview: React.FC = () => {
                 {openQuestions.map((q, idx) => (
                   <div key={idx}>
                     <Label>{q}</Label>
-                    <Textarea value={answers[q] || ''} onChange={e => handleAnswer(q, e.target.value)} disabled={submitted} />
+                    <Textarea
+                      value={answers[q] || ''}
+                      onChange={e => handleAnswer(q, e.target.value)}
+                      disabled={submitted}
+                    />
                   </div>
                 ))}
               </div>
@@ -422,26 +566,36 @@ const ManagerReview: React.FC = () => {
                   {showPIP && (
                     <Card>
                       <CardHeader><CardTitle>Performance Improvement Plan (PIP)</CardTitle></CardHeader>
-                      <CardContent>
-                        <div className="space-y-4">
-                          <div className="flex gap-2">
-                            <Input placeholder="Task title" value={newPipTask.title} onChange={e => setNewPipTask({...newPipTask, title: e.target.value})} />
-                            <Input type="date" value={newPipTask.dueDate} onChange={e => setNewPipTask({...newPipTask, dueDate: e.target.value})} />
-                            <Button onClick={addPipTask}>Add</Button>
-                          </div>
-                          {pipTasks.map((task, idx) => (
-                            <div key={idx} className="flex justify-between items-center p-2 border-b">
-                              <span>{task.title} – Due {task.dueDate}</span>
-                              <Button variant="ghost" size="sm" onClick={() => removePipTask(idx)}>✕</Button>
-                            </div>
-                          ))}
+                      <CardContent className="space-y-4">
+                        <div className="flex gap-2">
+                          <Input
+                            placeholder="Task title"
+                            value={newPipTask.title}
+                            onChange={e => setNewPipTask({ ...newPipTask, title: e.target.value })}
+                          />
+                          <Input
+                            type="date"
+                            value={newPipTask.dueDate}
+                            onChange={e => setNewPipTask({ ...newPipTask, dueDate: e.target.value })}
+                          />
+                          <Button onClick={addPipTask}>Add</Button>
                         </div>
+                        {pipTasks.map((task, idx) => (
+                          <div key={idx} className="flex justify-between items-center p-2 border-b">
+                            <span>{task.title} – Due {task.dueDate}</span>
+                            <Button variant="ghost" size="sm" onClick={() => removePipTask(idx)}>
+                              ✕
+                            </Button>
+                          </div>
+                        ))}
                       </CardContent>
                     </Card>
                   )}
 
                   <div className="flex justify-end gap-2">
-                    <Button onClick={submitManagerReview} disabled={loading}>Submit Review</Button>
+                    <Button onClick={submitManagerReview} disabled={loading}>
+                      {loading ? 'Submitting...' : 'Submit Review'}
+                    </Button>
                   </div>
                 </>
               )}
@@ -449,7 +603,7 @@ const ManagerReview: React.FC = () => {
               {submitted && (
                 <div className="text-center p-4 bg-green-50 rounded-lg">
                   <p className="font-semibold">Review Submitted</p>
-                  <p>Final Score: {selfReview?.finalScore || '—'}</p>
+                  <p>Final Score: { /* no finalScore stored? we could recalc? */ } —</p>
                 </div>
               )}
             </CardContent>

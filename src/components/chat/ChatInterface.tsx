@@ -1,3 +1,4 @@
+// src/components/chat/ChatInterface.tsx
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ref, push, set, onValue, off, update, query, orderByChild, limitToLast, get, remove } from 'firebase/database';
 import { database } from '../../firebase';
@@ -7,8 +8,8 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { ScrollArea } from '../ui/scroll-area';
 import { Badge } from '../ui/badge';
-import { Send, Paperclip, Users, Clock, CheckCheck, Search, X, FileText, Trash2 } from 'lucide-react';
-import { toast } from 'react-hot-toast';
+import { Send, Paperclip, Users, Clock, CheckCheck, Search, FileText, Trash2 } from 'lucide-react';
+import { toast } from '../ui/use-toast';
 import { formatDistanceToNow } from 'date-fns';
 
 // Cloudinary upload
@@ -53,6 +54,7 @@ interface Contact {
 const ChatInterface = () => {
   const { user } = useAuth();
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(true);
   const [activeContactId, setActiveContactId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
@@ -60,7 +62,6 @@ const ChatInterface = () => {
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [uploading, setUploading] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const typingTimeoutRef = useRef<NodeJS.Timeout>();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -68,15 +69,25 @@ const ChatInterface = () => {
   const currentUserId = user?.id;
   const currentUserName = user?.name || 'Employee';
   const isAdmin = user?.role === 'admin';
+  // ✅ Corrected: use adminUid (not adminId)
+  const adminUid = user?.adminUid || (isAdmin ? currentUserId : null);
+
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
 
   const getDmChatId = (uid1: string, uid2: string) => {
     const sorted = [uid1, uid2].sort();
     return `dm_${sorted[0]}_${sorted[1]}`;
   };
 
-  // Fetch contacts (admins + employees)
+  // Fetch contacts
   useEffect(() => {
     const fetchContacts = async () => {
+      if (!currentUserId) return;
+      setLoadingContacts(true);
       const contactMap = new Map<string, Contact>();
       const rootUsersSnap = await get(ref(database, 'users'));
       rootUsersSnap.forEach((child) => {
@@ -95,8 +106,8 @@ const ChatInterface = () => {
         }
       });
 
-      if (!isAdmin && user?.adminUid) {
-        const employeesRef = ref(database, `users/${user.adminUid}/employees`);
+      if (!isAdmin && adminUid) {
+        const employeesRef = ref(database, `users/${adminUid}/employees`);
         const employeesSnap = await get(employeesRef);
         employeesSnap.forEach((child) => {
           const empId = child.key;
@@ -115,9 +126,10 @@ const ChatInterface = () => {
       }
 
       setContacts(Array.from(contactMap.values()));
+      setLoadingContacts(false);
     };
     fetchContacts();
-  }, [currentUserId, isAdmin, user?.adminUid]);
+  }, [currentUserId, isAdmin, adminUid]);
 
   // Online presence
   useEffect(() => {
@@ -212,7 +224,7 @@ const ChatInterface = () => {
       chatPath = `chats/${getDmChatId(currentUserId, activeContactId)}`;
     }
     const newMsgRef = push(ref(database, `${chatPath}/messages`));
-    const messageData: any = {
+    const messageData: Omit<Message, 'id'> = {
       text: text.trim() || (file ? '📎 File attached' : ''),
       senderId: currentUserId,
       senderName: currentUserName,
@@ -227,7 +239,6 @@ const ChatInterface = () => {
     await set(newMsgRef, messageData);
     await remove(ref(database, `${chatPath}/typing/${currentUserId}`));
     setInputText('');
-    // send notifications (existing code)
     const now = Date.now();
     const throttleKey = `lastGroupNotif_${currentUserId}`;
     const lastGroupNotif = localStorage.getItem(throttleKey);
@@ -275,12 +286,10 @@ const ChatInterface = () => {
     }
   };
 
-  // ✅ DELETE MESSAGE FUNCTION
   const deleteMessage = async (messageId: string, senderId: string) => {
-    // Only sender or admin can delete
     const canDelete = senderId === currentUserId || isAdmin;
     if (!canDelete) {
-      toast.error('You are not allowed to delete this message');
+      toast({ title: "Access Denied", description: "You cannot delete this message", variant: "destructive" });
       return;
     }
     if (!confirm('Delete this message?')) return;
@@ -295,10 +304,10 @@ const ChatInterface = () => {
       }
       const messageRef = ref(database, `${chatPath}/messages/${messageId}`);
       await remove(messageRef);
-      toast.success('Message deleted');
+      toast({ title: "Deleted", description: "Message removed" });
     } catch (error) {
       console.error(error);
-      toast.error('Failed to delete message');
+      toast({ title: "Error", description: "Failed to delete message", variant: "destructive" });
     }
   };
 
@@ -324,10 +333,10 @@ const ChatInterface = () => {
     try {
       const url = await uploadToCloudinary(file);
       await sendMessage('', { url, name: file.name, type: file.type });
-      toast.success('File uploaded');
+      toast({ title: "Success", description: "File uploaded" });
     } catch (err) {
-      console.error(err);
-      toast.error('Upload failed: ' + (err as Error).message);
+      const errorMsg = err instanceof Error ? err.message : 'Upload failed';
+      toast({ title: "Upload Failed", description: errorMsg, variant: "destructive" });
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -339,7 +348,7 @@ const ChatInterface = () => {
   };
 
   const getSenderInitials = (name: string) => {
-    if (!name || name.length === 0) return '?';
+    if (!name) return '?';
     return name.charAt(0).toUpperCase();
   };
 
@@ -347,6 +356,14 @@ const ChatInterface = () => {
     c.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
     c.email.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  if (loadingContacts) {
+    return (
+      <div className="flex h-full bg-white rounded-lg shadow-sm overflow-hidden items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full bg-white rounded-lg shadow-sm overflow-hidden">
@@ -366,7 +383,6 @@ const ChatInterface = () => {
         </div>
         <ScrollArea className="flex-1">
           <div className="p-2 space-y-1">
-            {/* Global Group */}
             <button
               onClick={() => setActiveContactId('global')}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
@@ -381,7 +397,6 @@ const ChatInterface = () => {
                 <p className="text-xs text-gray-500">All employees & admins</p>
               </div>
             </button>
-            {/* Individual Contacts */}
             {filteredContacts.map(contact => (
               <button
                 key={contact.id}
@@ -408,6 +423,9 @@ const ChatInterface = () => {
                 </div>
               </button>
             ))}
+            {filteredContacts.length === 0 && (
+              <div className="text-center py-8 text-gray-400 text-sm">No contacts found</div>
+            )}
           </div>
         </ScrollArea>
       </div>
@@ -492,7 +510,6 @@ const ChatInterface = () => {
                         )}
                       </div>
                     </div>
-                    {/* ✅ Delete button - appears on hover */}
                     {(msg.senderId === currentUserId || isAdmin) && (
                       <button
                         onClick={() => deleteMessage(msg.id, msg.senderId)}
@@ -528,8 +545,9 @@ const ChatInterface = () => {
                 onInput={handleTyping}
                 placeholder="Type a message..."
                 className="flex-1"
+                disabled={uploading}
               />
-              <Button onClick={() => sendMessage(inputText)} disabled={!inputText.trim() && !uploading}>
+              <Button onClick={() => sendMessage(inputText)} disabled={!inputText.trim() || uploading}>
                 <Send className="h-4 w-4" />
               </Button>
             </div>

@@ -1,8 +1,20 @@
 // src/components/employee/projects/useMention.ts
 import { useState, useRef, useEffect } from 'react';
+import type { UnprivilegedEditor } from 'react-quill';
 
 interface UseMentionOptions {
   employeesList: { id: string; name: string }[];
+}
+
+// Minimal Quill instance interface (the full editor from getEditor())
+interface QuillInstance {
+  getSelection(): { index: number; length: number } | null;
+  getText(index: number, length: number): string;
+  deleteText(index: number, length: number): void;
+  insertText(index: number, text: string): void;
+  setSelection(index: number): void;
+  getBounds(index: number, length: number): { top: number; left: number; bottom: number; right: number };
+  root: HTMLElement;
 }
 
 export const useMention = (options: UseMentionOptions) => {
@@ -10,16 +22,14 @@ export const useMention = (options: UseMentionOptions) => {
   const [showMention, setShowMention] = useState(false);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionPosition, setMentionPosition] = useState({ top: 0, left: 0 });
-  const quillRef = useRef<any>(null);
   const mentionDropdownRef = useRef<HTMLDivElement>(null);
 
   const filteredEmployees = employeesList.filter(emp =>
     emp.name.toLowerCase().includes(mentionFilter.toLowerCase())
   );
 
-  const insertMention = (employeeName: string) => {
-    if (!quillRef.current) return;
-    const editor = quillRef.current.getEditor();
+  // This function uses the full Quill instance (from ref) to insert mention
+  const insertMention = (editor: QuillInstance, employeeName: string) => {
     const selection = editor.getSelection();
     if (!selection) return;
 
@@ -35,8 +45,8 @@ export const useMention = (options: UseMentionOptions) => {
     setMentionFilter('');
   };
 
-  const handleEditorChange = (content: string, delta: any, source: string, editor: any) => {
-    if (source !== 'user') return;
+  // This function uses the UnprivilegedEditor from ReactQuill's onChange
+  const handleEditorChange = (editor: UnprivilegedEditor) => {
     const selection = editor.getSelection();
     if (!selection) {
       setShowMention(false);
@@ -53,8 +63,9 @@ export const useMention = (options: UseMentionOptions) => {
       const editorElement = document.querySelector('.ql-editor');
       if (editorElement) {
         const editorRect = editorElement.getBoundingClientRect();
+        const height = bounds.bottom - bounds.top;
         setMentionPosition({
-          top: bounds.top - editorRect.top + bounds.height + 5,
+          top: bounds.top - editorRect.top + height + 5,
           left: bounds.left - editorRect.left,
         });
       }
@@ -74,7 +85,6 @@ export const useMention = (options: UseMentionOptions) => {
   }, []);
 
   return {
-    quillRef,
     mentionDropdownRef,
     showMention,
     mentionPosition,

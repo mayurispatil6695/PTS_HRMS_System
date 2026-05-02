@@ -1,6 +1,6 @@
 import React from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
-import { Users, Clock, Calendar, CheckSquare } from 'lucide-react';
+import { Users, Clock, Calendar, CheckSquare, FolderOpen } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
 const TeamLeaderHome = () => {

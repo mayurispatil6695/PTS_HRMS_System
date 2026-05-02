@@ -8,7 +8,11 @@ import { toast } from 'react-hot-toast';
 interface ProjectsReportSummaryProps {
   adminUid?: string;
 }
-
+interface FirebaseProject {
+  status?: string;
+  progress?: number;
+  // add other fields if needed (e.g., name, startDate)
+}
 interface ReportData {
   totalProjects: number;
   completed: number;
@@ -39,7 +43,7 @@ const ProjectsReportSummary: React.FC<ProjectsReportSummaryProps> = ({ adminUid 
       try {
         const projectsData = snapshot.val();
         if (projectsData) {
-          const projectsArray = Object.values(projectsData) as any[];
+          const projectsArray = Object.values(projectsData) as FirebaseProject[];
           
           const totalProjects = projectsArray.length;
           const completed = projectsArray.filter(project => project.status === 'completed').length;

@@ -1,3 +1,4 @@
+// src/components/employee/EmployeeLeaves.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Plane, Plus, Calendar, Clock, Bell, AlertCircle, Users } from 'lucide-react';
@@ -11,7 +12,9 @@ import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
 import { ref, onValue, off, push, set, get } from 'firebase/database';
 import { toast } from '../ui/use-toast';
+import { addAuditLog } from '../../utils/auditLog';
 
+// ========== TYPES ==========
 interface LeaveRequest {
   id: string;
   employeeId: string;
@@ -54,6 +57,7 @@ interface FirebaseUserData {
   [key: string]: unknown;
 }
 
+// ========== COMPONENT ==========
 const EmployeeLeaves = () => {
   const { user } = useAuth();
   const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
@@ -76,6 +80,9 @@ const EmployeeLeaves = () => {
     annual: 0,
     compOff: 0
   });
+  
+  // Auto‑approve settings (default: enabled, max 2 days)
+  const [autoApproveSettings, setAutoApproveSettings] = useState({ enabled: true, maxDays: 2 });
   
   const previousRequestsRef = useRef<LeaveRequest[]>([]);
   const notificationTimeoutRef = useRef<NodeJS.Timeout>();
@@ -107,6 +114,7 @@ const EmployeeLeaves = () => {
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
   };
 
+  // Request notification permission
   useEffect(() => {
     if ('Notification' in window) {
       Notification.requestPermission().then(permission => {
@@ -120,62 +128,20 @@ const EmployeeLeaves = () => {
     };
   }, []);
 
-  const showSystemNotification = useCallback((notification: Omit<Notification, 'id' | 'read'>) => {
-    const newNotification: Notification = {
-      ...notification,
-      id: `${notification.type}-${notification.timestamp}`,
-      read: false
-    };
-    setNotifications(prev => [newNotification, ...prev]);
-    setCurrentNotification(newNotification);
-    setShowNotification(true);
-
-    if (notificationPermission === 'granted') {
-      const notificationDetails = getNotificationDetails(notification.type);
-      try {
-        new Notification(notificationDetails.title, {
-          body: notificationDetails.description
-            .replace('{leaveType}', notification.leaveType)
-            .replace('{startDate}', new Date(notification.startDate).toLocaleDateString())
-            .replace('{endDate}', new Date(notification.endDate).toLocaleDateString()),
-          icon: '/logo.png',
-          tag: `leave-${notification.type}-${notification.timestamp}`
-        });
-      } catch (error) {
-        console.error('Error showing system notification:', error);
+  // Fetch auto‑approve settings
+  useEffect(() => {
+    const settingsRef = ref(database, 'settings/leaveAutoApprove');
+    const unsubscribe = onValue(settingsRef, (snapshot) => {
+      if (snapshot.exists()) {
+        setAutoApproveSettings(snapshot.val());
+      } else {
+        setAutoApproveSettings({ enabled: true, maxDays: 2 });
       }
-    }
+    });
+    return () => off(settingsRef);
+  }, []);
 
-    if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current);
-    notificationTimeoutRef.current = setTimeout(() => {
-      setShowNotification(false);
-      setTimeout(() => setCurrentNotification(null), 500);
-    }, 5000);
-  }, [notificationPermission]);
-
-  const getNotificationDetails = (type: string) => {
-    switch (type) {
-      case 'approved':
-        return { 
-          title: 'Leave Approved', 
-          description: 'Your {leaveType} leave from {startDate} to {endDate} has been approved',
-          color: 'bg-green-100 text-green-800 border-green-500'
-        };
-      case 'rejected':
-        return { 
-          title: 'Leave Rejected', 
-          description: 'Your {leaveType} leave from {startDate} to {endDate} has been rejected',
-          color: 'bg-red-100 text-red-800 border-red-500'
-        };
-      default:
-        return { 
-          title: 'Leave Update', 
-          description: 'There has been an update to your leave request',
-          color: 'bg-gray-100 text-gray-800 border-gray-500'
-        };
-    }
-  };
-
+  // Fetch leave balances
   useEffect(() => {
     if (!user?.id) return;
     const balanceRef = ref(database, `leaveBalances/${user.id}`);
@@ -193,6 +159,7 @@ const EmployeeLeaves = () => {
     return () => off(balanceRef);
   }, [user?.id]);
 
+  // Fetch leave requests
   useEffect(() => {
     if (!user?.id || !user?.adminUid) {
       setLoading(false);
@@ -256,7 +223,63 @@ const EmployeeLeaves = () => {
       off(leavesRef);
       unsubscribe();
     };
-  }, [user?.id, user?.adminUid, showSystemNotification]);
+  }, [user?.id, user?.adminUid]);
+
+  const showSystemNotification = useCallback((notification: Omit<Notification, 'id' | 'read'>) => {
+    const newNotification: Notification = {
+      ...notification,
+      id: `${notification.type}-${notification.timestamp}`,
+      read: false
+    };
+    setNotifications(prev => [newNotification, ...prev]);
+    setCurrentNotification(newNotification);
+    setShowNotification(true);
+
+    if (notificationPermission === 'granted') {
+      const notificationDetails = getNotificationDetails(notification.type);
+      try {
+        new Notification(notificationDetails.title, {
+          body: notificationDetails.description
+            .replace('{leaveType}', notification.leaveType)
+            .replace('{startDate}', new Date(notification.startDate).toLocaleDateString())
+            .replace('{endDate}', new Date(notification.endDate).toLocaleDateString()),
+          icon: '/logo.png',
+          tag: `leave-${notification.type}-${notification.timestamp}`
+        });
+      } catch (error) {
+        console.error('Error showing system notification:', error);
+      }
+    }
+
+    if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current);
+    notificationTimeoutRef.current = setTimeout(() => {
+      setShowNotification(false);
+      setTimeout(() => setCurrentNotification(null), 500);
+    }, 5000);
+  }, [notificationPermission]);
+
+  const getNotificationDetails = (type: string) => {
+    switch (type) {
+      case 'approved':
+        return { 
+          title: 'Leave Approved', 
+          description: 'Your {leaveType} leave from {startDate} to {endDate} has been approved',
+          color: 'bg-green-100 text-green-800 border-green-500'
+        };
+      case 'rejected':
+        return { 
+          title: 'Leave Rejected', 
+          description: 'Your {leaveType} leave from {startDate} to {endDate} has been rejected',
+          color: 'bg-red-100 text-red-800 border-red-500'
+        };
+      default:
+        return { 
+          title: 'Leave Update', 
+          description: 'There has been an update to your leave request',
+          color: 'bg-gray-100 text-gray-800 border-gray-500'
+        };
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -275,7 +298,6 @@ const EmployeeLeaves = () => {
       const days = calculateDays(formData.startDate, formData.endDate);
       const currentBalance = leaveBalances[balanceKey];
       if (currentBalance < days) {
-        // ✅ FIXED: replaced toast.error with proper toast call
         toast({ 
           title: "Insufficient Balance", 
           description: `Insufficient balance for ${formData.leaveType}. Available: ${currentBalance} days`, 
@@ -287,6 +309,21 @@ const EmployeeLeaves = () => {
 
     try {
       setLoading(true);
+      let finalStatus: LeaveRequest['status'] = 'pending';
+      let approvedAt: string | undefined;
+      let approvedBy: string | undefined;
+
+      const daysRequested = calculateDays(formData.startDate, formData.endDate);
+      if (
+        autoApproveSettings.enabled &&
+        formData.leaveType === 'Casual Leave' &&
+        daysRequested <= autoApproveSettings.maxDays
+      ) {
+        finalStatus = 'approved';
+        approvedAt = new Date().toISOString();
+        approvedBy = 'System (Auto‑Approved)';
+      }
+
       const newRequest: Omit<LeaveRequest, 'id'> = {
         employeeId: user.id,
         employeeName: user.name || user.email?.split('@')[0] || 'Employee',
@@ -296,35 +333,68 @@ const EmployeeLeaves = () => {
         startDate: formData.startDate,
         endDate: formData.endDate,
         reason: formData.reason,
-        status: 'pending',
-        appliedAt: new Date().toISOString()
+        status: finalStatus,
+        appliedAt: new Date().toISOString(),
+        approvedAt,
+        approvedBy,
       };
 
       const leavesRef = ref(database, `users/${user.adminUid}/employees/${user.id}/leaves`);
       const newLeaveRef = push(leavesRef);
       await set(newLeaveRef, newRequest);
 
-      const usersSnapshot = await get(ref(database, 'users'));
-      const adminNotifications: Promise<void>[] = [];
+      // If auto‑approved, send notification and audit log
+      if (finalStatus === 'approved') {
+        const notifRef = push(ref(database, `notifications/${user.id}`));
+        await set(notifRef, {
+          title: 'Leave Auto‑Approved',
+          body: `Your ${formData.leaveType} leave from ${new Date(formData.startDate).toLocaleDateString()} to ${new Date(formData.endDate).toLocaleDateString()} has been auto‑approved.`,
+          type: 'leave_approved',
+          read: false,
+          createdAt: Date.now(),
+        });
 
-      usersSnapshot.forEach((childSnap) => {
-        const userData = childSnap.val() as FirebaseUserData;
-        if (userData.role === 'admin') {
-          const notifRef = push(ref(database, `notifications/${childSnap.key}`));
-          adminNotifications.push(set(notifRef, {
-            title: 'New Leave Request',
-            body: `${user.name || 'Employee'} applied for ${formData.leaveType} leave from ${new Date(formData.startDate).toLocaleDateString()} to ${new Date(formData.endDate).toLocaleDateString()}`,
-            type: 'leave_request',
-            read: false,
-            createdAt: Date.now(),
+        await addAuditLog({
+          action: 'leave_auto_approved',
+          performedBy: user.id,
+          performedByName: user.name || 'System',
+          targetId: newLeaveRef.key,
+          details: {
             employeeId: user.id,
-            leaveId: newLeaveRef.key,
-          }));
-        }
-      });
-      await Promise.all(adminNotifications);
+            leaveType: formData.leaveType,
+            startDate: formData.startDate,
+            endDate: formData.endDate,
+            days: daysRequested,
+          },
+        });
+      } else {
+        // Notify admins only for pending leaves
+        const usersSnapshot = await get(ref(database, 'users'));
+        const adminNotifications: Promise<void>[] = [];
+        usersSnapshot.forEach((childSnap) => {
+          const userData = childSnap.val() as FirebaseUserData;
+          if (userData.role === 'admin') {
+            const notifRef = push(ref(database, `notifications/${childSnap.key}`));
+            adminNotifications.push(set(notifRef, {
+              title: 'New Leave Request',
+              body: `${user.name || 'Employee'} applied for ${formData.leaveType} leave from ${new Date(formData.startDate).toLocaleDateString()} to ${new Date(formData.endDate).toLocaleDateString()}`,
+              type: 'leave_request',
+              read: false,
+              createdAt: Date.now(),
+              employeeId: user.id,
+              leaveId: newLeaveRef.key,
+            }));
+          }
+        });
+        await Promise.all(adminNotifications);
+      }
 
-      toast({ title: "Leave Applied", description: "Your leave request has been submitted successfully." });
+      toast({ 
+        title: finalStatus === 'approved' ? "Leave Auto‑Approved" : "Leave Applied", 
+        description: finalStatus === 'approved' 
+          ? "Your leave has been automatically approved." 
+          : "Your leave request has been submitted successfully." 
+      });
       setFormData({ leaveType: '', startDate: '', endDate: '', reason: '' });
       setShowApplyForm(false);
     } catch (error) {
@@ -365,6 +435,7 @@ const EmployeeLeaves = () => {
 
   return (
     <div className="space-y-6 relative">
+      {/* Notification Toast */}
       {showNotification && currentNotification && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -387,7 +458,6 @@ const EmployeeLeaves = () => {
             </div>
             <div className="ml-4 flex-shrink-0 flex">
               <button onClick={() => setShowNotification(false)} className="rounded-md inline-flex text-gray-400 hover:text-gray-500 focus:outline-none">
-                <span className="sr-only">Close</span>
                 <svg className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
                   <path fillRule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clipRule="evenodd" />
                 </svg>
@@ -402,6 +472,7 @@ const EmployeeLeaves = () => {
         <Button onClick={() => setShowApplyForm(true)}><Plus className="h-4 w-4 mr-2" /> Apply Leave</Button>
       </motion.div>
 
+      {/* Leave Balances */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
         <Card>
           <CardHeader className="pb-3">
@@ -430,6 +501,7 @@ const EmployeeLeaves = () => {
         </Card>
       </motion.div>
 
+      {/* Stats Cards */}
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         {[
           { icon: Plane, label: 'Total Requests', value: stats.total, color: 'text-blue-600', delay: 0.1 },
@@ -444,6 +516,7 @@ const EmployeeLeaves = () => {
         ))}
       </div>
 
+      {/* Apply Leave Form */}
       {showApplyForm && (
         <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
           <Card><CardHeader><CardTitle>Apply for Leave</CardTitle></CardHeader><CardContent>
@@ -489,6 +562,7 @@ const EmployeeLeaves = () => {
         </motion.div>
       )}
 
+      {/* Leave Requests List */}
       <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.6 }}>
         <Card><CardHeader><CardTitle className="flex items-center gap-2"><Plane className="h-4 w-4" /> My Leave Requests ({leaveRequests.length})</CardTitle></CardHeader><CardContent>
           <div className="space-y-4">

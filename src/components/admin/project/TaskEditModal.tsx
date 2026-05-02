@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
@@ -12,14 +12,15 @@ import { update, ref } from 'firebase/database';
 import { database } from '../../../firebase';
 import { toast } from 'react-hot-toast';
 
+// Local Task interface (matches the structure used in this modal)
 interface Task {
   id: string;
   title: string;
   description: string;
   assignedTo: string;
-  priority: string;
+  priority: 'low' | 'medium' | 'high' | 'urgent';
   dueDate: string;
-  status: string;
+  status: 'not_started' | 'in_progress' | 'completed' | 'blocked';
   dependsOn?: string[];
   achievementSummary?: string;
 }
@@ -33,7 +34,9 @@ interface TaskEditModalProps {
   onSuccess: () => void;
 }
 
-export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange, task, projectId, allTasks, onSuccess }) => {
+export const TaskEditModal: React.FC<TaskEditModalProps> = ({ 
+  open, onOpenChange, task, projectId, allTasks, onSuccess 
+}) => {
   const [formData, setFormData] = useState({
     title: task.title,
     description: task.description,
@@ -47,6 +50,14 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange
   const [loading, setLoading] = useState(false);
   const [depPopoverOpen, setDepPopoverOpen] = useState(false);
 
+  const handlePriorityChange = (value: string) => {
+    setFormData(prev => ({ ...prev, priority: value as Task['priority'] }));
+  };
+
+  const handleStatusChange = (value: string) => {
+    setFormData(prev => ({ ...prev, status: value as Task['status'] }));
+  };
+
   const handleSave = async () => {
     setLoading(true);
     try {
@@ -55,6 +66,7 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange
       onSuccess();
       onOpenChange(false);
     } catch (error) {
+      console.error(error);
       toast.error('Failed to update task');
     } finally {
       setLoading(false);
@@ -63,30 +75,42 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Edit Task</DialogTitle>
         </DialogHeader>
         <div className="space-y-4">
           <div>
             <Label>Title</Label>
-            <Input value={formData.title} onChange={e => setFormData({...formData, title: e.target.value})} />
+            <Input 
+              value={formData.title} 
+              onChange={e => setFormData({...formData, title: e.target.value})} 
+            />
           </div>
           <div>
             <Label>Description</Label>
-            <Textarea value={formData.description} onChange={e => setFormData({...formData, description: e.target.value})} rows={3} />
+            <Textarea 
+              value={formData.description} 
+              onChange={e => setFormData({...formData, description: e.target.value})} 
+              rows={3} 
+            />
           </div>
           <div className="grid grid-cols-2 gap-4">
             <div>
               <Label>Priority</Label>
-              <Select value={formData.priority} onValueChange={v => setFormData({...formData, priority: v})}>
+              <Select value={formData.priority} onValueChange={handlePriorityChange}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
-                <SelectContent><SelectItem value="low">Low</SelectItem><SelectItem value="medium">Medium</SelectItem><SelectItem value="high">High</SelectItem></SelectContent>
+                <SelectContent>
+                  <SelectItem value="low">Low</SelectItem>
+                  <SelectItem value="medium">Medium</SelectItem>
+                  <SelectItem value="high">High</SelectItem>
+                  <SelectItem value="urgent">Urgent</SelectItem>
+                </SelectContent>
               </Select>
             </div>
             <div>
               <Label>Status</Label>
-              <Select value={formData.status} onValueChange={v => setFormData({...formData, status: v})}>
+              <Select value={formData.status} onValueChange={handleStatusChange}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="not_started">Not Started</SelectItem>
@@ -99,11 +123,20 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange
           </div>
           <div>
             <Label>Due Date</Label>
-            <Input type="date" value={formData.dueDate} onChange={e => setFormData({...formData, dueDate: e.target.value})} />
+            <Input 
+              type="date" 
+              value={formData.dueDate} 
+              onChange={e => setFormData({...formData, dueDate: e.target.value})} 
+            />
           </div>
           <div>
             <Label>Achievement Summary (for completed tasks)</Label>
-            <Textarea value={formData.achievementSummary} onChange={e => setFormData({...formData, achievementSummary: e.target.value})} placeholder="What was achieved? e.g., Fixed bug, added tests" rows={2} />
+            <Textarea 
+              value={formData.achievementSummary} 
+              onChange={e => setFormData({...formData, achievementSummary: e.target.value})} 
+              placeholder="What was achieved? e.g., Fixed bug, added tests" 
+              rows={2} 
+            />
           </div>
           <div>
             <Label>Depends On</Label>
@@ -119,8 +152,11 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange
                     <Checkbox
                       checked={formData.dependsOn.includes(t.id)}
                       onCheckedChange={(checked) => {
-                        if (checked) setFormData(prev => ({ ...prev, dependsOn: [...prev.dependsOn, t.id] }));
-                        else setFormData(prev => ({ ...prev, dependsOn: prev.dependsOn.filter(id => id !== t.id) }));
+                        if (checked) {
+                          setFormData(prev => ({ ...prev, dependsOn: [...prev.dependsOn, t.id] }));
+                        } else {
+                          setFormData(prev => ({ ...prev, dependsOn: prev.dependsOn.filter(id => id !== t.id) }));
+                        }
                       }}
                     />
                     <span>{t.title}</span>
@@ -128,12 +164,14 @@ export const TaskEditModal: React.FC<TaskEditModalProps> = ({ open, onOpenChange
                 ))}
               </PopoverContent>
             </Popover>
-            <div className="flex flex-wrap gap-1 mt-1">
-              {formData.dependsOn.map(depId => {
-                const depTask = allTasks.find(t => t.id === depId);
-                return <Badge key={depId} variant="secondary">{depTask?.title || depId}</Badge>;
-              })}
-            </div>
+            {formData.dependsOn.length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {formData.dependsOn.map(depId => {
+                  const depTask = allTasks.find(t => t.id === depId);
+                  return <Badge key={depId} variant="secondary">{depTask?.title || depId}</Badge>;
+                })}
+              </div>
+            )}
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>

@@ -1,3 +1,4 @@
+// src/components/attendance/SelfieCapture.tsx
 import React, { useRef, useState, useCallback, useEffect } from 'react';
 import { Camera, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { Button } from '../ui/button';
@@ -28,8 +29,9 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
   const [countdown, setCountdown] = useState<number | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [isCapturing, setIsCapturing] = useState(false);
+  const [isLoadingCamera, setIsLoadingCamera] = useState(false);
 
-  // Stop all tracks and clean up
+  // Stop all tracks and clean up intervals
   const stopCamera = useCallback(() => {
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
@@ -43,43 +45,52 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
       videoRef.current.srcObject = null;
     }
     setIsCameraReady(false);
+    setIsLoadingCamera(false);
   }, []);
 
-  // Start camera with explicit play()
+  // Start camera
   const startCamera = useCallback(async () => {
     stopCamera(); // Ensure previous stream is gone
     setError(null);
     setIsCameraReady(false);
+    setIsLoadingCamera(true);
 
     try {
       const mediaStream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user' },
+        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
       });
       streamRef.current = mediaStream;
 
       if (videoRef.current) {
         videoRef.current.srcObject = mediaStream;
-        // Explicitly play and wait for it
-        await videoRef.current.play();
-        // Check that video dimensions are available
-        if (videoRef.current.videoWidth > 0 && videoRef.current.videoHeight > 0) {
-          setIsCameraReady(true);
-        } else {
-          // Fallback: wait for loadedmetadata
-          videoRef.current.onloadedmetadata = () => {
-            setIsCameraReady(true);
-          };
-        }
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play()
+            .then(() => {
+              if (videoRef.current && videoRef.current.videoWidth > 0) {
+                setIsCameraReady(true);
+              } else {
+                setError('Camera stream has no dimensions. Please refresh.');
+              }
+            })
+            .catch((err) => {
+              console.error('Video play error:', err);
+              setError('Failed to start video stream.');
+            });
+        };
       }
     } catch (err) {
       console.error('Camera error:', err);
       let errorMsg = 'Unable to access camera. ';
-      if (err instanceof Error) {
-        if (err.name === 'NotAllowedError') errorMsg += 'Permission denied.';
-        else if (err.name === 'NotFoundError') errorMsg += 'No camera found.';
+      if (err instanceof DOMException) {
+        if (err.name === 'NotAllowedError') errorMsg += 'Please allow camera permission.';
+        else if (err.name === 'NotFoundError') errorMsg += 'No camera found on this device.';
         else errorMsg += err.message;
+      } else if (err instanceof Error) {
+        errorMsg += err.message;
       }
       setError(errorMsg);
+    } finally {
+      setIsLoadingCamera(false);
     }
   }, [stopCamera]);
 
@@ -129,28 +140,29 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
     }, 1000);
   }, [isCameraReady, captureSelfie]);
 
-  const retakeSelfie = () => {
+  const retakeSelfie = useCallback(() => {
     setCapturedImage(null);
     setError(null);
     setCountdown(null);
+    setIsCapturing(false);
     startCamera();
-  };
+  }, [startCamera]);
 
-  const confirmSelfie = () => {
+  const confirmSelfie = useCallback(() => {
     if (capturedImage) {
       onCapture(capturedImage);
       onClose();
     }
-  };
+  }, [capturedImage, onCapture, onClose]);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     stopCamera();
     setCapturedImage(null);
     setError(null);
     setCountdown(null);
     setIsCapturing(false);
     onClose();
-  };
+  }, [stopCamera, onClose]);
 
   // Start camera when dialog opens
   useEffect(() => {
@@ -164,15 +176,22 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
     };
   }, [isOpen, startCamera, stopCamera]);
 
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) clearInterval(intervalRef.current);
+    };
+  }, []);
+
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="max-w-md sm:max-w-lg">
+      <DialogContent className="max-w-md sm:max-w-lg mx-4 sm:mx-auto">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2 text-base sm:text-lg">
             <Camera className="h-5 w-5" />
             {punchType} Selfie – {employeeName}
           </DialogTitle>
-          <DialogDescription>
+          <DialogDescription className="text-xs sm:text-sm">
             Please capture a clear selfie for {punchType.toLowerCase()} verification.
           </DialogDescription>
         </DialogHeader>
@@ -181,7 +200,7 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
           {error && (
             <div className="p-3 bg-red-100 text-red-700 rounded-lg text-sm flex items-center gap-2">
               <AlertCircle className="h-4 w-4 flex-shrink-0" />
-              <span>{error}</span>
+              <span className="break-words">{error}</span>
             </div>
           )}
 
@@ -195,14 +214,14 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
                   muted
                   className="w-full h-full object-cover"
                 />
-                {!isCameraReady && !error && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
+                {(isLoadingCamera || (!isCameraReady && !error)) && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60">
                     <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white"></div>
                   </div>
                 )}
                 {countdown !== null && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-60">
-                    <div className="text-white text-7xl font-bold animate-pulse">
+                    <div className="text-white text-6xl sm:text-7xl font-bold animate-pulse">
                       {countdown}
                     </div>
                   </div>
@@ -221,6 +240,8 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
                   ? 'Preparing...'
                   : countdown !== null
                   ? `Capturing in ${countdown}...`
+                  : isLoadingCamera
+                  ? 'Loading camera...'
                   : 'Capture Selfie'}
               </Button>
             </div>
@@ -229,14 +250,14 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
               <img
                 src={capturedImage}
                 alt="Captured selfie"
-                className="w-48 h-48 rounded-full object-cover border-4 border-green-500 mx-auto"
+                className="w-32 h-32 sm:w-48 sm:h-48 rounded-full object-cover border-4 border-green-500 mx-auto"
               />
-              <div className="flex gap-3 justify-center">
-                <Button variant="outline" onClick={retakeSelfie}>
+              <div className="flex flex-wrap gap-3 justify-center">
+                <Button variant="outline" onClick={retakeSelfie} className="text-sm">
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Retake
                 </Button>
-                <Button onClick={confirmSelfie}>
+                <Button onClick={confirmSelfie} className="text-sm">
                   <Check className="h-4 w-4 mr-2" />
                   Confirm {punchType}
                 </Button>
@@ -249,4 +270,4 @@ const SelfieCapture: React.FC<SelfieCaptureProps> = ({
   );
 };
 
-export default SelfieCapture;
+export default React.memo(SelfieCapture);

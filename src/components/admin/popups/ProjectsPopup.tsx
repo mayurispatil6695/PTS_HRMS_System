@@ -5,27 +5,10 @@ import { Button } from '../../ui/button';
 import { FolderOpen, Calendar, Users, CheckCircle, PauseCircle, PlayCircle, ChevronDown, ChevronUp, Clock, User } from 'lucide-react';
 import { Progress } from '../../ui/progress';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../ui/collapsible';
-import { Project } from '@/types/project';
 
-interface Employee {
-  id: string;
-  name: string;
-  department: string;
-  designation: string;
-  isActive: boolean;
-}
-
-interface Task {
-  id: string;
-  title: string;
-  description: string;
-  assignedTo: string;
-  dueDate: string;
-  priority: string;
-  status: string;
-  createdAt: string;
-  updatedAt?: string;
-}
+// ✅ Central types
+import type { Project, Task } from '@/types/project';
+import type { Employee } from '@/types/employee';
 
 interface ProjectsPopupProps {
   isOpen: boolean;
@@ -43,7 +26,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
   const [activeTab, setActiveTab] = useState<'all' | 'active' | 'completed' | 'paused'>('all');
   const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
 
-  // Memoize filtered projects
   const filteredProjects = useMemo(() => {
     if (activeTab === 'all') return projects;
     return projects.filter((project) => {
@@ -55,10 +37,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
   }, [projects, activeTab]);
 
   const toggleProjectExpand = (projectId: string) => {
-    setExpandedProjects((prev) => ({
-      ...prev,
-      [projectId]: !prev[projectId],
-    }));
+    setExpandedProjects((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
   };
 
   const getPriorityColor = (priority: string) => {
@@ -94,7 +73,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
     }
   };
 
-  const formatDisplayDate = (dateString: string) => {
+  const formatDisplayDate = (dateString?: string) => {
     if (!dateString) return 'Not set';
     const date = new Date(dateString);
     return date.toLocaleDateString('en-US', {
@@ -104,25 +83,25 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
     });
   };
 
-  const getEmployeeName = (employeeId: string): string => {
+  const getEmployeeName = (employeeId?: string): string => {
+    if (!employeeId) return 'Unassigned';
     const employee = employees.find((emp) => emp.id === employeeId);
     return employee?.name || 'Unknown';
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2 text-xl sm:text-2xl">
             <FolderOpen className="h-5 w-5" />
             Projects Overview ({projects.length})
           </DialogTitle>
         </DialogHeader>
 
-        {/* Tab buttons */}
+        {/* Tab buttons - responsive wrap */}
         <div className="flex flex-wrap gap-2 mb-4">
           <Button
-            key="tab-all"
             variant={activeTab === 'all' ? 'default' : 'outline'}
             onClick={() => setActiveTab('all')}
             className="flex items-center gap-1"
@@ -130,7 +109,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
             All ({projects.length})
           </Button>
           <Button
-            key="tab-active"
             variant={activeTab === 'active' ? 'default' : 'outline'}
             onClick={() => setActiveTab('active')}
             className="flex items-center gap-1"
@@ -139,7 +117,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
             Active ({projects.filter(p => p.status === 'in_progress' || p.status === 'active').length})
           </Button>
           <Button
-            key="tab-completed"
             variant={activeTab === 'completed' ? 'default' : 'outline'}
             onClick={() => setActiveTab('completed')}
             className="flex items-center gap-1"
@@ -148,7 +125,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
             Completed ({projects.filter((p) => p.status === 'completed').length})
           </Button>
           <Button
-            key="tab-paused"
             variant={activeTab === 'paused' ? 'default' : 'outline'}
             onClick={() => setActiveTab('paused')}
             className="flex items-center gap-1"
@@ -161,8 +137,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
         {/* Projects list */}
         <div className="space-y-4">
           {filteredProjects.map((project, projectIndex) => {
-            // Compute task data
-            const tasksArray = project.tasks ? Object.values(project.tasks) : [];
+            const tasksArray = project.tasks || [];
             const completedTasksCount = tasksArray.filter((t) => t.status === 'completed').length;
             const totalTasksCount = tasksArray.length;
             const progress = totalTasksCount === 0 ? 0 : Math.round((completedTasksCount / totalTasksCount) * 100);
@@ -175,12 +150,11 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
               tasksByEmployee[task.assignedTo].push(task);
             });
 
-            const assignedEmployeesNames = project.assignedEmployees
+            const assignedEmployeesNames = (project.assignedEmployees || [])
               .map((empId) => getEmployeeName(empId))
-              .filter((name) => name !== 'Unknown');
+              .filter((name) => name !== 'Unknown' && name !== 'Unassigned');
             const teamLeaderName = getEmployeeName(project.assignedTeamLeader);
 
-            // Use a unique key: project.id + index as fallback
             const projectKey = project.id ? `${project.id}-${projectIndex}` : `project-${projectIndex}`;
 
             return (
@@ -190,7 +164,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
+                    <div className="flex flex-wrap items-center gap-2 mb-2">
                       <h3 className="font-semibold text-lg text-gray-900">{project.name}</h3>
                       <Badge className={getPriorityColor(project.priority)}>
                         {project.priority}
@@ -205,7 +179,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
 
                     <p className="text-gray-600 mb-3">{project.description}</p>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
                       <div className="flex items-center gap-2">
                         <Calendar className="h-4 w-4 text-gray-500" />
                         <span className="text-sm">
@@ -220,11 +194,11 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-4 mb-3">
+                    <div className="flex flex-wrap items-center gap-4 mb-3">
                       <div className="flex items-center gap-2">
                         <Users className="h-4 w-4 text-gray-500" />
                         <span className="text-sm">
-                          Team: {teamLeaderName || 'Unassigned'}
+                          Team: {teamLeaderName}
                           {assignedEmployeesNames.length > 0 && ` + ${assignedEmployeesNames.length}`}
                         </span>
                       </div>
@@ -249,7 +223,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="h-8 w-8 p-0"
+                    className="h-8 w-8 p-0 flex-shrink-0"
                     onClick={() => toggleProjectExpand(project.id)}
                   >
                     {expandedProjects[project.id] ? (
@@ -279,14 +253,14 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                           <div className="pl-6 space-y-2">
                             {tasks.map((task) => (
                               <div key={task.id} className="border rounded p-2">
-                                <div className="flex justify-between items-center">
+                                <div className="flex flex-col sm:flex-row justify-between gap-2">
                                   <div>
                                     <h4 className="text-sm font-medium">{task.title}</h4>
                                     {task.description && (
                                       <p className="text-xs text-gray-500">{task.description}</p>
                                     )}
                                   </div>
-                                  <div className="flex items-center gap-1">
+                                  <div className="flex flex-wrap items-center gap-1">
                                     <Badge className={getPriorityColor(task.priority)}>
                                       {task.priority}
                                     </Badge>
@@ -295,7 +269,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                                     </Badge>
                                   </div>
                                 </div>
-                                <div className="mt-2 flex items-center gap-2 text-xs">
+                                <div className="mt-2 flex flex-wrap gap-2 text-xs">
                                   <span>Due: {formatDisplayDate(task.dueDate)}</span>
                                   <span>Created: {formatDisplayDate(task.createdAt)}</span>
                                   {task.updatedAt && (

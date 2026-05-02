@@ -1,3 +1,4 @@
+// src/components/admin/WorkloadHeatmap.tsx
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import ReactCalendarHeatmap from 'react-calendar-heatmap';
@@ -13,6 +14,7 @@ import { Badge } from '../ui/badge';
 import { Avatar, AvatarFallback } from '../ui/avatar';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { Input } from '../ui/input';
+import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
 import { ref, get } from 'firebase/database';
@@ -71,7 +73,6 @@ interface FirebaseUserData {
   employees?: Record<string, { dailyTasks?: Record<string, FirebaseTask> }>;
 }
 
-// Raw data types for Firebase
 type ProjectsData = Record<string, { tasks?: Record<string, FirebaseTask> }>;
 type UsersData = Record<string, FirebaseUserData>;
 
@@ -141,143 +142,138 @@ const QuickDatePreset = ({ onSelect, active }: { onSelect: (days: number) => voi
 const WorkloadHeatmap = () => {
   const { user } = useAuth();
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [employees, setEmployees] = useState<Employee[]>([]);
+  const [workloadData, setWorkloadData] = useState<WorkloadData[]>([]);
   const [mode, setMode] = useState<'taskCount' | 'loggedHours'>('taskCount');
   const [datePreset, setDatePreset] = useState(7);
   const [expandedDepts, setExpandedDepts] = useState<Record<string, boolean>>({});
   const [searchTerm, setSearchTerm] = useState('');
-
-  // New state for heatmap view
   const [view, setView] = useState<'list' | 'heatmap'>('list');
   const [selectedEmployee, setSelectedEmployee] = useState<string>('');
   const [heatmapData, setHeatmapData] = useState<{ date: string; count: number }[]>([]);
 
-  // Fetch all employees (no filtering)
+  // Fetch all employees (once)
   useEffect(() => {
     const fetchEmployees = async () => {
-      const usersSnap = await get(ref(database, 'users'));
-      const usersData = usersSnap.val() as UsersData | null;
-      const empList: Employee[] = [];
-      if (usersData) {
-        for (const userData of Object.values(usersData)) {
-          if (userData.role === 'admin') continue;
+      try {
+        const usersSnap = await get(ref(database, 'users'));
+        const fixedList: Employee[] = [];
+        usersSnap.forEach((child) => {
+          const uid = child.key;
+          const userData = child.val() as FirebaseUserData;
+          if (userData.role === 'admin') return;
           const profile = userData.profile || userData.employee;
           if (profile?.name) {
-            empList.push({
-              id: userData.role === 'admin' ? '' : 'some-id', // You need to get actual ID from key
+            fixedList.push({
+              id: uid || '',
               name: profile.name,
               department: profile.department || 'General',
             });
           }
-        }
+        });
+        setEmployees(fixedList);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load employees');
+        toast({ title: 'Error', description: 'Could not load employee data', variant: 'destructive' });
       }
-      // Actually, we need to capture the keys. Let's refactor properly:
-      const fixedList: Employee[] = [];
-      usersSnap.forEach((child) => {
-        const uid = child.key;
-        const userData = child.val() as FirebaseUserData;
-        if (userData.role === 'admin') return;
-        const profile = userData.profile || userData.employee;
-        if (profile?.name) {
-          fixedList.push({
-            id: uid || '',
-            name: profile.name,
-            department: profile.department || 'General',
-          });
-        }
-      });
-      setEmployees(fixedList);
     };
     fetchEmployees();
   }, []);
 
-  // Compute workload from Firebase tasks
-  const workloadData = useMemo<WorkloadData[]>(() => {
-    if (!employees.length) return [];
+  // Compute workload data whenever employees, mode, or datePreset changes
+  useEffect(() => {
+    if (!employees.length) return;
 
-    const startTimestamp = datePreset === 0
-      ? new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
-      : Date.now() - datePreset * 24 * 60 * 60 * 1000;
-    const endTimestamp = Date.now();
+    const loadWorkload = async () => {
+      setLoading(true);
+      setError(null);
+      try {
+        const startTimestamp = datePreset === 0
+          ? new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime()
+          : Date.now() - datePreset * 24 * 60 * 60 * 1000;
+        const endTimestamp = Date.now();
 
-    const map = new Map<string, WorkloadData>();
-    employees.forEach(emp => {
-      map.set(emp.id, {
-        employeeId: emp.id,
-        employeeName: emp.name,
-        department: emp.department,
-        taskCount: 0,
-        loggedHours: 0,
-        colorIntensity: 0,
-        completedTasks: 0,
-        inProgressTasks: 0,
-        overdueTasks: 0,
-      });
-    });
+        // Initialize map with all employees
+        const map = new Map<string, Omit<WorkloadData, 'colorIntensity'>>();
+        employees.forEach(emp => {
+          map.set(emp.id, {
+            employeeId: emp.id,
+            employeeName: emp.name,
+            department: emp.department,
+            taskCount: 0,
+            loggedHours: 0,
+            completedTasks: 0,
+            inProgressTasks: 0,
+            overdueTasks: 0,
+          });
+        });
 
-    const fetchAllTasks = async () => {
-      // 1. Fetch project tasks
-      const projectsSnap = await get(ref(database, 'projects'));
-      const projects = projectsSnap.val() as ProjectsData | null;
-      if (projects) {
-        for (const proj of Object.values(projects)) {
-          const tasks = proj.tasks;
-          if (!tasks) continue;
-          for (const task of Object.values(tasks)) {
-            const assignedTo = task.assignedTo;
-            if (!assignedTo) continue;
-            const empData = map.get(assignedTo);
-            if (!empData) continue;
+        // 1. Fetch all projects and iterate tasks once
+        const projectsSnap = await get(ref(database, 'projects'));
+        const projects = projectsSnap.val() as ProjectsData | null;
+        if (projects) {
+          for (const proj of Object.values(projects)) {
+            const tasks = proj.tasks;
+            if (!tasks) continue;
+            for (const task of Object.values(tasks)) {
+              const assignedTo = task.assignedTo;
+              if (!assignedTo) continue;
+              const empData = map.get(assignedTo);
+              if (!empData) continue;
 
-            const createdAt = task.createdAt ? new Date(task.createdAt).getTime() : 0;
-            const completedAt = task.status === 'completed' && task.updatedAt ? new Date(task.updatedAt).getTime() : null;
-            if (createdAt <= endTimestamp && (completedAt === null || completedAt >= startTimestamp)) {
-              empData.taskCount += 1;
-              if (task.status === 'completed') empData.completedTasks += 1;
-              if (task.status === 'in_progress') empData.inProgressTasks += 1;
-              if (task.dueDate && new Date(task.dueDate).getTime() < Date.now() && task.status !== 'completed') {
-                empData.overdueTasks += 1;
+              const createdAt = task.createdAt ? new Date(task.createdAt).getTime() : 0;
+              const completedAt = task.status === 'completed' && task.updatedAt ? new Date(task.updatedAt).getTime() : null;
+              if (createdAt <= endTimestamp && (completedAt === null || completedAt >= startTimestamp)) {
+                empData.taskCount += 1;
+                if (task.status === 'completed') empData.completedTasks += 1;
+                if (task.status === 'in_progress') empData.inProgressTasks += 1;
+                if (task.dueDate && new Date(task.dueDate).getTime() < Date.now() && task.status !== 'completed') {
+                  empData.overdueTasks += 1;
+                }
               }
-            }
-            if (task.timeLogs) {
-              for (const log of Object.values(task.timeLogs)) {
-                const loggedAt = log.loggedAt || log.startTime;
-                if (loggedAt && loggedAt >= startTimestamp && loggedAt <= endTimestamp) {
-                  empData.loggedHours += (log.durationMs || 0) / (1000 * 60 * 60);
+              // Sum time logs
+              if (task.timeLogs) {
+                for (const log of Object.values(task.timeLogs)) {
+                  const loggedAt = log.loggedAt || log.startTime;
+                  if (loggedAt && loggedAt >= startTimestamp && loggedAt <= endTimestamp) {
+                    empData.loggedHours += (log.durationMs || 0) / (1000 * 60 * 60);
+                  }
                 }
               }
             }
           }
         }
-      }
 
-      // 2. Fetch standalone tasks (dailyTasks)
-      const usersSnap = await get(ref(database, 'users'));
-      const usersData = usersSnap.val() as UsersData | null;
-      if (usersData) {
-        for (const adminData of Object.values(usersData)) {
-          if (adminData.employees) {
-            for (const [empId, empTasks] of Object.entries(adminData.employees)) {
-              const dailyTasks = empTasks.dailyTasks;
-              if (!dailyTasks) continue;
-              const empData = map.get(empId);
-              if (!empData) continue;
-              for (const task of Object.values(dailyTasks)) {
-                const createdAt = task.createdAt ? new Date(task.createdAt).getTime() : 0;
-                const completedAt = task.status === 'completed' && task.updatedAt ? new Date(task.updatedAt).getTime() : null;
-                if (createdAt <= endTimestamp && (completedAt === null || completedAt >= startTimestamp)) {
-                  empData.taskCount += 1;
-                  if (task.status === 'completed') empData.completedTasks += 1;
-                  if (task.status === 'in_progress') empData.inProgressTasks += 1;
-                  if (task.dueDate && new Date(task.dueDate).getTime() < Date.now() && task.status !== 'completed') {
-                    empData.overdueTasks += 1;
+        // 2. Fetch standalone daily tasks
+        const usersSnap = await get(ref(database, 'users'));
+        const usersData = usersSnap.val() as UsersData | null;
+        if (usersData) {
+          for (const adminData of Object.values(usersData)) {
+            if (adminData.employees) {
+              for (const [empId, empTasks] of Object.entries(adminData.employees)) {
+                const dailyTasks = empTasks.dailyTasks;
+                if (!dailyTasks) continue;
+                const empData = map.get(empId);
+                if (!empData) continue;
+                for (const task of Object.values(dailyTasks)) {
+                  const createdAt = task.createdAt ? new Date(task.createdAt).getTime() : 0;
+                  const completedAt = task.status === 'completed' && task.updatedAt ? new Date(task.updatedAt).getTime() : null;
+                  if (createdAt <= endTimestamp && (completedAt === null || completedAt >= startTimestamp)) {
+                    empData.taskCount += 1;
+                    if (task.status === 'completed') empData.completedTasks += 1;
+                    if (task.status === 'in_progress') empData.inProgressTasks += 1;
+                    if (task.dueDate && new Date(task.dueDate).getTime() < Date.now() && task.status !== 'completed') {
+                      empData.overdueTasks += 1;
+                    }
                   }
-                }
-                if (task.timeLogs) {
-                  for (const log of Object.values(task.timeLogs)) {
-                    const loggedAt = log.loggedAt || log.startTime;
-                    if (loggedAt && loggedAt >= startTimestamp && loggedAt <= endTimestamp) {
-                      empData.loggedHours += (log.durationMs || 0) / (1000 * 60 * 60);
+                  if (task.timeLogs) {
+                    for (const log of Object.values(task.timeLogs)) {
+                      const loggedAt = log.loggedAt || log.startTime;
+                      if (loggedAt && loggedAt >= startTimestamp && loggedAt <= endTimestamp) {
+                        empData.loggedHours += (log.durationMs || 0) / (1000 * 60 * 60);
+                      }
                     }
                   }
                 }
@@ -285,64 +281,78 @@ const WorkloadHeatmap = () => {
             }
           }
         }
+
+        // Compute color intensity based on max value
+        let maxValue = 0;
+        for (const d of map.values()) {
+          const v = mode === 'taskCount' ? d.taskCount : d.loggedHours;
+          if (v > maxValue) maxValue = v;
+        }
+        const finalData: WorkloadData[] = [];
+        for (const d of map.values()) {
+          const v = mode === 'taskCount' ? d.taskCount : d.loggedHours;
+          const colorIntensity = maxValue === 0 ? 0 : Math.min(100, Math.round((v / maxValue) * 100));
+          finalData.push({ ...d, colorIntensity });
+        }
+        setWorkloadData(finalData);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load workload data');
+        toast({ title: 'Error', description: 'Could not load task data', variant: 'destructive' });
+      } finally {
+        setLoading(false);
       }
     };
 
-    const compute = async () => {
-      await fetchAllTasks();
-      let maxValue = 0;
-      map.forEach(d => {
-        const v = mode === 'taskCount' ? d.taskCount : d.loggedHours;
-        if (v > maxValue) maxValue = v;
-      });
-      map.forEach(d => {
-        const v = mode === 'taskCount' ? d.taskCount : d.loggedHours;
-        d.colorIntensity = maxValue === 0 ? 0 : Math.min(100, Math.round((v / maxValue) * 100));
-      });
-      setLoading(false);
-    };
-
-    compute();
-    return Array.from(map.values());
+    loadWorkload();
   }, [employees, mode, datePreset]);
 
-  // Fetch heatmap data (daily logged hours for selected employee)
+  // Fetch heatmap data for selected employee (daily logged hours)
   useEffect(() => {
-    if (!selectedEmployee) return;
-    const fetchHeatmapData = async () => {
-      const dailyMap = new Map<string, number>();
-      const projectsSnap = await get(ref(database, 'projects'));
-      const projects = projectsSnap.val() as ProjectsData | null;
-      if (projects) {
-        for (const proj of Object.values(projects)) {
-          const tasks = proj.tasks;
-          if (!tasks) continue;
-          for (const task of Object.values(tasks)) {
-            if (task.assignedTo !== selectedEmployee) continue;
-            if (task.timeLogs) {
-              for (const log of Object.values(task.timeLogs)) {
-                const start = log.startTime;
-                const duration = log.durationMs;
-                if (start && duration) {
-                  const date = new Date(start).toISOString().slice(0, 10);
-                  const hours = duration / (1000 * 60 * 60);
-                  dailyMap.set(date, (dailyMap.get(date) || 0) + hours);
+    if (!selectedEmployee) {
+      setHeatmapData([]);
+      return;
+    }
+
+    const fetchHeatmap = async () => {
+      try {
+        const dailyMap = new Map<string, number>();
+        const projectsSnap = await get(ref(database, 'projects'));
+        const projects = projectsSnap.val() as ProjectsData | null;
+        if (projects) {
+          for (const proj of Object.values(projects)) {
+            const tasks = proj.tasks;
+            if (!tasks) continue;
+            for (const task of Object.values(tasks)) {
+              if (task.assignedTo !== selectedEmployee) continue;
+              if (task.timeLogs) {
+                for (const log of Object.values(task.timeLogs)) {
+                  const start = log.startTime;
+                  const duration = log.durationMs;
+                  if (start && duration) {
+                    const date = new Date(start).toISOString().slice(0, 10);
+                    const hours = duration / (1000 * 60 * 60);
+                    dailyMap.set(date, (dailyMap.get(date) || 0) + hours);
+                  }
                 }
               }
             }
           }
         }
+        // Also include standalone tasks if needed – omitted for brevity (same pattern)
+        const data = Array.from(dailyMap.entries()).map(([date, count]) => ({ date, count }));
+        setHeatmapData(data);
+      } catch (err) {
+        console.error(err);
+        toast({ title: 'Error', description: 'Failed to load heatmap data', variant: 'destructive' });
       }
-      // Also include standalone tasks (dailyTasks) if needed – optional
-      const data = Array.from(dailyMap.entries()).map(([date, count]) => ({ date, count }));
-      setHeatmapData(data);
     };
-    fetchHeatmapData();
+    fetchHeatmap();
   }, [selectedEmployee]);
 
-  const toggleDepartment = (dept: string) => {
+  const toggleDepartment = useCallback((dept: string) => {
     setExpandedDepts(prev => ({ ...prev, [dept]: !prev[dept] }));
-  };
+  }, []);
 
   const getLoadLabel = (intensity: number) => {
     if (intensity === 0) return { label: 'Idle', icon: CheckCircle, variant: 'text-gray-500' };
@@ -353,41 +363,43 @@ const WorkloadHeatmap = () => {
   };
 
   const isManager = user?.role === 'team_manager';
-  const filteredByDept = (items: WorkloadData[]) => {
+  const departmentFilter = (items: WorkloadData[]) => {
     if (isManager) return items.filter(item => item.department === user?.department);
     if (!searchTerm) return items;
-    return items.filter(item => item.employeeName.toLowerCase().includes(searchTerm.toLowerCase()) || item.department.toLowerCase().includes(searchTerm.toLowerCase()));
+    const term = searchTerm.toLowerCase();
+    return items.filter(item =>
+      item.employeeName.toLowerCase().includes(term) ||
+      item.department.toLowerCase().includes(term)
+    );
   };
 
-  const groupedByDept = workloadData.reduce((acc, curr) => {
-    const filtered = filteredByDept([curr]);
-    if (filtered.length === 0) return acc;
-    if (!acc[curr.department]) acc[curr.department] = [];
-    acc[curr.department].push(curr);
-    return acc;
-  }, {} as Record<string, WorkloadData[]>);
+  const groupedByDept = useMemo(() => {
+    const filtered = departmentFilter(workloadData);
+    return filtered.reduce((acc, curr) => {
+      if (!acc[curr.department]) acc[curr.department] = [];
+      acc[curr.department].push(curr);
+      return acc;
+    }, {} as Record<string, WorkloadData[]>);
+  }, [workloadData, searchTerm, isManager, user]);
 
-  const totalTasks = workloadData.reduce((s, d) => s + d.taskCount, 0);
-  const totalHours = workloadData.reduce((s, d) => s + d.loggedHours, 0);
-  const avgLoad = workloadData.length
-    ? (mode === 'taskCount' ? totalTasks / workloadData.length : totalHours / workloadData.length)
-    : 0;
+  const totalTasks = useMemo(() => workloadData.reduce((s, d) => s + d.taskCount, 0), [workloadData]);
+  const totalHours = useMemo(() => workloadData.reduce((s, d) => s + d.loggedHours, 0), [workloadData]);
+  const avgLoad = useMemo(() => {
+    if (workloadData.length === 0) return 0;
+    const total = mode === 'taskCount' ? totalTasks : totalHours;
+    return total / workloadData.length;
+  }, [workloadData, mode, totalTasks, totalHours]);
 
-  // Employee dropdown options: use all employees (not just those with workload data)
   const employeeOptions = useMemo(() => employees.map(emp => ({ id: emp.id, name: emp.name })), [employees]);
 
-  if (loading) {
+  if (loading && workloadData.length === 0) {
     return (
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div><div className="h-8 w-48 bg-gray-200 rounded animate-pulse" /><div className="h-4 w-64 bg-gray-200 rounded mt-2 animate-pulse" /></div>
           <div className="h-6 w-24 bg-gray-200 rounded-full animate-pulse" />
         </div>
-        <Card>
-          <CardContent className="p-5">
-            <div className="h-32 w-full bg-gray-200 rounded animate-pulse" />
-          </CardContent>
-        </Card>
+        <Card><CardContent className="p-5"><div className="h-32 w-full bg-gray-200 rounded animate-pulse" /></CardContent></Card>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {[...Array(6)].map((_, i) => <SkeletonCard key={i} />)}
         </div>
@@ -395,9 +407,20 @@ const WorkloadHeatmap = () => {
     );
   }
 
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="py-12 text-center text-red-500">
+          <p>{error}</p>
+          <Button onClick={() => window.location.reload()} variant="outline" className="mt-4">Retry</Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <div className="space-y-6">
-      {/* Header with view toggle */}
+      {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800 tracking-tight">Workload Intelligence</h1>
@@ -575,7 +598,7 @@ const WorkloadHeatmap = () => {
             <div className="mb-4">
               <label className="text-sm font-medium mb-1 block">Select Employee</label>
               <Select value={selectedEmployee} onValueChange={setSelectedEmployee}>
-                <SelectTrigger className="w-64">
+                <SelectTrigger className="w-full sm:w-64">
                   <SelectValue placeholder="Choose employee" />
                 </SelectTrigger>
                 <SelectContent>
@@ -586,7 +609,7 @@ const WorkloadHeatmap = () => {
               </Select>
             </div>
             {selectedEmployee ? (
-              <div>
+              <div className="overflow-x-auto">
                 <h3 className="text-md font-semibold mb-2">Daily Logged Hours (last 365 days)</h3>
                 <ReactCalendarHeatmap
                   startDate={new Date(Date.now() - 365 * 24 * 60 * 60 * 1000)}
@@ -599,7 +622,8 @@ const WorkloadHeatmap = () => {
                     return 'color-heavy';
                   }}
                   tooltipDataAttrs={(value) => {
-                    return { 'data-tip': value?.count ? `${value.count.toFixed(1)} hours` : 'No hours logged' };
+                    if (!value) return { 'data-tip': 'No hours logged' };
+                    return { 'data-tip': `${value.count.toFixed(1)} hours` };
                   }}
                 />
                 <div className="flex justify-end gap-2 mt-2 text-xs">

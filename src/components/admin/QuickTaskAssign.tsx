@@ -198,7 +198,7 @@ const QuickTaskAssign: React.FC<QuickTaskAssignProps> = ({ open, onOpenChange, o
             </div>
             <div>
               <Label>Priority</Label>
-              <Select value={formData.priority} onValueChange={(val: any) => setFormData({ ...formData, priority: val })}>
+              <Select value={formData.priority} onValueChange={(val: string) => setFormData({ ...formData, priority: val as 'low' | 'medium' | 'high' })}>
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>

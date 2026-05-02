@@ -1,6 +1,7 @@
 // src/components/employee/projects/TaskComments.tsx
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import ReactQuill from 'react-quill';
+import type { UnprivilegedEditor } from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
 import { Button } from '../../ui/button';
 import { MessageSquare } from 'lucide-react';
@@ -14,15 +15,15 @@ interface Comment {
 }
 
 interface TaskCommentsProps {
-  comments: Comment[]; // now expects an array
+  comments: Comment[];
   employeesList: { id: string; name: string }[];
   onAddComment: (text: string, mentions: string[]) => Promise<void>;
 }
 
 const TaskComments: React.FC<TaskCommentsProps> = ({ comments = [], employeesList, onAddComment }) => {
   const [commentText, setCommentText] = useState('');
+  const quillRef = useRef<ReactQuill>(null);
   const {
-    quillRef,
     mentionDropdownRef,
     showMention,
     mentionPosition,
@@ -43,6 +44,26 @@ const TaskComments: React.FC<TaskCommentsProps> = ({ comments = [], employeesLis
 
   const formatDate = (dateStr: string) => new Date(dateStr).toLocaleString();
 
+  const handleEditorValueChange = (
+    value: string,
+    _delta: unknown,
+    _source: string,
+    editor: UnprivilegedEditor
+  ) => {
+    setCommentText(value);
+    handleEditorChange(editor);
+  };
+
+  const handleMentionSelect = (employeeName: string) => {
+    if (quillRef.current) {
+      const editor = quillRef.current.getEditor();
+      insertMention(editor, employeeName);
+      // Get updated HTML content from the editor's root element
+      const updatedHtml = editor.root.innerHTML;
+      setCommentText(updatedHtml);
+    }
+  };
+
   return (
     <div className="border-t pt-3">
       <h4 className="text-sm font-medium mb-2">Comments ({comments.length})</h4>
@@ -59,10 +80,7 @@ const TaskComments: React.FC<TaskCommentsProps> = ({ comments = [], employeesLis
           <ReactQuill
             ref={quillRef}
             value={commentText}
-            onChange={(val, delta, source, editor) => {
-              setCommentText(val);
-              handleEditorChange(val, delta, source, editor);
-            }}
+            onChange={handleEditorValueChange}
             placeholder="Add a comment... (use @ to mention someone)"
             modules={{
               toolbar: [['bold', 'italic', 'underline'], [{ list: 'ordered' }, { list: 'bullet' }], ['link', 'clean']],
@@ -82,7 +100,7 @@ const TaskComments: React.FC<TaskCommentsProps> = ({ comments = [], employeesLis
                   <div
                     key={emp.id}
                     className="px-4 py-2 hover:bg-gray-100 cursor-pointer text-sm border-b last:border-b-0"
-                    onClick={() => insertMention(emp.name)}
+                    onClick={() => handleMentionSelect(emp.name)}
                   >
                     {emp.name}
                   </div>

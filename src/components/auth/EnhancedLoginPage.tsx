@@ -1,15 +1,15 @@
+// src/components/auth/EnhancedLoginPage.tsx
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import AdminLoginPage from './AdminLoginPage';
 import LoginCard from './LoginCard';
 import { useAuth } from '../../hooks/useAuth';
-import { useToast } from '../../hooks/use-toast';
+import { toast } from '../ui/use-toast';
 
 const EnhancedLoginPage = () => {
   const [activeView, setActiveView] = useState<'main' | 'admin'>('main');
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
-  const { toast } = useToast();
 
   const handleEmployeeLogin = async (email: string, password: string) => {
     setLoading(true);
@@ -39,7 +39,7 @@ const EnhancedLoginPage = () => {
             initial={{ opacity: 0, y: -20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.2 }}
-            className="text-4xl font-bold text-gray-900 mb-2"
+            className="text-3xl sm:text-4xl font-bold text-gray-900 mb-2"
           >
             PTS Portal
           </motion.h1>
@@ -47,7 +47,7 @@ const EnhancedLoginPage = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.4 }}
-            className="text-gray-600"
+            className="text-gray-600 text-sm sm:text-base"
           >
             Pawar Technology Services Management System
           </motion.p>
@@ -58,6 +58,7 @@ const EnhancedLoginPage = () => {
             initial={{ opacity: 0, x: -50 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.3 }}
+            className="px-2"
           >
             <LoginCard
               userType="admin"
@@ -75,6 +76,7 @@ const EnhancedLoginPage = () => {
             initial={{ opacity: 0, x: 50 }}
             animate={{ opacity: 1, x: 0 }}
             transition={{ delay: 0.4 }}
+            className="px-2"
           >
             <LoginCard
               userType="employee"

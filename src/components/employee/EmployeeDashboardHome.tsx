@@ -433,25 +433,25 @@ const EmployeeDashboardHome = () => {
           if (status === 'in_progress' || status === 'active') active++;
           else if (status === 'completed') completed++;
           else if (status === 'on_hold') paused++;
-          projectsList.push({
-            id: projId,
-            name: proj.name || '',
-            description: proj.description || '',
-            department: proj.department || '',
-            assignedTeamLeader: proj.assignedTeamLeader || '',
-            assignedEmployees: proj.assignedEmployees || [],
-            tasks: proj.tasks ? Object.values(proj.tasks) as Task[] : [],
-            startDate: proj.startDate || '',
-            endDate: proj.endDate || '',
-            priority: (proj.priority as 'low' | 'medium' | 'high' | 'urgent') || 'medium',
-            status: (status as 'not_started' | 'in_progress' | 'on_hold' | 'completed' | 'active') || 'not_started',
-            progress: proj.progress || 0,
-            createdAt: proj.createdAt || '',
-            createdBy: proj.createdBy || '',
-            projectType: proj.projectType || 'common',
-            specificDepartment: proj.specificDepartment,
-            clientId: proj.clientId,
-          });
+        projectsList.push({
+  id: projId,
+  name: proj.name || '',
+  description: proj.description || '',
+  department: proj.department || '',
+  assignedTeamLeader: proj.assignedTeamLeader || '',
+  assignedEmployees: proj.assignedEmployees || [],
+ tasks: (proj.tasks as Record<string, Task>) || {},
+  startDate: proj.startDate || '',
+  endDate: proj.endDate || '',
+  priority: (proj.priority as 'low' | 'medium' | 'high' | 'urgent') || 'medium',
+  status: (status as 'not_started' | 'in_progress' | 'on_hold' | 'completed' | 'active') || 'not_started',
+  progress: proj.progress || 0,
+  createdAt: proj.createdAt || '',
+  createdBy: proj.createdBy || '',
+  projectType: proj.projectType || 'common',
+  specificDepartment: proj.specificDepartment,
+  clientId: proj.clientId,
+});
         }
         setStats(prev => ({ ...prev, totalProjects: total, activeProjects: active, completedProjects: completed, pausedProjects: paused }));
         setEmployeeProjects(projectsList);

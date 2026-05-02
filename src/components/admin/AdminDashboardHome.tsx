@@ -1,51 +1,32 @@
-import React, { useState, useEffect, useRef } from 'react';
+// src/pages/admin/dashboard/AdminDashboardHome.tsx
+import React, { useState, useEffect, useMemo, lazy, Suspense, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Users, UserCheck, Calendar, Clock, FolderOpen, Camera, Bell, X, AlertTriangle } from 'lucide-react';
 import DashboardCard from './DashboardCard';
-import AttendancePopup from './popups/AttendancePopup';
-import LeavePopup from './popups/LeavePopup';
-import EmployeesPopup from './popups/EmployeesPopup';
-import ProjectsPopup from './popups/ProjectsPopup';
-import MarketingPostsPopup from './popups/MarketingPostsPopup';
-import { ref, onValue, off, query, orderByChild, DataSnapshot, update ,getDatabase, get,} from 'firebase/database';
+import { ref, onValue, off, update, DataSnapshot } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
-import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
+import { useEmployees } from '../../hooks/useEmployees';
+import { useProjects } from '../../hooks/useProjects';
+import { useAttendanceRecords } from '../../hooks/useAttendanceRecords';
+import { useLeaveRequests } from '../../hooks/useLeaveRequests';
+import { useMarketingPosts } from '../../hooks/useMarketingPosts';  
 import { AttendanceRecord } from '@/types/attendance';
-import { Project, Task, ProjectUpdate } from '@/types/project';
+import { IdleUser, ActivityData } from '@/types/attendance';
+import { Employee } from '@/types/employee';
+import { LeaveRequest, MarketingPost } from '@/types/popup';
+import { Project } from '@/types/project';
 
+// Lazy load popups – only loaded when opened
+const AttendancePopup = lazy(() => import('./popups/AttendancePopup'));
+const LeavePopup = lazy(() => import('./popups/LeavePopup'));
+const EmployeesPopup = lazy(() => import('./popups/EmployeesPopup'));
+const ProjectsPopup = lazy(() => import('./popups/ProjectsPopup'));
+const MarketingPostsPopup = lazy(() => import('./popups/MarketingPostsPopup'));
 
-import {
-  Employee,
-  MarketingPost,
-  LeaveRequest,
-  IdleUser,
-  FirebaseEmployee,
-  ActivityData,
-  IdleNotification,
-} from '@/types/admin';
-
-// Firebase project data interface
-interface FirebaseProjectData {
-  name?: string;
-  description?: string;
-  department?: string;
-  assignedTeamLeader?: string;
-  assignedEmployees?: string[];
-  tasks?: Record<string, unknown>;
-  startDate?: string;
-  endDate?: string;
-  priority?: string;
-  status?: string;
-  progress?: number;
-  createdAt?: string;
-  createdBy?: string;
-  updates?: Record<string, unknown>;
-}
-
-// Work session data
+// Work session interface
 interface WorkSession {
   isPunchedIn?: boolean;
   isOnBreak?: boolean;
@@ -54,981 +35,343 @@ interface WorkSession {
   breakStartTime?: number;
   lastUpdated?: number;
 }
- // Monitor activity for alertSent (without any)
- // ... (everything before the useEffect remains identical)
 
-  // Monitor activity for alertSent - FIXED
-  interface ExtendedActivityData extends ActivityData {
-    alertSent?: boolean;
-    idleDuration?: number;
-  }
-
+// Helper to detect mobile screen
+const useMediaQuery = (query: string) => {
+  const [matches, setMatches] = useState(false);
+  useEffect(() => {
+    const media = window.matchMedia(query);
+    if (media.matches !== matches) setMatches(media.matches);
+    const listener = () => setMatches(media.matches);
+    media.addEventListener('change', listener);
+    return () => media.removeEventListener('change', listener);
+  }, [matches, query]);
+  return matches;
+};
 
 const AdminDashboardHome = () => {
-  const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
   const { user } = useAuth();
-  const isAdmin = user?.role === 'admin';
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const isMobile = useMediaQuery('(max-width: 640px)');
+
+  // Data hooks
+  const { employees, loading: empLoading } = useEmployees(user);
+  const { projects, loading: projLoading } = useProjects(user);
+  const { attendanceRecords } = useAttendanceRecords(user, employees);
+  const { leaveRequests } = useLeaveRequests(user, employees);
+  const { marketingPosts } = useMarketingPosts(user, employees);
+
+  // Local state
   const [idleUsers, setIdleUsers] = useState<IdleUser[]>([]);
-  const [leaveRequests, setLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [marketingPosts, setMarketingPosts] = useState<MarketingPost[]>([]);
-  const [initialLoadComplete, setInitialLoadComplete] = useState(false);
-  const [stats, setStats] = useState({
-    totalEmployees: 0,
-    activeEmployees: 0,
-    pendingLeaves: 0,
-    todayPresent: 0,
-    todayLate: 0,
-    todayHalfDay: 0,
-    todayOnLeave: 0,
-    todayAbsent: 0,
-    totalProjects: 0,
-    activeProjects: 0,
-    completedProjects: 0,
-    pausedProjects: 0,
-    digitalMarketingPosts: 0
-  });
-
-  const [showAttendancePopup, setShowAttendancePopup] = useState(false);
-  const [showLeavePopup, setShowLeavePopup] = useState(false);
-  const [showEmployeesPopup, setShowEmployeesPopup] = useState(false);
-  const [showActiveEmployeesPopup, setShowActiveEmployeesPopup] = useState(false);
-  const [showProjectsPopup, setShowProjectsPopup] = useState(false);
-  const [showMarketingPopup, setShowMarketingPopup] = useState(false);
-
-  // Notification state
-  const [notificationPermission, setNotificationPermission] = useState('default');
-  const [activeNotification, setActiveNotification] = useState<{
-    post: MarketingPost;
-    timer: number;
-  } | null>(null);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
+  const [activeNotification, setActiveNotification] = useState<{ post: MarketingPost; timer: number } | null>(null);
   const [notificationTimeout, setNotificationTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
+  const prevWorkSessionsRef = React.useRef<Map<string, WorkSession>>(new Map());
 
-  // Keep previous work session states to detect changes
-  const prevWorkSessionsRef = useRef<Map<string, WorkSession>>(new Map());
-
- 
-
-  // 2. For each admin, update employees
-
+  // Popup states
+  const [popups, setPopups] = useState({
+    attendance: false,
+    leave: false,
+    employees: false,
+    activeEmployees: false,
+    projects: false,
+    marketing: false,
+  });
+  const togglePopup = (name: keyof typeof popups) => (value: boolean) =>
+    setPopups(prev => ({ ...prev, [name]: value }));
 
   // Request notification permission
   useEffect(() => {
-    if (!('Notification' in window)) {
-      console.log('This browser does not support desktop notification');
-      return;
-    }
-
-    if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-      Notification.requestPermission().then(permission => {
-        setNotificationPermission(permission);
-      });
-    } else {
-      setNotificationPermission(Notification.permission);
+    if ('Notification' in window) {
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().then(setNotificationPermission);
+      } else {
+        setNotificationPermission(Notification.permission);
+      }
     }
   }, []);
 
-  // ========== ATTENDANCE EVENT NOTIFICATIONS ==========
-// ========== ATTENDANCE EVENT NOTIFICATIONS (Fixed) ==========
-useEffect(() => {
-  if (!employees.length) return;
-
-  let isFirstRun = true;  // ✅ prevent notifications on initial load
-
-  const workSessionsRef = ref(database, 'workSessions');
-  const unsubscribe = onValue(workSessionsRef, (snapshot) => {
-    const data = snapshot.val() as Record<string, WorkSession> | null;
-    if (!data) return;
-
-    // On first run, just store the state – no notifications
-    if (isFirstRun) {
+  // ========== Work Sessions (Attendance Notifications) ==========
+  useEffect(() => {
+    if (!employees.length) return;
+    let isFirstRun = true;
+    const workSessionsRef = ref(database, 'workSessions');
+    const unsubscribe = onValue(workSessionsRef, (snapshot) => {
+      const data = snapshot.val() as Record<string, WorkSession> | null;
+      if (!data) return;
+      if (isFirstRun) {
+        prevWorkSessionsRef.current = new Map(Object.entries(data));
+        isFirstRun = false;
+        return;
+      }
+      for (const [empId, current] of Object.entries(data)) {
+        const prev = prevWorkSessionsRef.current.get(empId);
+        const employee = employees.find(e => e.id === empId);
+        if (!employee) continue;
+        if (!prev?.isPunchedIn && current.isPunchedIn) {
+          showNotif('Punched In', `${employee.name} punched in.`, 'green');
+        }
+        if (prev?.isPunchedIn && !current.isPunchedIn) {
+          showNotif('Punched Out', `${employee.name} punched out.`, 'blue');
+        }
+        if (!prev?.isOnBreak && current.isOnBreak) {
+          showNotif('Break Started', `${employee.name} started a break.`, 'yellow');
+        }
+        if (prev?.isOnBreak && !current.isOnBreak) {
+          showNotif('Break Ended', `${employee.name} ended break.`, 'purple');
+        }
+      }
       prevWorkSessionsRef.current = new Map(Object.entries(data));
-      isFirstRun = false;
-      return;
-    }
+    });
+    return () => off(workSessionsRef);
+  }, [employees]);
 
-    // Compare and notify only on actual changes
-    for (const [empId, current] of Object.entries(data)) {
-      const prev = prevWorkSessionsRef.current.get(empId);
-      const employee = employees.find(e => e.id === empId);
-      if (!employee) continue;
-
-      // Punch in
-      if (!prev?.isPunchedIn && current.isPunchedIn) {
-        const message = `${employee.name} punched in.`;
-        showAttendanceNotification('Punched In', message, 'green');
-      }
-      // Punch out
-      if (prev?.isPunchedIn && !current.isPunchedIn) {
-        const message = `${employee.name} punched out.`;
-        showAttendanceNotification('Punched Out', message, 'blue');
-      }
-      // Break start
-      if (!prev?.isOnBreak && current.isOnBreak) {
-        const message = `${employee.name} started a break.`;
-        showAttendanceNotification('Break Started', message, 'yellow');
-      }
-      // Break end
-      if (prev?.isOnBreak && !current.isOnBreak) {
-        const message = `${employee.name} ended break.`;
-        showAttendanceNotification('Break Ended', message, 'purple');
-      }
-    }
-
-    // Update stored state for next comparison
-    prevWorkSessionsRef.current = new Map(Object.entries(data));
-  });
-
-  return () => off(workSessionsRef);
-}, [employees]);
-
-  // Helper to show toast + browser notification
-  const showAttendanceNotification = (title: string, body: string, color: 'green' | 'blue' | 'yellow' | 'purple') => {
-    // Toast
+  const showNotif = (title: string, body: string, _color: string) => {
     toast(body, { icon: '🔔', duration: 4000 });
-    // Browser notification
     if (notificationPermission === 'granted') {
       new Notification(title, { body, icon: '/logo.png' });
     }
   };
 
-  // Check for posts scheduled for today and upcoming posts
-  useEffect(() => {
-    if (marketingPosts.length === 0) return;
-
-    const today = new Date();
-    const todayDateString = today.toISOString().split('T')[0];
-
-    const todayPosts = marketingPosts.filter(post => {
-      return (
-        post.scheduledDate === todayDateString && 
-        post.status === 'scheduled'
-      );
-    });
-
-    if (todayPosts.length > 0 && notificationPermission === 'granted') {
-      showScheduledPostsNotification(todayPosts);
-    }
-
-    const checkInterval = setInterval(() => {
-      const now = new Date();
-      const currentHour = now.getHours();
-      const currentMinute = now.getMinutes();
-
-      todayPosts.forEach(post => {
-        const [hours, minutes] = post.scheduledTime.split(':').map(Number);
-        
-        if (currentHour === hours && currentMinute === minutes) {
-          showCenteredPostNotification(post);
-        }
-        
-        if (
-          currentHour === hours && 
-          currentMinute === minutes - 15 && 
-          notificationPermission === 'granted'
-        ) {
-          showUpcomingPostNotification(post);
-        }
-      });
-    }, 60000);
-
-    return () => clearInterval(checkInterval);
-  }, [marketingPosts, notificationPermission]);
-
-  const showScheduledPostsNotification = (posts: MarketingPost[]) => {
-    const notificationOptions: NotificationOptions = {
-      body: `There are ${posts.length} marketing post(s) scheduled for today.`,
-      icon: '/notification-icon.png',
-      tag: 'today-marketing-posts-notification'
-    };
-
-    new Notification('Scheduled Marketing Posts', notificationOptions);
-  };
-
-  const showUpcomingPostNotification = (post: MarketingPost) => {
-    const notificationOptions: NotificationOptions = {
-      body: `Marketing post scheduled for ${post.scheduledTime}: ${post.content.substring(0, 50)}...`,
-      icon: '/notification-icon.png',
-      tag: 'upcoming-marketing-post-notification'
-    };
-
-    new Notification(`Upcoming ${post.platform} Post`, notificationOptions);
-  };
-
-  const showCenteredPostNotification = (post: MarketingPost) => {
-    if (notificationTimeout) {
-      clearTimeout(notificationTimeout);
-      setNotificationTimeout(null);
-    }
-
-    setActiveNotification({
-      post,
-      timer: 10
-    });
-
-    const interval = setInterval(() => {
-      setActiveNotification(prev => {
-        if (prev && prev.timer > 1) {
-          return { ...prev, timer: prev.timer - 1 };
-        } else {
-          clearInterval(interval);
-          return null;
-        }
-      });
-    }, 1000);
-
-    const timeout = setTimeout(() => {
-      setActiveNotification(null);
-    }, 10000);
-
-    setNotificationTimeout(timeout);
-  };
-
-  const closeNotification = () => {
-    if (notificationTimeout) {
-      clearTimeout(notificationTimeout);
-      setNotificationTimeout(null);
-    }
-    setActiveNotification(null);
-  };
-
-  const getPlatformColor = (platform: string): string => {
-    const colors: Record<string, string> = {
-      'Facebook': 'bg-blue-100 text-blue-700',
-      'Instagram': 'bg-pink-100 text-pink-700',
-      'Twitter': 'bg-sky-100 text-sky-700',
-      'LinkedIn': 'bg-indigo-100 text-indigo-700',
-      'YouTube': 'bg-red-100 text-red-700',
-      'TikTok': 'bg-purple-100 text-purple-700'
-    };
-    return colors[platform] || 'bg-gray-100 text-gray-700';
-  };
-
-  const requestNotificationPermission = () => {
-    Notification.requestPermission().then(permission => {
-      setNotificationPermission(permission);
-      if (permission === 'granted') {
-        toast.success('Notification permission granted!');
-      } else {
-        toast.error('You need to allow notifications for this feature');
-      }
-    });
-  };
-
-  // Fetch ALL employees from all admins
-  useEffect(() => {
-    if (!user) return;
-
-    const employeesRef = ref(database, "users");
-    const allEmployees: Employee[] = [];
-
-    const unsubscribeEmployees = onValue(employeesRef, (snapshot: DataSnapshot) => {
-      const employeeMap = new Map<string, Employee>(); // Use Map to keep unique IDs
-
-      if (snapshot.exists()) {
-        snapshot.forEach((adminSnap: DataSnapshot) => {
-          const employeesData = adminSnap.child("employees").val() as Record<string, FirebaseEmployee> | null;
-          if (employeesData && typeof employeesData === 'object') {
-            Object.entries(employeesData).forEach(([key, value]) => {
-              // Only add if not already present
-              if (!employeeMap.has(key)) {
-                employeeMap.set(key, {
-                  id: key,
-                  name: value.name || '',
-                  email: value.email || '',
-                  phone: value.phone || '',
-                  department: value.department || '',
-                  designation: value.designation || '',
-                  createdAt: value.createdAt || '',
-                  employeeId: value.employeeId || `EMP-${key.slice(0, 8)}`,
-                  isActive: value.status === 'active',
-                  status: value.status || 'active',
-                  adminId: adminSnap.key || ''
-                });
-              }
-            });
-          }
-        });
-      }
-
-      setEmployees(Array.from(employeeMap.values()));
-      setInitialLoadComplete(true);
-    }, (error: Error) => {
-      console.error('Error fetching employees:', error);
-      setInitialLoadComplete(true);
-    });
-
-    return () => {
-      off(employeesRef);
-    };
-  }, [user]);
-
-  // Monitor idle users via activity node (without any)
+  // ========== Idle Users Monitoring ==========
   useEffect(() => {
     const activityRef = ref(database, 'activity');
-
     const unsubscribe = onValue(activityRef, (snapshot: DataSnapshot) => {
       const data = snapshot.val() as Record<string, ActivityData> | null;
-      const idleEmployees: IdleUser[] = [];
-
-      if (data && typeof data === 'object') {
+      const newIdleUsers: IdleUser[] = [];
+      if (data) {
         Object.entries(data).forEach(([userId, userData]) => {
           if (userData.status === 'idle' || userData.isIdle === true) {
-            idleEmployees.push({
+            newIdleUsers.push({
               id: userId,
               idleStartTime: userData.idleStartTime || userData.timestamp || Date.now(),
               idleDuration: userData.idleDuration || 0,
               lastActive: userData.lastActive || Date.now(),
-              status: userData.status || 'idle'
+              status: userData.status || 'idle',
             });
           }
         });
       }
+      newIdleUsers.sort((a, b) => b.idleDuration - a.idleDuration);
+      setIdleUsers(newIdleUsers);
 
-      // Sort by idle duration (longest first)
-      idleEmployees.sort((a, b) => b.idleDuration - a.idleDuration);
-      setIdleUsers(idleEmployees);
-
-      // ✅ Browser notification for newly idle employees
-      const newIdleIds = idleEmployees.map(u => u.id);
-      const justBecameIdle = newIdleIds.filter(id => !notifiedIdleIds.has(id));
-
-      if (justBecameIdle.length > 0 && notificationPermission === 'granted') {
+      // Notify only once per idle employee
+      const newIds = newIdleUsers.map(u => u.id);
+      const justBecameIdle = newIds.filter(id => !notifiedIdleIds.has(id));
+      if (justBecameIdle.length && notificationPermission === 'granted') {
         justBecameIdle.forEach(userId => {
-          const employee = employees.find(e => e.id === userId);
-          if (employee) {
-            new Notification(`Idle Employee: ${employee.name}`, {
-              body: `${employee.name} (${employee.email}) has been idle for more than 10 seconds.`,
+          const emp = employees.find(e => e.id === userId);
+          if (emp) {
+            new Notification(`Idle: ${emp.name}`, {
+              body: `${emp.name} (${emp.email}) has been idle >10s`,
               icon: '/notification-icon.png',
               tag: `idle-${userId}`,
             });
           }
         });
-        setNotifiedIdleIds(new Set(newIdleIds));
+        setNotifiedIdleIds(new Set(newIds));
       }
-
-      // If employee is no longer idle, remove from notified set
-      const noLongerIdle = Array.from(notifiedIdleIds).filter(id => !newIdleIds.includes(id));
-      if (noLongerIdle.length > 0) {
-        const updatedSet = new Set(notifiedIdleIds);
-        noLongerIdle.forEach(id => updatedSet.delete(id));
-        setNotifiedIdleIds(updatedSet);
+      const noLongerIdle = Array.from(notifiedIdleIds).filter(id => !newIds.includes(id));
+      if (noLongerIdle.length) {
+        const updated = new Set(notifiedIdleIds);
+        noLongerIdle.forEach(id => updated.delete(id));
+        setNotifiedIdleIds(updated);
       }
     });
-
     return () => unsubscribe();
   }, [employees, notificationPermission, notifiedIdleIds]);
 
-  // Fetch ALL projects from global projects node
+  // ========== Marketing Scheduled Notifications ==========
   useEffect(() => {
-    if (!user) return;
-
-    const projectsRef = ref(database, 'projects');
-    const unsubscribe = onValue(projectsRef, (snapshot) => {
-      try {
-        const data = snapshot.val() as Record<string, FirebaseProjectData> | null;
-        if (!data) {
-          setProjects([]);
-          return;
-        }
-        const allProjects: Project[] = Object.entries(data).map(([projId, projData]) => {
-          // Convert tasks from object (keyed by taskId) to array
-          const tasksObj = projData.tasks as Record<string, Task> | undefined;
-          const tasksArray = tasksObj ? Object.values(tasksObj) : [];
-          
-          // Convert updates from object to array
-          const updatesObj = projData.updates as Record<string, ProjectUpdate> | undefined;
-          const updatesArray = updatesObj ? Object.values(updatesObj) : [];
-
-          // Cast priority and status to the correct union types
-          const priority = (projData.priority as Project['priority']) || 'medium';
-          const status = (projData.status as Project['status']) || 'not_started';
-
-          return {
-            id: projId,
-            name: projData.name || '',
-            description: projData.description || '',
-            department: projData.department || '',
-            assignedTeamLeader: projData.assignedTeamLeader || '',
-            assignedEmployees: projData.assignedEmployees || [],
-            tasks: tasksArray,
-            startDate: projData.startDate || '',
-            endDate: projData.endDate || '',
-            priority: priority,
-            status: status,
-            progress: projData.progress || 0,
-            createdAt: projData.createdAt || '',
-            createdBy: projData.createdBy || '',
-            updates: updatesArray,
-          };
-        });
-        setProjects(allProjects);
-      } catch (err) {
-        console.error('Error loading global projects:', err);
-      }
-    });
-    return () => off(projectsRef);
-  }, [user]);
-
-  // Auto-complete projects when all tasks are done
-  useEffect(() => {
-    if (!user || projects.length === 0) return;
-
-    projects.forEach(project => {
-      // Compute progress from tasks
-      const tasks = project.tasks || [];
-      const total = tasks.length;
-      if (total === 0) return; // no tasks → skip
-
-      const completed = tasks.filter(t => t.status === 'completed').length;
-      const progress = (completed / total) * 100;
-
-      // If 100% but status is not 'completed', update Firebase
-      if (progress === 100 && project.status !== 'completed') {
-        const projectRef = ref(database, `projects/${project.id}`);
-        update(projectRef, { status: 'completed' })
-          .then(() => console.log(`✅ Project "${project.name}" auto-completed`))
-          .catch(err => console.error('Auto-complete failed:', err));
-      }
-    });
-  }, [projects, user]);
-
-  // Fetch ALL leave requests from all employees across all admins
-  useEffect(() => {
-    if (!user || employees.length === 0) return;
-
-    const allLeaveRequests: LeaveRequest[] = [];
-    const leaveUnsubscribes: (() => void)[] = [];
-
-    const employeesByAdmin = employees.reduce((acc, emp) => {
-      if (emp.adminId) {
-        if (!acc[emp.adminId]) acc[emp.adminId] = [];
-        acc[emp.adminId].push(emp);
-      }
-      return acc;
-    }, {} as Record<string, Employee[]>);
-
-    Object.entries(employeesByAdmin).forEach(([adminId, adminEmployees]) => {
-      adminEmployees.forEach(employee => {
-        const leavesRef = ref(database, `users/${adminId}/employees/${employee.id}/leaves`);
-        const leavesQuery = query(leavesRef, orderByChild('appliedAt'));
-        
-        const unsubscribe = onValue(leavesQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val() as Record<string, Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'employeeEmail' | 'department' | 'adminId'>> | null;
-          
-          const index = allLeaveRequests.findIndex(r => r.employeeId === employee.id);
-          if (index !== -1) {
-            allLeaveRequests.splice(index, 1);
-          }
-
-          if (data && typeof data === 'object') {
-            const requests: LeaveRequest[] = Object.entries(data).map(([key, value]) => ({
-              id: key,
-              employeeId: employee.id,
-              employeeName: employee.name,
-              employeeEmail: employee.email,
-              department: employee.department || 'No Department',
-              adminId: adminId,
-              leaveType: value.leaveType,
-              startDate: value.startDate,
-              endDate: value.endDate,
-              reason: value.reason,
-              status: value.status,
-              appliedAt: value.appliedAt
-            }));
-            
-            allLeaveRequests.push(...requests);
-          }
-          
-          setLeaveRequests([...allLeaveRequests].sort((a, b) => 
-            new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
-          ));
-        });
-
-        leaveUnsubscribes.push(unsubscribe);
-      });
-    });
-
-    return () => {
-      leaveUnsubscribes.forEach(unsubscribe => unsubscribe());
-    };
-  }, [user, employees]);
-
-  // Fetch ALL attendance records from all employees across all admins
-  useEffect(() => {
-    if (!user || employees.length === 0) return;
-
-    const allAttendanceRecords: AttendanceRecord[] = [];
-    const attendanceUnsubscribes: (() => void)[] = [];
-
-    const employeesByAdmin = employees.reduce((acc, emp) => {
-      if (emp.adminId) {
-        if (!acc[emp.adminId]) acc[emp.adminId] = [];
-        acc[emp.adminId].push(emp);
-      }
-      return acc;
-    }, {} as Record<string, Employee[]>);
-
-    Object.entries(employeesByAdmin).forEach(([adminId, adminEmployees]) => {
-      adminEmployees.forEach(employee => {
-        const attendanceRef = ref(database, `users/${adminId}/employees/${employee.id}/punching`);
-        const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
-        
-        const unsubscribe = onValue(attendanceQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val() as Record<string, Partial<AttendanceRecord>> | null;
-          
-          const index = allAttendanceRecords.findIndex(r => r.employeeId === employee.id);
-          if (index !== -1) {
-            allAttendanceRecords.splice(index, 1);
-          }
-
-          if (data && typeof data === 'object') {
-            const records: AttendanceRecord[] = Object.entries(data).map(([key, value]) => {
-              let hoursWorked = 0;
-              if (value.punchIn && value.punchOut) {
-                const punchInTime = new Date(`1970-01-01T${value.punchIn}`);
-                const punchOutTime = new Date(`1970-01-01T${value.punchOut}`);
-                hoursWorked = (punchOutTime.getTime() - punchInTime.getTime()) / (1000 * 60 * 60);
-              }
-
-              return {
-                id: key,
-                employeeId: employee.id,
-                employeeName: employee.name,
-                department: employee.department,
-                adminId: adminId,
-                date: value.date || '',
-                punchIn: value.punchIn || '',
-                punchOut: value.punchOut || null,
-                status: value.status || 'absent',
-                workMode: value.workMode || 'office',
-                timestamp: value.timestamp || Date.now(),
-                hoursWorked,
-                breaks: value.breaks || {}
-              };
-            });
-            
-            allAttendanceRecords.push(...records);
-          }
-          
-          setAttendanceRecords([...allAttendanceRecords].sort((a, b) => b.timestamp - a.timestamp));
-        });
-
-        attendanceUnsubscribes.push(unsubscribe);
-      });
-    });
-
-    return () => {
-      attendanceUnsubscribes.forEach(unsubscribe => unsubscribe());
-    };
-  }, [user, employees]);
-
-  // Fetch ALL marketing posts from digital marketing employees across all admins
-  useEffect(() => {
-    if (!user || employees.length === 0) return;
-
-    const digitalMarketingEmployees = employees.filter(emp => emp.department === 'Digital Marketing');
-    const allMarketingPosts: MarketingPost[] = [];
-    const marketingUnsubscribes: (() => void)[] = [];
-
-    const dmEmployeesByAdmin = digitalMarketingEmployees.reduce((acc, emp) => {
-      if (emp.adminId) {
-        if (!acc[emp.adminId]) acc[emp.adminId] = [];
-        acc[emp.adminId].push(emp);
-      }
-      return acc;
-    }, {} as Record<string, Employee[]>);
-
-    Object.entries(dmEmployeesByAdmin).forEach(([adminId, adminEmployees]) => {
-      adminEmployees.forEach(employee => {
-        const postsRef = ref(database, `users/${adminId}/employees/${employee.id}/socialmedia`);
-        const postsQuery = query(postsRef, orderByChild('createdAt'));
-        
-        const unsubscribe = onValue(postsQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val() as Record<string, Omit<MarketingPost, 'id' | 'adminId'>> | null;
-          
-          const index = allMarketingPosts.findIndex(p => p.createdBy === employee.id);
-          if (index !== -1) {
-            allMarketingPosts.splice(index, 1);
-          }
-
-          if (data && typeof data === 'object') {
-            const posts: MarketingPost[] = Object.entries(data).map(([key, value]) => ({
-              id: key,
-              adminId: adminId,
-              platform: value.platform,
-              content: value.content,
-              scheduledDate: value.scheduledDate,
-              scheduledTime: value.scheduledTime,
-              postUrl: value.postUrl,
-              imageUrl: value.imageUrl,
-              status: value.status,
-              createdBy: value.createdBy,
-              createdByName: value.createdByName,
-              department: value.department,
-              createdAt: value.createdAt,
-              updatedAt: value.updatedAt
-            }));
-            
-            allMarketingPosts.push(...posts);
-          }
-          
-          setMarketingPosts([...allMarketingPosts].sort((a, b) => 
-            new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
-          ));
-        });
-
-        marketingUnsubscribes.push(unsubscribe);
-      });
-    });
-
-    return () => {
-      marketingUnsubscribes.forEach(unsubscribe => unsubscribe());
-    };
-  }, [user, employees]);
-
-  // Calculate stats
-  useEffect(() => {
-    if (employees.length > 0 || projects.length > 0 || marketingPosts.length > 0) {
-      const activeCount = employees.filter(emp => emp.isActive).length;
-      const today = new Date().toISOString().split('T')[0];
-      
-      const todayAttendance = attendanceRecords.filter(record => {
-        const recordDate = new Date(record.date).toISOString().split('T')[0];
-        return recordDate === today;
-      });
-
-      const todayPresent = todayAttendance.filter(a => a.status === 'present').length;
-      const todayLate = todayAttendance.filter(a => a.status === 'late').length;
-      const todayHalfDay = todayAttendance.filter(a => a.status === 'half-day' || 
-        (a.hoursWorked && a.hoursWorked < 4)).length;
-      const todayOnLeave = todayAttendance.filter(a => a.status === 'on-leave').length;
-      const todayAbsent = activeCount - (todayPresent + todayLate + todayHalfDay + todayOnLeave);
-
-      const pendingLeaves = leaveRequests.filter(request => 
-        request.status === 'pending'
-      ).length;
-
-      const activeProjects = projects.filter(project => 
-        project.status === 'in_progress' || project.status === 'active'
-      ).length;
-      const completedProjects = projects.filter(project => 
-        project.status === 'completed'
-      ).length;
-
-      const pausedProjects = projects.filter(project => 
-        project.status === 'on_hold'
-      ).length;
-
-      setStats({
-        totalEmployees: employees.filter(e => e.isActive).length,
-        activeEmployees: activeCount,
-        pendingLeaves,
-        todayPresent,
-        todayLate,
-        todayHalfDay,
-        todayOnLeave,
-        todayAbsent,
-        totalProjects: projects.length,
-        activeProjects,
-        completedProjects,
-        pausedProjects,
-        digitalMarketingPosts: marketingPosts.length
+    if (!marketingPosts.length) return;
+    const today = new Date().toISOString().split('T')[0];
+    const todayPosts = marketingPosts.filter(p => p.scheduledDate === today && p.status === 'scheduled');
+    if (todayPosts.length && notificationPermission === 'granted') {
+      new Notification('Scheduled Marketing Posts', {
+        body: `${todayPosts.length} post(s) scheduled today.`,
+        icon: '/notification-icon.png',
       });
     }
-  }, [employees, leaveRequests, attendanceRecords, projects, marketingPosts]);
-
- 
-  useEffect(() => {
-    const activityRef = ref(database, 'activity');
-    const unsubscribe = onValue(activityRef, (snapshot) => {
-      const data = snapshot.val() as Record<string, ExtendedActivityData> | null;
-      if (!data) return;
-      Object.entries(data).forEach(([userId, userData]) => {
-        if (userData.isIdle === true && !userData.alertSent) {
-          const employee = employees.find(e => e.id === userId);
-          if (employee) {
-            if (Notification.permission === 'granted') {
-              new Notification(`⚠️ Idle Employee: ${employee.name}`, {
-                body: `${employee.name} (${employee.department}) has been idle for ${userData.idleDuration || 20} seconds.`,
-                icon: '/logo.png',
-                tag: `idle-${userId}`,
-              });
-            }
-            toast.error(`${employee.name} is idle!`, { duration: 5000 });
-            update(ref(database, `activity/${userId}`), { alertSent: true });
-          }
-        } else if (userData.isIdle === false) {
-          update(ref(database, `activity/${userId}`), { alertSent: false });
+    const interval = setInterval(() => {
+      const now = new Date();
+      const currentHour = now.getHours();
+      const currentMinute = now.getMinutes();
+      todayPosts.forEach(post => {
+        const [hours, minutes] = post.scheduledTime.split(':').map(Number);
+        if (currentHour === hours && currentMinute === minutes) {
+          setActiveNotification({ post, timer: 10 });
         }
       });
-    });
-    return () => off(activityRef);
-  }, [employees]);
+    }, 60000);
+    return () => clearInterval(interval);
+  }, [marketingPosts, notificationPermission]);
 
-// ... (rest unchanged)
+  // Auto-close marketing notification
+  useEffect(() => {
+    if (!activeNotification) return;
+    const interval = setInterval(() => {
+      setActiveNotification(prev => {
+        if (prev && prev.timer > 1) return { ...prev, timer: prev.timer - 1 };
+        clearInterval(interval);
+        return null;
+      });
+    }, 1000);
+    const timeout = setTimeout(() => setActiveNotification(null), 10000);
+    setNotificationTimeout(timeout);
+    return () => {
+      clearInterval(interval);
+      if (notificationTimeout) clearTimeout(notificationTimeout);
+    };
+  }, [activeNotification]);
 
-  const formatIdleTime = (startTime: number): string => {
-    const idleSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const minutes = Math.floor(idleSeconds / 60);
-    const seconds = idleSeconds % 60;
-    
-    if (minutes >= 60) {
-      const hours = Math.floor(minutes / 60);
-      const remainingMinutes = minutes % 60;
-      return `${hours}h ${remainingMinutes}m`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds}s`;
-    } else {
-      return `${seconds}s`;
-    }
+  // ========== Memoized Stats ==========
+  const stats = useMemo(() => {
+    const activeCount = employees.filter(e => e.isActive).length;
+    const today = new Date().toISOString().split('T')[0];
+    const todayAttendance = attendanceRecords.filter(r => new Date(r.date).toISOString().split('T')[0] === today);
+    const todayPresent = todayAttendance.filter(a => a.status === 'present').length;
+    const todayLate = todayAttendance.filter(a => a.status === 'late').length;
+    const todayHalfDay = todayAttendance.filter(a => a.status === 'half-day' || (a.hoursWorked && a.hoursWorked < 4)).length;
+    const todayOnLeave = todayAttendance.filter(a => a.status === 'on-leave').length;
+    const todayAbsent = activeCount - (todayPresent + todayLate + todayHalfDay + todayOnLeave);
+    const pendingLeaves = leaveRequests.filter(r => r.status === 'pending').length;
+    const activeProjects = projects.filter(p => p.status === 'in_progress' || p.status === 'active').length;
+    const completedProjects = projects.filter(p => p.status === 'completed').length;
+    const pausedProjects = projects.filter(p => p.status === 'on_hold').length;
+    return {
+      totalEmployees: activeCount,
+      activeEmployees: activeCount,
+      pendingLeaves,
+      todayPresent,
+      todayLate,
+      todayHalfDay,
+      todayOnLeave,
+      todayAbsent,
+      totalProjects: projects.length,
+      activeProjects,
+      completedProjects,
+      pausedProjects,
+      digitalMarketingPosts: marketingPosts.length,
+    };
+  }, [employees, attendanceRecords, leaveRequests, projects, marketingPosts]);
+
+  // ========== Format idle time ==========
+  const formatIdleTime = (startTime: number) => {
+    const sec = Math.floor((Date.now() - startTime) / 1000);
+    const mins = Math.floor(sec / 60);
+    if (mins >= 60) return `${Math.floor(mins / 60)}h ${mins % 60}m`;
+    if (mins > 0) return `${mins}m ${sec % 60}s`;
+    return `${sec}s`;
   };
 
-  const dashboardCards = [
-    {
-      title: 'Total Employees',
-      value: stats.totalEmployees,
-      subtitle: 'All registered employees',
-      icon: Users,
-      color: 'from-blue-50 to-blue-100 text-blue-700',
-      onClick: () => setShowEmployeesPopup(true)
-    },
-    {
-      title: 'Active Employees',
-      value: stats.activeEmployees,
-      subtitle: 'Currently active workforce',
-      icon: UserCheck,
-      color: 'from-green-50 to-green-100 text-green-700',
-      onClick: () => setShowActiveEmployeesPopup(true)
-    },
-    {
-      title: 'Pending Leaves',
-      value: stats.pendingLeaves,
-      subtitle: 'Awaiting approval',
-      icon: Calendar,
-      color: 'from-orange-50 to-orange-100 text-orange-700',
-      onClick: () => setShowLeavePopup(true)
-    },
-    {
-      title: 'Today\'s Attendance',
-      value: `${stats.todayPresent + stats.todayLate + stats.todayHalfDay}/${stats.activeEmployees}`,
-      subtitle: `Present: ${stats.todayPresent} | Late: ${stats.todayLate} | Half-day: ${stats.todayHalfDay} | On Leave: ${stats.todayOnLeave} | Absent: ${stats.todayAbsent}`,
-      icon: Clock,
-      color: 'from-purple-50 to-purple-100 text-purple-700',
-      onClick: () => setShowAttendancePopup(true)
-    },
-    {
-      title: 'Total Projects',
-      value: stats.totalProjects,
-      subtitle: `Active: ${stats.activeProjects} | Completed: ${stats.completedProjects} | Paused: ${stats.pausedProjects}`,
-      icon: FolderOpen,
-      color: 'from-indigo-50 to-indigo-100 text-indigo-700',
-      onClick: () => setShowProjectsPopup(true)
-    },
-    {
-      title: 'Marketing Posts',
-      value: stats.digitalMarketingPosts,
-      subtitle: 'Scheduled posts',
-      icon: Camera,
-      color: 'from-pink-50 to-pink-100 text-pink-700',
-      onClick: () => setShowMarketingPopup(true)
-    }
+  // Dashboard cards configuration
+  const cards = [
+    { title: 'Total Employees', value: stats.totalEmployees, subtitle: 'All registered employees', icon: Users, color: 'blue', onClick: () => togglePopup('employees')(true) },
+    { title: 'Active Employees', value: stats.activeEmployees, subtitle: 'Currently active', icon: UserCheck, color: 'green', onClick: () => togglePopup('activeEmployees')(true) },
+    { title: 'Pending Leaves', value: stats.pendingLeaves, subtitle: 'Awaiting approval', icon: Calendar, color: 'orange', onClick: () => togglePopup('leave')(true) },
+    { title: "Today's Attendance", value: `${stats.todayPresent + stats.todayLate + stats.todayHalfDay}/${stats.activeEmployees}`, subtitle: `P:${stats.todayPresent} L:${stats.todayLate} H:${stats.todayHalfDay} Leave:${stats.todayOnLeave} A:${stats.todayAbsent}`, icon: Clock, color: 'purple', onClick: () => togglePopup('attendance')(true) },
+    { title: 'Total Projects', value: stats.totalProjects, subtitle: `Active:${stats.activeProjects} Comp:${stats.completedProjects} Paused:${stats.pausedProjects}`, icon: FolderOpen, color: 'indigo', onClick: () => togglePopup('projects')(true) },
+    { title: 'Marketing Posts', value: stats.digitalMarketingPosts, subtitle: 'Scheduled posts', icon: Camera, color: 'pink', onClick: () => togglePopup('marketing')(true) },
   ];
 
+  if (empLoading || projLoading) return <div className="p-4 text-center">Loading dashboard...</div>;
+
   return (
-    <div className="space-y-6 relative">
-      {/* Idle Employees Alert Section - Enhanced */}
+    <div className="space-y-4 sm:space-y-6 px-3 sm:px-0 relative pb-20 sm:pb-0">
+      {/* Idle Employees Alert - Collapsible on mobile? We'll keep as is but with scroll */}
       {idleUsers.length > 0 && (
-        <motion.div
-          initial={{ opacity: 0, y: -20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-yellow-50 border border-yellow-400 rounded-lg p-4"
-        >
-          <div className="flex items-center gap-2 mb-3">
+        <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="bg-yellow-50 border border-yellow-400 rounded-lg p-3 sm:p-4">
+          <div className="flex items-center gap-2 mb-2 sm:mb-3">
             <AlertTriangle className="h-5 w-5 text-yellow-700" />
-            <h3 className="font-semibold text-yellow-800">Idle Employees Alert</h3>
-            <Badge className="bg-yellow-200 text-yellow-800">{idleUsers.length} Employee(s)</Badge>
+            <h3 className="font-semibold text-yellow-800 text-sm sm:text-base">Idle Employees Alert</h3>
+            <Badge className="bg-yellow-200 text-yellow-800">{idleUsers.length}</Badge>
           </div>
-          
-          <div className="space-y-2 max-h-64 overflow-y-auto">
-            {idleUsers.map((idleUser) => {
-              const employee = employees.find(e => e.id === idleUser.id);
-              const idleTimeFormatted = formatIdleTime(idleUser.idleStartTime);
-              
+          <div className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto">
+            {idleUsers.map(user => {
+              const emp = employees.find(e => e.id === user.id);
               return (
-                <div key={idleUser.id} className="flex items-center justify-between p-3 bg-white rounded-lg shadow-sm border border-yellow-200">
+                <div key={user.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-2 sm:p-3 bg-white rounded-lg shadow-sm border border-yellow-200 gap-2">
                   <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-full bg-yellow-100 flex items-center justify-center">
-                      <Users className="h-5 w-5 text-yellow-600" />
+                    <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-yellow-100 flex items-center justify-center">
+                      <Users className="h-4 w-4 sm:h-5 sm:w-5 text-yellow-600" />
                     </div>
                     <div>
-                      <p className="font-medium text-gray-900">{employee?.name || idleUser.id}</p>
-                      <p className="text-sm text-gray-500">{employee?.email}</p>
-                      {employee?.department && (
-                        <p className="text-xs text-gray-400">{employee.department} • {employee.designation}</p>
-                      )}
+                      <p className="font-medium text-gray-900 text-sm sm:text-base">{emp?.name || user.id}</p>
+                      <p className="text-xs text-gray-500">{emp?.email}</p>
                     </div>
                   </div>
-                  <div className="text-right">
-                    <div className="flex items-center gap-1 text-yellow-700">
-                      <Clock className="h-4 w-4" />
-                      <span className="font-medium">Idle: {idleTimeFormatted}</span>
+                  <div className="text-left sm:text-right">
+                    <div className="flex items-center gap-1 text-yellow-700 text-xs sm:text-sm">
+                      <Clock className="h-3 w-3 sm:h-4 sm:w-4" />
+                      <span className="font-medium">Idle: {formatIdleTime(user.idleStartTime)}</span>
                     </div>
-                    <p className="text-xs text-gray-400 mt-1">
-                      Last active: {new Date(idleUser.lastActive).toLocaleTimeString()}
-                    </p>
+                    <p className="text-xs text-gray-400">Last active: {new Date(user.lastActive).toLocaleTimeString()}</p>
                   </div>
                 </div>
               );
             })}
           </div>
-          
-          <div className="mt-3 pt-2 border-t border-yellow-200">
-            <p className="text-xs text-yellow-600">
-              These employees have been inactive for more than 10 seconds. Consider checking in with them.
-            </p>
-          </div>
         </motion.div>
       )}
-      
-     
-      {/* Centered Notification Popup */}
+
+      {/* Marketing popup notification */}
       {activeNotification && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          exit={{ opacity: 0, scale: 0.9 }}
-          className="fixed inset-0 flex items-center justify-center z-50 bg-black bg-opacity-50"
-        >
-          <motion.div
-            className="bg-white rounded-lg shadow-xl max-w-md w-full p-6 relative"
-            initial={{ y: -50 }}
-            animate={{ y: 0 }}
-          >
-            <button
-              onClick={closeNotification}
-              className="absolute top-4 right-4 text-gray-500 hover:text-gray-700"
-            >
-              <X className="h-5 w-5" />
-            </button>
-            
-            <div className="flex items-start gap-4">
-              <div className={`p-3 rounded-full ${getPlatformColor(activeNotification.post.platform)}`}>
-                <Camera className="h-6 w-6" />
-              </div>
-              
+        <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 p-4">
+          <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-5 relative">
+            <button onClick={() => setActiveNotification(null)} className="absolute top-3 right-3 text-gray-500"><X size={20} /></button>
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-full bg-pink-100 text-pink-700"><Camera size={20} /></div>
               <div className="flex-1">
-                <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-bold text-lg">
-                    {activeNotification.post.platform} Post Due Now
-                  </h3>
-                  <div className="bg-gray-100 px-2 py-1 rounded-full text-sm font-medium">
-                    {activeNotification.timer}s
-                  </div>
+                <div className="flex justify-between items-center mb-2">
+                  <h3 className="font-bold">{activeNotification.post.platform} Post Due</h3>
+                  <span className="bg-gray-100 px-2 py-0.5 rounded-full text-sm">{activeNotification.timer}s</span>
                 </div>
-                
-                <p className="text-gray-700 mb-4">{activeNotification.post.content}</p>
-                
-                <div className="flex items-center gap-2 text-sm text-gray-500">
-                  <Calendar className="h-4 w-4" />
-                  <span>
-                    Scheduled for {activeNotification.post.scheduledTime} by {activeNotification.post.createdByName}
-                  </span>
-                </div>
-                
-                {activeNotification.post.postUrl && (
-                  <div className="mt-3">
-                    <a
-                      href={activeNotification.post.postUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-blue-600 hover:underline text-sm flex items-center gap-1"
-                    >
-                      <Bell className="h-4 w-4" />
-                      View Post Link
-                    </a>
-                  </div>
-                )}
+                <p className="text-gray-700 text-sm mb-3">{activeNotification.post.content}</p>
+                <p className="text-xs text-gray-500">Scheduled for {activeNotification.post.scheduledTime} by {activeNotification.post.createdByName}</p>
               </div>
             </div>
-          </motion.div>
-        </motion.div>
+          </div>
+        </div>
       )}
 
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="mb-8"
-      >
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">Admin Dashboard</h1>
-        <p className="text-gray-600">Interactive overview of your organization's workforce and activities</p>
+      <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="mb-4 sm:mb-8">
+        <h1 className="text-2xl sm:text-3xl font-bold text-gray-900">Admin Dashboard</h1>
+        <p className="text-gray-600 text-sm sm:text-base">Organisation overview</p>
       </motion.div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-        {dashboardCards.map((card, index) => (
-          <DashboardCard
-            key={card.title}
-            title={card.title}
-            value={card.value}
-            subtitle={card.subtitle}
-            icon={card.icon}
-            color={card.color}
-            onClick={card.onClick}
-            delay={index * 0.1}
-          />
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-6">
+        {cards.map((card, idx) => (
+          <DashboardCard key={card.title} {...card} delay={idx * 0.05} />
         ))}
-
-          
       </div>
-      <div className="mt-6">
-      </div>
-     
 
-      <AttendancePopup
-        isOpen={showAttendancePopup}
-        onClose={() => setShowAttendancePopup(false)}
-        attendanceData={attendanceRecords.filter(record => {
-          const today = new Date().toISOString().split('T')[0];
-          const recordDate = new Date(record.date).toISOString().split('T')[0];
-          return recordDate === today;
-        })}
-      />
-
-      <LeavePopup
-        isOpen={showLeavePopup}
-        onClose={() => setShowLeavePopup(false)}
-        leaveRequests={leaveRequests.filter(request => request.status === 'pending')}
-      />
-
-      <EmployeesPopup
-        isOpen={showEmployeesPopup}
-        onClose={() => setShowEmployeesPopup(false)}
-        employees={employees}
-        title="All Employees"
-      />
-
-      <EmployeesPopup
-        isOpen={showActiveEmployeesPopup}
-        onClose={() => setShowActiveEmployeesPopup(false)}
-        employees={employees.filter(emp => emp.isActive)}
-        title="Active Employees"
-      />
-
-      <ProjectsPopup
-        isOpen={showProjectsPopup}
-        onClose={() => setShowProjectsPopup(false)}
-        projects={projects}
-      />
-
-      <MarketingPostsPopup
-        isOpen={showMarketingPopup}
-        onClose={() => setShowMarketingPopup(false)}
-        posts={marketingPosts}
-      />
+      {/* Lazy-loaded popups with mobile bottom-sheet behaviour */}
+      <Suspense fallback={null}>
+        {popups.attendance && (
+          <AttendancePopup
+            isOpen={popups.attendance}
+            onClose={() => togglePopup('attendance')(false)}
+            attendanceData={attendanceRecords.filter(r => new Date(r.date).toISOString().split('T')[0] === new Date().toISOString().split('T')[0])}
+          />
+        )}
+        {popups.leave && (
+          <LeavePopup isOpen={popups.leave} onClose={() => togglePopup('leave')(false)} leaveRequests={leaveRequests.filter(r => r.status === 'pending')} />
+        )}
+        {popups.employees && (
+          <EmployeesPopup isOpen={popups.employees} onClose={() => togglePopup('employees')(false)} employees={employees} title="All Employees" />
+        )}
+        {popups.activeEmployees && (
+          <EmployeesPopup isOpen={popups.activeEmployees} onClose={() => togglePopup('activeEmployees')(false)} employees={employees.filter(e => e.isActive)} title="Active Employees" />
+        )}
+        {popups.projects && (
+          <ProjectsPopup isOpen={popups.projects} onClose={() => togglePopup('projects')(false)} projects={projects} />
+        )}
+        {popups.marketing && (
+          <MarketingPostsPopup isOpen={popups.marketing} onClose={() => togglePopup('marketing')(false)} posts={marketingPosts} />
+        )}
+      </Suspense>
     </div>
   );
 };
 
-export default AdminDashboardHome;
+export default React.memo(AdminDashboardHome);

@@ -3,7 +3,7 @@ import { Clock, AlertTriangle, Play, Coffee, Download, RefreshCw } from 'lucide-
 import { Card, CardContent } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import { ref, onValue, off, get } from 'firebase/database';
+import { ref, onValue, off, get, set } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
@@ -13,7 +13,7 @@ interface EmployeeProfile {
   name: string;
   email?: string;
   department?: string;
-  firebaseUid?: string;   // optional override
+  firebaseUid?: string;
 }
 
 interface ActivityData {
@@ -35,11 +35,6 @@ interface IdleEmployee {
   lastActive: number;
   totalIdleMsToday: number;
   adminId: string;
-}
-
-interface FirebaseUserData {
-  employees?: Record<string, EmployeeProfile>;
-  [key: string]: unknown;
 }
 
 interface BreakData {
@@ -72,27 +67,17 @@ const formatIdleDuration = (ms: number): string => {
   return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
 };
 
-// Read total idle time from root‑level idleLogs using the correct UID
-// Read total idle time from root‑level idleLogs using the correct UID
+// Read total idle time from root‑level idleLogs (must be the user's Firebase UID)
 const fetchTotalIdleToday = async (uid: string): Promise<number> => {
   const today = getTodayStr();
   const totalRef = ref(database, `idleLogs/${uid}/${today}/totalIdleMs`);
   const snapshot = await get(totalRef);
   const value = snapshot.val();
-
-  // The value can be:
-  // - a number (if stored as a simple number)
-  // - an object with a `totalIdleMs` property (if updated via increment)
-  if (typeof value === 'number') {
-    console.log(`📊 fetchTotalIdleToday(${uid}) → value =`, value);
-    return value;
-  }
+  if (typeof value === 'number') return value;
   if (value && typeof value === 'object' && 'totalIdleMs' in value) {
     const ms = value.totalIdleMs;
-    console.log(`📊 fetchTotalIdleToday(${uid}) → totalIdleMs =`, ms);
     return typeof ms === 'number' ? ms : 0;
   }
-  console.log(`📊 fetchTotalIdleToday(${uid}) → value = null/undefined`);
   return 0;
 };
 
@@ -121,9 +106,9 @@ const getTodayPunchStatus = async (
 };
 
 // ========== MAIN COMPONENT ==========
-const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({ 
-  role = 'admin', 
-  department: propDepartment 
+const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
+  role = 'admin',
+  department: propDepartment
 }) => {
   const { user } = useAuth();
   const effectiveRole = role;
@@ -189,7 +174,7 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
 
     const loadData = async () => {
       const usersSnap = await get(ref(database, 'users'));
-      const allUsers = usersSnap.val() as Record<string, FirebaseUserData> | null;
+      const allUsers = usersSnap.val() as Record<string, { employees?: Record<string, EmployeeProfile> }> | null;
       if (!allUsers) {
         setEmployees([]);
         setLoading(false);
@@ -229,11 +214,8 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
         employeePromises.push(
           (async () => {
             const punchStatus = await getTodayPunchStatus(info.adminId, empKey);
-            // Use employee key directly – it's already the Firebase UID
-            const uidForIdle = empKey; // simplified: no firebaseUid fallback
-            if (process.env.NODE_ENV !== 'production') {
-              console.log(`🔍 ${info.name} (${info.email}) → using UID: ${uidForIdle}`);
-            }
+            // Use the employee key as the UID for idle logs (matches useIdleDetection)
+            const uidForIdle = empKey;
             const totalIdleMs = await fetchTotalIdleToday(uidForIdle);
             return {
               id: empKey,
@@ -303,8 +285,8 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
         <div>
           <h1 className="text-2xl font-semibold">Idle Detection</h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {isManager && effectiveDepartment 
-              ? `Real‑time idle monitoring for ${effectiveDepartment} department` 
+            {isManager && effectiveDepartment
+              ? `Real‑time idle monitoring for ${effectiveDepartment} department`
               : 'Real‑time idle monitoring for employees currently punched in'}
           </p>
         </div>
@@ -389,8 +371,8 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
                           status === 'active'
                             ? 'bg-green-50 text-green-700 border-green-200'
                             : status === 'break'
-                            ? 'bg-blue-50 text-blue-700 border-blue-200'
-                            : 'bg-yellow-50 text-yellow-700 border-yellow-200'
+                              ? 'bg-blue-50 text-blue-700 border-blue-200'
+                              : 'bg-yellow-50 text-yellow-700 border-yellow-200'
                         }`}
                       >
                         {status === 'active' && <Play className="w-3 h-3 mr-1" />}
@@ -411,6 +393,20 @@ const IdleDetectionPage: React.FC<IdleDetectionPageProps> = ({
                           High Idle
                         </Badge>
                       )}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="ml-2 text-red-600"
+                        onClick={async () => {
+                          const today = getTodayStr();
+                          const totalRef = ref(database, `idleLogs/${emp.id}/${today}/totalIdleMs`);
+                          await set(totalRef, 0);
+                          toast.success(`Idle time reset for ${emp.name}`);
+                          handleRefresh();
+                        }}
+                      >
+                        Reset
+                      </Button>
                     </td>
                   </tr>
                 );

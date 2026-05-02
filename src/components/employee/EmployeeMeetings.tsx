@@ -32,6 +32,21 @@ interface ParticipantStatus {
   reminded5MinBefore: boolean;
   notifiedAtStart: boolean;
 }
+interface FirebaseMeeting {
+  title?: string;
+  description?: string;
+  date?: string;
+  time?: string;
+  duration?: string;
+  meetingLink?: string;
+  agenda?: string;
+  status?: string;
+  createdAt?: string;
+  type?: string;
+  department?: string;
+  participantCount?: number;
+}
+
 
 const EmployeeMeetings = () => {
   const { user } = useAuth();
@@ -65,29 +80,30 @@ const EmployeeMeetings = () => {
       if (data) {
         // For each meeting, check if current user is a participant
         for (const [id, meeting] of Object.entries(data)) {
-          const meetingData = meeting as any;
-          const participantRef = ref(database, `meetingParticipants/${id}/${user.id}`);
-          const participantSnap = await get(participantRef);
-          if (participantSnap.exists()) {
-            // User is invited
-            meetingsList.push({
-              id,
-              title: meetingData.title,
-              description: meetingData.description,
-              date: meetingData.date,
-              time: meetingData.time,
-              duration: meetingData.duration,
-              meetingLink: meetingData.meetingLink,
-              agenda: meetingData.agenda,
-              status: meetingData.status,
-              createdAt: meetingData.createdAt,
-              type: meetingData.type,
-              department: meetingData.department,
-              participantCount: meetingData.participantCount,
-            });
-            // Store participant status (reminded5MinBefore, notifiedAtStart)
-            statusMap[id] = participantSnap.val();
-          }
+          // Within the useEffect that fetches meetings, replace the meeting creation block:
+
+const meetingData = meeting as FirebaseMeeting;
+const participantRef = ref(database, `meetingParticipants/${id}/${user.id}`);
+const participantSnap = await get(participantRef);
+if (participantSnap.exists()) {
+  meetingsList.push({
+    id,
+    title: meetingData.title || '',
+    description: meetingData.description || '',
+    date: meetingData.date || '',
+    time: meetingData.time || '',
+    duration: meetingData.duration || '30',
+    meetingLink: meetingData.meetingLink || '',
+    agenda: meetingData.agenda,
+    status: (meetingData.status as Meeting['status']) || 'scheduled',
+    createdAt: meetingData.createdAt || new Date().toISOString(),
+    type: (meetingData.type as Meeting['type']) || 'common',
+    department: meetingData.department,
+    participantCount: meetingData.participantCount,
+  });
+  statusMap[id] = participantSnap.val();
+}
+           
         }
       }
 

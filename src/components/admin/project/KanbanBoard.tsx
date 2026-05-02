@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { DragDropContext, Droppable, Draggable, DropResult } from 'react-beautiful-dnd';
 import { Card, CardContent } from '../../ui/card';
 import { Badge } from '../../ui/badge';
@@ -15,51 +15,17 @@ import { format } from 'date-fns';
 import { toast } from 'react-hot-toast';
 import { getTaskSuggestions } from '@/services/aiServices';
 
-// ---------- TYPES ----------
-interface Employee {
-  id: string;
-  name: string;
-  email: string;
-  department: string;
-  designation: string;
-}
+// ✅ Import central types
+import type { Employee } from '@/types/employee';
+import type { Task as CentralTask, Comment, Attachment } from '@/types/project';
 
-interface Comment {
-  id?: string;
-  text: string;
-  createdAt: string;
-  createdBy: string;
-}
-
-interface Attachment {
-  id: string;
-  name: string;
-  url: string;
-  size: number;
-  type: string;
-  uploadedBy: string;
-  uploadedAt: string;
-}
-
-interface Task {
-  id: string;
-  title: string;
-  status: string;
-  priority: string;
-  projectName: string;
+// ✅ Local extended task (adds board‑specific fields)
+interface BoardTask extends CentralTask {
   projectId: string;
-  assignedTo?: string;
-  description?: string;
-  dueDate?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  dependsOn?: string[];
-  achievementSummary?: string;
-  comments?: Record<string, Comment>;
-  attachments?: Record<string, Attachment>;
-  totalTimeSpentMs?: number;   // ✅ added for time tracking
+  projectName: string;
 }
 
+// Firebase raw data shape
 interface FirebaseTaskData {
   id: string;
   title: string;
@@ -89,6 +55,7 @@ interface KanbanBoardProps {
   readOnly?: boolean;
 }
 
+// ---------- CONSTANTS ----------
 const columns = ['todo', 'in_progress', 'review', 'done'];
 const columnNames: Record<string, string> = {
   todo: 'To Do',
@@ -106,21 +73,63 @@ const mapStatusToColumn = (status: string): string => {
   return 'todo';
 };
 
+const mapColumnToStatus = (column: string): BoardTask['status'] => {
+  switch (column) {
+    case 'todo': return 'pending';
+    case 'in_progress': return 'in_progress';
+    case 'review': return 'review';
+    case 'done': return 'completed';
+    default: return 'pending';
+  }
+};
+
+const formatDuration = (ms: number): string => {
+  if (!ms) return '0m';
+  const hours = Math.floor(ms / 3600000);
+  const minutes = Math.floor((ms % 3600000) / 60000);
+  return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
+
+const formatDate = (dateString?: string): string => {
+  if (!dateString) return 'Not set';
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return dateString;
+  return format(date, 'MMM dd, yyyy');
+};
+
+const formatDateTime = (dateString?: string): string => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  if (isNaN(date.getTime())) return dateString;
+  return format(date, 'MMM dd, yyyy hh:mm a');
+};
+
+const getPriorityColor = (priority: BoardTask['priority']): string => {
+  switch (priority) {
+    case 'urgent': return 'bg-red-100 text-red-700';
+    case 'high': return 'bg-orange-100 text-orange-700';
+    case 'medium': return 'bg-yellow-100 text-yellow-700';
+    case 'low': return 'bg-green-100 text-green-700';
+    default: return 'bg-gray-100 text-gray-700';
+  }
+};
+
+// ---------- COMPONENT ----------
 const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly = false }) => {
-  const [tasks, setTasks] = useState<Task[]>([]);
-  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [tasks, setTasks] = useState<BoardTask[]>([]);
+  const [selectedTask, setSelectedTask] = useState<BoardTask | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [editMode, setEditMode] = useState(false);
 
-  // Edit form state
+  // Edit form state – use correct types
   const [editTitle, setEditTitle] = useState('');
   const [editDescription, setEditDescription] = useState('');
   const [editDueDate, setEditDueDate] = useState('');
-  const [editPriority, setEditPriority] = useState('medium');
-  const [editStatus, setEditStatus] = useState('');
+  const [editPriority, setEditPriority] = useState<BoardTask['priority']>('medium');
+  const [editStatus, setEditStatus] = useState<BoardTask['status']>('pending');
   const [editAssignedTo, setEditAssignedTo] = useState('');
   const [editDependsOn, setEditDependsOn] = useState<string[]>([]);
-  const [projectTasks, setProjectTasks] = useState<Task[]>([]);
+  const [projectTasks, setProjectTasks] = useState<BoardTask[]>([]);
 
   // Build task title map
   const taskTitleMap = useMemo(() => {
@@ -136,37 +145,35 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
     return map;
   }, [tasks, projects]);
 
-  const getDependencyTitle = (depId: string): string => {
+  const getDependencyTitle = useCallback((depId: string): string => {
     return taskTitleMap[depId] || `${depId} (missing)`;
-  };
+  }, [taskTitleMap]);
 
-  // Helper: format milliseconds
-  const formatDuration = (ms: number): string => {
-    if (!ms) return '0m';
-    const hours = Math.floor(ms / 3600000);
-    const minutes = Math.floor((ms % 3600000) / 60000);
-    return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
-  };
+  const getEmployeeName = useCallback((empId?: string): string => {
+    if (!empId) return '';
+    const emp = employees.find(e => e.id === empId);
+    return emp ? emp.name : '';
+  }, [employees]);
 
-  const fetchProjectTasks = async (projectId: string, currentTaskId: string): Promise<Task[]> => {
+  const fetchProjectTasks = useCallback(async (projectId: string, currentTaskId: string): Promise<BoardTask[]> => {
     const tasksRef = dbRef(database, `projects/${projectId}/tasks`);
     const snapshot = await get(tasksRef);
     const tasksData = snapshot.val() as Record<string, FirebaseTaskData> | null;
     if (!tasksData) return [];
-    const taskList: Task[] = [];
+    const taskList: BoardTask[] = [];
     for (const [taskId, task] of Object.entries(tasksData)) {
       if (taskId === currentTaskId) continue;
       taskList.push({
         id: taskId,
         title: task.title,
-        status: task.status,
-        priority: task.priority,
+        status: task.status as BoardTask['status'],
+        priority: task.priority as BoardTask['priority'],
         projectName: projects.find(p => p.id === projectId)?.name || '',
         projectId: projectId,
         assignedTo: task.assignedTo,
         description: task.description,
         dueDate: task.dueDate,
-        createdAt: task.createdAt,
+        createdAt: task.createdAt || new Date().toISOString(),
         updatedAt: task.updatedAt,
         dependsOn: task.dependsOn || [],
         achievementSummary: task.achievementSummary,
@@ -176,24 +183,25 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
       });
     }
     return taskList;
-  };
+  }, [projects]);
 
+  // Load tasks from projects
   useEffect(() => {
-    const allTasks: Task[] = [];
+    const allTasks: BoardTask[] = [];
     projects.forEach((project) => {
       if (project.tasks) {
         Object.values(project.tasks).forEach((task) => {
           allTasks.push({
             id: task.id,
             title: task.title,
-            status: mapStatusToColumn(task.status),
-            priority: task.priority,
+            status: task.status as BoardTask['status'],
+            priority: task.priority as BoardTask['priority'],
             projectName: project.name,
             projectId: project.id,
             assignedTo: task.assignedTo,
             description: task.description,
             dueDate: task.dueDate,
-            createdAt: task.createdAt,
+            createdAt: task.createdAt || new Date().toISOString(),
             updatedAt: task.updatedAt,
             dependsOn: task.dependsOn || [],
             achievementSummary: task.achievementSummary,
@@ -207,63 +215,34 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
     setTasks(allTasks);
   }, [projects]);
 
-  const getTasksByStatus = (status: string): Task[] => tasks.filter(t => t.status === status);
+  const getTasksByStatus = useCallback((colStatus: string): BoardTask[] => {
+    return tasks.filter(t => mapStatusToColumn(t.status) === colStatus);
+  }, [tasks]);
 
-  const onDragEnd = async (result: DropResult): Promise<void> => {
+  const onDragEnd = useCallback(async (result: DropResult) => {
     if (readOnly) return;
     if (!result.destination) return;
     const { source, destination, draggableId } = result;
     if (source.droppableId === destination.droppableId) return;
     const task = tasks.find(t => t.id === draggableId);
     if (task) {
-      let newStatus = destination.droppableId;
-      if (newStatus === 'todo') newStatus = 'pending';
-      else if (newStatus === 'in_progress') newStatus = 'in_progress';
-      else if (newStatus === 'review') newStatus = 'review';
-      else if (newStatus === 'done') newStatus = 'completed';
+      const newColumn = destination.droppableId;
+      const newStatus = mapColumnToStatus(newColumn);
       await update(dbRef(database, `projects/${task.projectId}/tasks/${task.id}`), { status: newStatus });
-      setTasks(prev => prev.map(t => (t.id === draggableId ? { ...t, status: destination.droppableId } : t)));
+      setTasks(prev =>
+        prev.map(t => (t.id === draggableId ? { ...t, status: newStatus } : t))
+      );
       toast.success('Task status updated');
     }
-  };
+  }, [readOnly, tasks]);
 
-  const getEmployeeName = (empId?: string): string => {
-    if (!empId) return '';
-    const emp = employees.find(e => e.id === empId);
-    return emp ? emp.name : '';
-  };
-
-  const formatDate = (dateString?: string): string => {
-    if (!dateString) return 'Not set';
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return dateString;
-    return format(date, 'MMM dd, yyyy');
-  };
-
-  const formatDateTime = (dateString?: string): string => {
-    if (!dateString) return '';
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return dateString;
-    return format(date, 'MMM dd, yyyy hh:mm a');
-  };
-
-  const getPriorityColor = (priority: string): string => {
-    switch (priority) {
-      case 'urgent': return 'bg-red-100 text-red-700';
-      case 'high': return 'bg-orange-100 text-orange-700';
-      case 'medium': return 'bg-yellow-100 text-yellow-700';
-      case 'low': return 'bg-green-100 text-green-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
-  };
-
-  const openViewModal = async (task: Task): Promise<void> => {
+  const openViewModal = useCallback((task: BoardTask) => {
     setSelectedTask(task);
     setEditMode(false);
     setModalOpen(true);
-  };
+  }, []);
 
-  const enterEditMode = async (): Promise<void> => {
+  const enterEditMode = useCallback(async () => {
     if (!selectedTask) return;
     setEditTitle(selectedTask.title);
     setEditDescription(selectedTask.description || '');
@@ -275,9 +254,9 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
     const sameProjectTasks = await fetchProjectTasks(selectedTask.projectId, selectedTask.id);
     setProjectTasks(sameProjectTasks);
     setEditMode(true);
-  };
+  }, [selectedTask, fetchProjectTasks]);
 
-  const saveTaskChanges = async (): Promise<void> => {
+  const saveTaskChanges = useCallback(async () => {
     if (!selectedTask) return;
     try {
       const taskRef = dbRef(database, `projects/${selectedTask.projectId}/tasks/${selectedTask.id}`);
@@ -304,57 +283,76 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
       console.error(error);
       toast.error('Failed to update task');
     }
-  };
+  }, [selectedTask, editTitle, editDescription, editDueDate, editPriority, editStatus, editAssignedTo, editDependsOn, tasks]);
+
+  // Wrappers for Select onValueChange to convert string to correct union
+  const handlePriorityChange = useCallback((value: string) => {
+    setEditPriority(value as BoardTask['priority']);
+  }, []);
+
+  const handleStatusChange = useCallback((value: string) => {
+    setEditStatus(value as BoardTask['status']);
+  }, []);
+
+  const handleAssignedToChange = useCallback((value: string) => {
+    setEditAssignedTo(value);
+  }, []);
+
+  // Memoize column rendering
+  const renderColumn = useCallback((col: string) => {
+    const tasksInStatus = getTasksByStatus(col);
+    return (
+      <Droppable key={col} droppableId={col}>
+        {(provided) => (
+          <div ref={provided.innerRef} {...provided.droppableProps} className="bg-gray-50 p-3 rounded-lg min-h-[400px]">
+            <h3 className="font-semibold mb-3 capitalize">{columnNames[col]}</h3>
+            {tasksInStatus.map((task, idx) => {
+              const draggableId = task.id && task.id !== 'undefined' ? task.id : `${task.projectId}-${idx}`;
+              return (
+                <Draggable key={draggableId} draggableId={draggableId} index={idx} isDragDisabled={readOnly}>
+                  {(provided) => (
+                    <div
+                      ref={provided.innerRef}
+                      {...provided.draggableProps}
+                      {...provided.dragHandleProps}
+                      className="mb-2 cursor-pointer"
+                      onClick={() => openViewModal(task)}
+                    >
+                      <Card className="hover:shadow-md transition-shadow">
+                        <CardContent className="p-3 space-y-1">
+                          <p className="font-medium text-sm">{task.title}</p>
+                          <p className="text-xs text-gray-500">{task.projectName}</p>
+                          <div className="flex justify-between items-center">
+                            <Badge variant="outline" className="text-xs">{task.priority}</Badge>
+                            {task.assignedTo && <span className="text-xs text-gray-400">@{getEmployeeName(task.assignedTo).split(' ')[0]}</span>}
+                          </div>
+                          {task.dependsOn && task.dependsOn.length > 0 && (
+                            <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-1">
+                              <span className="font-medium">Depends on:</span>
+                              {task.dependsOn.map(depId => (
+                                <Badge key={depId} variant="outline" className="text-xs bg-yellow-50">{getDependencyTitle(depId)}</Badge>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    </div>
+                  )}
+                </Draggable>
+              );
+            })}
+            {provided.placeholder}
+          </div>
+        )}
+      </Droppable>
+    );
+  }, [getTasksByStatus, readOnly, openViewModal, getEmployeeName, getDependencyTitle]);
 
   return (
     <>
       <DragDropContext onDragEnd={onDragEnd}>
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          {columns.map(col => (
-            <Droppable key={col} droppableId={col}>
-              {(provided) => (
-                <div ref={provided.innerRef} {...provided.droppableProps} className="bg-gray-50 p-3 rounded-lg min-h-[400px]">
-                  <h3 className="font-semibold mb-3 capitalize">{columnNames[col]}</h3>
-                  {getTasksByStatus(col).map((task, idx) => {
-                    const draggableId = task.id && task.id !== 'undefined' ? task.id : `${task.projectId}-${idx}`;
-                    return (
-                      <Draggable key={draggableId} draggableId={draggableId} index={idx} isDragDisabled={readOnly}>
-                        {(provided) => (
-                          <div
-                            ref={provided.innerRef}
-                            {...provided.draggableProps}
-                            {...provided.dragHandleProps}
-                            className="mb-2 cursor-pointer"
-                            onClick={() => openViewModal(task)}
-                          >
-                            <Card className="hover:shadow-md transition-shadow">
-                              <CardContent className="p-3 space-y-1">
-                                <p className="font-medium text-sm">{task.title}</p>
-                                <p className="text-xs text-gray-500">{task.projectName}</p>
-                                <div className="flex justify-between items-center">
-                                  <Badge variant="outline" className="text-xs">{task.priority}</Badge>
-                                  {task.assignedTo && <span className="text-xs text-gray-400">@{getEmployeeName(task.assignedTo).split(' ')[0]}</span>}
-                                </div>
-                                {task.dependsOn && task.dependsOn.length > 0 && (
-                                  <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-1">
-                                    <span className="font-medium">Depends on:</span>
-                                    {task.dependsOn.map(depId => (
-                                      <Badge key={depId} variant="outline" className="text-xs bg-yellow-50">{getDependencyTitle(depId)}</Badge>
-                                    ))}
-                                  </div>
-                                )}
-                              </CardContent>
-                            </Card>
-                          </div>
-                        )}
-                      </Draggable>
-                    );
-                  })}
-                  {provided.placeholder}
-                </div>
-              )}
-            </Droppable>
-          ))}
+          {columns.map(col => renderColumn(col))}
         </div>
       </DragDropContext>
 
@@ -366,39 +364,45 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
           </DialogHeader>
           {selectedTask && (
             editMode ? (
-              // ---------- EDIT MODE (unchanged) ----------
+              // ---------- EDIT MODE ----------
               <div className="space-y-4">
                 <div><Label>Title</Label><Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} /></div>
                 <div><Label>Description</Label><Textarea value={editDescription} onChange={(e) => setEditDescription(e.target.value)} rows={3} /></div>
                 <div className="grid grid-cols-2 gap-4">
                   <div><Label>Due Date</Label><Input type="date" value={editDueDate} onChange={(e) => setEditDueDate(e.target.value)} /></div>
-                  <div><Label>Priority</Label><Select value={editPriority} onValueChange={setEditPriority}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="low">Low</SelectItem>
-                      <SelectItem value="medium">Medium</SelectItem>
-                      <SelectItem value="high">High</SelectItem>
-                      <SelectItem value="urgent">Urgent</SelectItem>
-                    </SelectContent>
-                  </Select></div>
+                  <div><Label>Priority</Label>
+                    <Select value={editPriority} onValueChange={handlePriorityChange}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="low">Low</SelectItem>
+                        <SelectItem value="medium">Medium</SelectItem>
+                        <SelectItem value="high">High</SelectItem>
+                        <SelectItem value="urgent">Urgent</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 <div className="grid grid-cols-2 gap-4">
-                  <div><Label>Status</Label><Select value={editStatus} onValueChange={setEditStatus}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pending">Pending</SelectItem>
-                      <SelectItem value="in_progress">In Progress</SelectItem>
-                      <SelectItem value="review">Review</SelectItem>
-                      <SelectItem value="completed">Completed</SelectItem>
-                    </SelectContent>
-                  </Select></div>
-                  <div><Label>Assigned To</Label><Select value={editAssignedTo || "unassigned"} onValueChange={setEditAssignedTo}>
-                    <SelectTrigger><SelectValue placeholder="Select employee" /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="unassigned">Unassigned</SelectItem>
-                      {employees.map(emp => <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>)}
-                    </SelectContent>
-                  </Select></div>
+                  <div><Label>Status</Label>
+                    <Select value={editStatus} onValueChange={handleStatusChange}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="pending">Pending</SelectItem>
+                        <SelectItem value="in_progress">In Progress</SelectItem>
+                        <SelectItem value="review">Review</SelectItem>
+                        <SelectItem value="completed">Completed</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div><Label>Assigned To</Label>
+                    <Select value={editAssignedTo || "unassigned"} onValueChange={handleAssignedToChange}>
+                      <SelectTrigger><SelectValue placeholder="Select employee" /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="unassigned">Unassigned</SelectItem>
+                        {employees.map(emp => <SelectItem key={emp.id} value={emp.id}>{emp.name}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   <Label>Depends on (tasks that must be completed first)</Label>
@@ -406,10 +410,14 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                     {projectTasks.length === 0 ? <p className="text-sm text-gray-400">No other tasks in this project</p> :
                       projectTasks.map(task => (
                         <label key={task.id} className="flex items-center gap-2 text-sm">
-                          <input type="checkbox" checked={editDependsOn.includes(task.id)} onChange={(e) => {
-                            if (e.target.checked) setEditDependsOn([...editDependsOn, task.id]);
-                            else setEditDependsOn(editDependsOn.filter(id => id !== task.id));
-                          }} />
+                          <input
+                            type="checkbox"
+                            checked={editDependsOn.includes(task.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) setEditDependsOn([...editDependsOn, task.id]);
+                              else setEditDependsOn(editDependsOn.filter(id => id !== task.id));
+                            }}
+                          />
                           {task.title} ({task.status})
                         </label>
                       ))}
@@ -435,7 +443,7 @@ const KanbanBoard: React.FC<KanbanBoardProps> = ({ projects, employees, readOnly
                 </div>
               </div>
             ) : (
-              // ---------- VIEW MODE (with Time Spent added) ----------
+              // ---------- VIEW MODE ----------
               <div className="space-y-4">
                 <div className="flex gap-2">
                   <Badge className={getPriorityColor(selectedTask.priority)}>{selectedTask.priority}</Badge>

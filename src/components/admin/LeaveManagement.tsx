@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+// src/components/admin/LeaveManagement.tsx
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion } from 'framer-motion';
-import { Calendar, Clock, Download, Filter, Search, AlertTriangle, Check, X, RotateCcw, Trash2, Bell, Settings, Plus } from 'lucide-react';
+import { Calendar, Download, Filter, Search, Check, X, RotateCcw, Trash2, Bell, Settings } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -9,46 +10,78 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '.
 import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, onValue, query, orderByChild, update, remove, off, push, set, get } from 'firebase/database';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '../ui/dialog';
+import { ref, onValue, query, orderByChild, update, remove, off, push, set } from 'firebase/database';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Label } from '../ui/label';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../ui/tabs';
+import { Employee } from '@/types/employee';
+import { LeaveRequest } from '@/types/popup';
+import { LeaveBalance, LeaveSettings, LeaveStatus } from '@/types/leave';
+import { addAuditLog } from '../../utils/auditLog'; // ✅ audit log --- IGNORE ---
 
-interface LeaveManagementProps {
-  role?: 'admin' | 'manager' | 'team_leader' | 'client';
-}
+// ========== HELPER FUNCTIONS ==========
+const getTodayStr = () => new Date().toISOString().split('T')[0];
 
-interface Employee {
-  id: string;
-  name: string;
-  email: string;
+const calculateDays = (start: string, end: string): number => {
+  const startUTC = Date.UTC(new Date(start).getFullYear(), new Date(start).getMonth(), new Date(start).getDate());
+  const endUTC = Date.UTC(new Date(end).getFullYear(), new Date(end).getMonth(), new Date(end).getDate());
+  return Math.floor((endUTC - startUTC) / (1000 * 60 * 60 * 24)) + 1;
+};
+
+const getBalanceField = (leaveType: string): keyof LeaveBalance | null => {
+  const mapping: Record<string, keyof LeaveBalance> = {
+    'Casual Leave': 'casual',
+    'Sick Leave': 'sick',
+    'Annual Leave': 'annual',
+    'Comp-off Leave': 'compOff'
+  };
+  return mapping[leaveType] || null;
+};
+
+const getStatusColor = (status: string): string => {
+  switch (status) {
+    case 'pending': return 'bg-yellow-100 text-yellow-700';
+    case 'approved': return 'bg-green-100 text-green-700';
+    case 'rejected': return 'bg-red-100 text-red-700';
+    default: return 'bg-gray-100 text-gray-700';
+  }
+};
+
+const getNotificationDetails = (type: string) => {
+  switch (type) {
+    case 'new-leave': return { title: 'New Leave Request', description: '{employee} applied for {leaveType} leave from {startDate} to {endDate}', color: 'bg-blue-100 text-blue-800 border-blue-500' };
+    case 'approved': return { title: 'Leave Approved', description: '{employee}\'s {leaveType} leave has been approved', color: 'bg-green-100 text-green-800 border-green-500' };
+    case 'rejected': return { title: 'Leave Rejected', description: '{employee}\'s {leaveType} leave has been rejected', color: 'bg-red-100 text-red-800 border-red-500' };
+    case 'reopened': return { title: 'Leave Reopened', description: '{employee}\'s {leaveType} leave request has been reopened', color: 'bg-yellow-100 text-yellow-800 border-yellow-500' };
+    default: return { title: 'Leave Update', description: 'There has been an update to a leave request', color: 'bg-gray-100 text-gray-800 border-gray-500' };
+  }
+};
+
+interface RawEmployeeData {
+  name?: string;
+  email?: string;
   department?: string;
   designation?: string;
-  status: string;
-  adminId?: string;
+  status?: string;
+  employeeId?: string;
+  createdAt?: string;
 }
 
-interface LeaveRequest {
-  id: string;
-  employeeId: string;
-  employeeName: string;
-  employeeEmail: string;
-  department: string;
-  leaveType: string;
-  startDate: string;
-  endDate: string;
-  reason: string;
-  status: 'pending' | 'approved' | 'rejected';
-  appliedAt: string;
+interface RawLeaveData {
+  leaveType?: string;
+  startDate?: string;
+  endDate?: string;
+  reason?: string;
+  status?: string;
+  appliedAt?: string;
   approvedAt?: string;
   rejectedAt?: string;
   approvedBy?: string;
-  adminId?: string;
 }
 
-interface Notification {
+interface NotificationData {
   id: string;
-  type: 'new-leave' | 'approved' | 'rejected' | 'reopened';
+  type: string;
   employeeName: string;
   employeeId: string;
   leaveType: string;
@@ -60,62 +93,22 @@ interface Notification {
   adminId?: string;
 }
 
-interface RawEmployeeData {
-  name?: string;
-  email?: string;
-  department?: string;
-  designation?: string;
-  status?: string;
-  employeeId?: string;
-  createdAt?: string;
-  [key: string]: unknown;
-}
-
-interface LeaveBalance {
-  casual: number;
-  sick: number;
-  annual: number;
-  compOff: number;
-  updatedAt?: string;
-}
-
-interface CarryForwardRule {
-  max: number;
-  percentage: number;
-}
-
-// ✅ Helper to map leave type to balance field (excluding 'updatedAt')
-type BalanceField = 'casual' | 'sick' | 'annual' | 'compOff';
-
-const getBalanceField = (leaveType: string): BalanceField | null => {
-  const mapping: Record<string, BalanceField> = {
-    'Casual Leave': 'casual',
-    'Sick Leave': 'sick',
-    'Annual Leave': 'annual',
-    'Comp-off Leave': 'compOff'
-  };
-  return mapping[leaveType] || null;
-};
-
-const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => {
+// ========== MAIN COMPONENT ==========
+const LeaveManagement: React.FC = () => {
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [allLeaveRequests, setAllLeaveRequests] = useState<LeaveRequest[]>([]);
-  const [filteredRequests, setFilteredRequests] = useState<LeaveRequest[]>([]);
-  const [displayedRequests, setDisplayedRequests] = useState<LeaveRequest[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterStatus, setFilterStatus] = useState('all');
+  const [filterStatus, setFilterStatus] = useState<string>('all');
   const [filterDate, setFilterDate] = useState('');
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [notifications, setNotifications] = useState<NotificationData[]>([]);
   const [showNotification, setShowNotification] = useState(false);
-  const [currentNotification, setCurrentNotification] = useState<Notification | null>(null);
+  const [currentNotification, setCurrentNotification] = useState<NotificationData | null>(null);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
-  
   const [leaveBalances, setLeaveBalances] = useState<Record<string, LeaveBalance>>({});
-  const [leaveSettings, setLeaveSettings] = useState<{ carryForward: Record<string, CarryForwardRule>; financialYearStart: string }>({
+  const [leaveSettings, setLeaveSettings] = useState<LeaveSettings>({
     carryForward: { casual: { max: 10, percentage: 100 }, sick: { max: 15, percentage: 80 }, annual: { max: 30, percentage: 100 }, compOff: { max: 10, percentage: 0 } },
     financialYearStart: '2026-01-01'
   });
@@ -124,33 +117,39 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
   const [balanceForm, setBalanceForm] = useState<LeaveBalance>({ casual: 0, sick: 0, annual: 0, compOff: 0 });
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [carryForwardForm, setCarryForwardForm] = useState(leaveSettings.carryForward);
-  
-  const PAGE_SIZE = 50;
+  const [displayCount, setDisplayCount] = useState(50);
 
+  // Request notification permission
   useEffect(() => {
-    if ('Notification' in window) Notification.requestPermission().then(p => setNotificationPermission(p));
+    if ('Notification' in window) {
+      Notification.requestPermission().then(perm => setNotificationPermission(perm));
+    }
   }, []);
 
+  // Fetch employees
   useEffect(() => {
     if (!user) return;
-    const usersRef = ref(database, "users");
+    const usersRef = ref(database, 'users');
     const unsubscribe = onValue(usersRef, (snapshot) => {
       const empList: Employee[] = [];
       snapshot.forEach((adminSnap) => {
         const adminId = adminSnap.key;
-        const employeesData = adminSnap.child("employees").val() as Record<string, RawEmployeeData> | null;
-        if (employeesData && typeof employeesData === 'object') {
+        const employeesData = adminSnap.child('employees').val() as Record<string, RawEmployeeData> | null;
+        if (employeesData) {
           Object.entries(employeesData).forEach(([key, value]) => {
-            const emp = value;
-            if (emp.status === 'active') {
+            if (value.status === 'active') {
               empList.push({
                 id: key,
-                name: emp.name || '',
-                email: emp.email || '',
-                department: emp.department || 'No Department',
-                designation: emp.designation || '',
-                status: emp.status || 'active',
-                adminId: adminId || ''
+                name: value.name || '',
+                email: value.email || '',
+                department: value.department || 'No Department',
+                designation: value.designation || '',
+                status: value.status,
+                adminId: adminId || '',
+                isActive: true,
+                phone: '',
+                employeeId: value.employeeId || key,
+                createdAt: value.createdAt || new Date().toISOString(),
               });
             }
           });
@@ -161,27 +160,30 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     return () => off(usersRef);
   }, [user]);
 
+  // Fetch leave balances
   useEffect(() => {
     const balancesRef = ref(database, 'leaveBalances');
     const unsubscribe = onValue(balancesRef, (snapshot) => {
-      const data = snapshot.val();
+      const data = snapshot.val() as Record<string, LeaveBalance> | null;
       if (data) setLeaveBalances(data);
     });
     return () => off(balancesRef);
   }, []);
 
+  // Fetch leave settings
   useEffect(() => {
     const settingsRef = ref(database, 'leaveSettings');
     const unsubscribe = onValue(settingsRef, (snapshot) => {
-      const data = snapshot.val();
+      const data = snapshot.val() as LeaveSettings | null;
       if (data) {
         setLeaveSettings(data);
-        setCarryForwardForm(data.carryForward || leaveSettings.carryForward);
+        setCarryForwardForm(data.carryForward);
       }
     });
     return () => off(settingsRef);
   }, []);
 
+  // Fetch leave requests (real‑time)
   useEffect(() => {
     if (!user || employees.length === 0) {
       setLoading(false);
@@ -193,7 +195,10 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     const processed = new Set<string>();
 
     const employeesByAdmin = employees.reduce((acc, emp) => {
-      if (emp.adminId) { if (!acc[emp.adminId]) acc[emp.adminId] = []; acc[emp.adminId].push(emp); }
+      if (emp.adminId) {
+        if (!acc[emp.adminId]) acc[emp.adminId] = [];
+        acc[emp.adminId].push(emp);
+      }
       return acc;
     }, {} as Record<string, Employee[]>);
 
@@ -202,10 +207,10 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
         const leavesRef = ref(database, `users/${adminId}/employees/${employee.id}/leaves`);
         const leavesQuery = query(leavesRef, orderByChild('appliedAt'));
         const unsubscribe = onValue(leavesQuery, (snapshot) => {
-          const data = snapshot.val() as Record<string, Omit<LeaveRequest, 'id' | 'employeeId' | 'employeeName' | 'employeeEmail' | 'department' | 'adminId'>> | null;
+          const data = snapshot.val() as Record<string, RawLeaveData> | null;
           const idx = allRequests.findIndex(r => r.employeeId === employee.id);
           if (idx !== -1) allRequests.splice(idx, 1);
-          if (data && typeof data === 'object') {
+          if (data) {
             const requests: LeaveRequest[] = Object.entries(data).map(([key, value]) => ({
               id: key,
               employeeId: employee.id,
@@ -213,12 +218,21 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
               employeeEmail: employee.email,
               department: employee.department || 'No Department',
               adminId,
-              ...value
+              leaveType: value.leaveType || '',
+              startDate: value.startDate || '',
+              endDate: value.endDate || '',
+              reason: value.reason || '',
+              status: (value.status as LeaveStatus) || 'pending',
+              appliedAt: value.appliedAt || new Date().toISOString(),
+              approvedAt: value.approvedAt,
+              rejectedAt: value.rejectedAt,
+              approvedBy: value.approvedBy,
             }));
             allRequests.push(...requests);
             requests.forEach(req => {
               const key = `${req.employeeId}-${req.id}`;
-              if (new Date(req.appliedAt).getTime() > Date.now() - 300000 && !processed.has(key)) {
+              const fiveMinAgo = Date.now() - 5 * 60 * 1000;
+              if (new Date(req.appliedAt).getTime() > fiveMinAgo && !processed.has(key)) {
                 processed.add(key);
                 showSystemNotification({
                   type: 'new-leave',
@@ -229,7 +243,7 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
                   endDate: req.endDate,
                   status: req.status,
                   timestamp: new Date(req.appliedAt).getTime(),
-                  adminId
+                  adminId,
                 });
               }
             });
@@ -241,38 +255,16 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
         unsubscribes.push(unsubscribe);
       });
     });
+
     return () => unsubscribes.forEach(u => u());
   }, [user, employees]);
 
-  useEffect(() => {
-    let filtered = allLeaveRequests;
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      filtered = filtered.filter(r => r.employeeName?.toLowerCase().includes(term) || r.employeeId?.toLowerCase().includes(term));
-    }
-    if (filterDate) {
-      filtered = filtered.filter(r => new Date(r.appliedAt).toDateString() === new Date(filterDate).toDateString());
-    }
-    if (filterStatus !== 'all') {
-      filtered = filtered.filter(r => r.status === filterStatus);
-    }
-    setFilteredRequests(filtered);
-    setDisplayedRequests(filtered.slice(0, PAGE_SIZE));
-    setHasMore(filtered.length > PAGE_SIZE);
-  }, [searchTerm, filterDate, filterStatus, allLeaveRequests]);
-
-  const loadMore = () => {
-    if (!hasMore || loadingMore) return;
-    setLoadingMore(true);
-    const currentLen = displayedRequests.length;
-    const next = filteredRequests.slice(currentLen, currentLen + PAGE_SIZE);
-    setDisplayedRequests(prev => [...prev, ...next]);
-    setHasMore(filteredRequests.length > currentLen + PAGE_SIZE);
-    setLoadingMore(false);
-  };
-
-  const showSystemNotification = (notification: Omit<Notification, 'id' | 'read'>) => {
-    const newNotif: Notification = { ...notification, id: `${notification.type}-${notification.timestamp}`, read: false };
+  const showSystemNotification = (notification: Omit<NotificationData, 'id' | 'read'>) => {
+    const newNotif: NotificationData = {
+      ...notification,
+      id: `${notification.type}-${notification.timestamp}`,
+      read: false,
+    };
     setNotifications(prev => [newNotif, ...prev]);
     setCurrentNotification(newNotif);
     setShowNotification(true);
@@ -286,55 +278,79 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
             .replace('{startDate}', new Date(notification.startDate).toLocaleDateString())
             .replace('{endDate}', new Date(notification.endDate).toLocaleDateString()),
           icon: '/logo.png',
-          tag: `leave-${notification.type}-${notification.timestamp}`
+          tag: `leave-${notification.type}-notification.timestamp`,
         });
       } catch (error) { console.error(error); }
     }
-    setTimeout(() => { setShowNotification(false); setTimeout(() => setCurrentNotification(null), 500); }, 5000);
+    setTimeout(() => {
+      setShowNotification(false);
+      setTimeout(() => setCurrentNotification(null), 500);
+    }, 5000);
   };
 
-  const getNotificationDetails = (type: string) => {
-    switch (type) {
-      case 'new-leave': return { title: 'New Leave Request', description: '{employee} applied for {leaveType} leave from {startDate} to {endDate}', color: 'bg-blue-100 text-blue-800 border-blue-500' };
-      case 'approved': return { title: 'Leave Approved', description: '{employee}\'s {leaveType} leave has been approved', color: 'bg-green-100 text-green-800 border-green-500' };
-      case 'rejected': return { title: 'Leave Rejected', description: '{employee}\'s {leaveType} leave has been rejected', color: 'bg-red-100 text-red-800 border-red-500' };
-      case 'reopened': return { title: 'Leave Reopened', description: '{employee}\'s {leaveType} leave request has been reopened', color: 'bg-yellow-100 text-yellow-800 border-yellow-500' };
-      default: return { title: 'Leave Update', description: 'There has been an update to a leave request', color: 'bg-gray-100 text-gray-800 border-gray-500' };
+  // Filtered and paginated requests
+  const filteredRequests = useMemo(() => {
+    let filtered = allLeaveRequests;
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      filtered = filtered.filter(r => r.employeeName?.toLowerCase().includes(term) || r.employeeId?.toLowerCase().includes(term));
     }
-  };
+    if (filterDate) {
+      filtered = filtered.filter(r => new Date(r.appliedAt).toDateString() === new Date(filterDate).toDateString());
+    }
+    if (filterStatus !== 'all') {
+      filtered = filtered.filter(r => r.status === filterStatus);
+    }
+    return filtered;
+  }, [allLeaveRequests, searchTerm, filterDate, filterStatus]);
 
-  const calculateDays = (start: string, end: string) => Math.ceil((new Date(end).getTime() - new Date(start).getTime()) / (1000 * 60 * 60 * 24)) + 1;
+  const displayedRequests = useMemo(() => {
+    return filteredRequests.slice(0, displayCount);
+  }, [filteredRequests, displayCount]);
 
-  // ✅ CORRECTED updateLeaveStatus with proper mapping and type safety
+  const hasMoreItems = filteredRequests.length > displayCount;
+
+  const loadMore = useCallback(() => {
+    if (hasMoreItems && !loadingMore) {
+      setLoadingMore(true);
+      setDisplayCount(prev => prev + 50);
+      setLoadingMore(false);
+    }
+  }, [hasMoreItems, loadingMore]);
+
   const updateLeaveStatus = async (request: LeaveRequest, newStatus: 'approved' | 'rejected' | 'pending') => {
-    if (!user || !request.adminId) { toast({ title: "Error", description: "Cannot process request", variant: "destructive" }); return; }
+    if (!user || !request.adminId) {
+      toast({ title: "Error", description: "Cannot process request", variant: "destructive" });
+      return;
+    }
+    setLoading(true);
     try {
-      setLoading(true);
       const updates: Partial<LeaveRequest> = { status: newStatus };
-      if (newStatus === 'approved') { updates.approvedAt = new Date().toISOString(); updates.approvedBy = user.name || 'Admin'; }
-      else if (newStatus === 'rejected') { updates.rejectedAt = new Date().toISOString(); }
-      else if (newStatus === 'pending') { updates.rejectedAt = ''; updates.approvedAt = ''; updates.approvedBy = ''; }
+      if (newStatus === 'approved') {
+        updates.approvedAt = new Date().toISOString();
+        updates.approvedBy = user.name || 'Admin';
+      } else if (newStatus === 'rejected') {
+        updates.rejectedAt = new Date().toISOString();
+      } else if (newStatus === 'pending') {
+        updates.rejectedAt = undefined;
+        updates.approvedAt = undefined;
+        updates.approvedBy = undefined;
+      }
 
       const days = calculateDays(request.startDate, request.endDate);
       const balanceField = getBalanceField(request.leaveType);
-      if (!balanceField) {
-        // Leave type that doesn't consume balance (e.g., Maternity, Paternity) – skip deduction
-        // Proceed without touching balance
-      } else {
+      if (balanceField) {
         const currentBalanceObj = leaveBalances[request.employeeId] || { casual: 0, sick: 0, annual: 0, compOff: 0 };
-        const available = currentBalanceObj[balanceField]; // already a number
+        const available = Number(currentBalanceObj[balanceField]);
         if (newStatus === 'approved' && request.status !== 'approved') {
           if (available < days) {
-            toast.error(`Insufficient ${request.leaveType} balance. Available: ${available} days`);
+            toast({ title: "Insufficient Balance", description: `${request.leaveType} balance available: ${available} days`, variant: "destructive" });
             setLoading(false);
             return;
           }
           const newBalance = { ...currentBalanceObj, [balanceField]: available - days };
           await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
-        } else if (newStatus === 'rejected' && request.status === 'approved') {
-          const newBalance = { ...currentBalanceObj, [balanceField]: available + days };
-          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
-        } else if (newStatus === 'pending' && request.status === 'approved') {
+        } else if ((newStatus === 'rejected' || newStatus === 'pending') && request.status === 'approved') {
           const newBalance = { ...currentBalanceObj, [balanceField]: available + days };
           await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
         }
@@ -342,7 +358,24 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
 
       const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
       await update(leaveRef, updates);
-      
+
+      // ✅ Audit log
+      await addAuditLog({
+        action: `leave_${newStatus}`,
+        performedBy: user.id,
+        performedByName: user.name || 'Admin',
+        targetId: request.id,
+        details: {
+          employeeId: request.employeeId,
+          leaveType: request.leaveType,
+          startDate: request.startDate,
+          endDate: request.endDate,
+          days,
+          previousStatus: request.status,
+        },
+      });
+
+      // Send employee notification
       const notifRef = push(ref(database, `notifications/${request.employeeId}`));
       await set(notifRef, {
         title: newStatus === 'approved' ? 'Leave Approved' : 'Leave Rejected',
@@ -352,7 +385,7 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
         createdAt: Date.now(),
         leaveId: request.id,
       });
-      
+
       const notifType = newStatus === 'approved' ? 'approved' : (newStatus === 'rejected' ? 'rejected' : 'reopened');
       showSystemNotification({
         type: notifType,
@@ -363,11 +396,57 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
         endDate: request.endDate,
         status: newStatus,
         timestamp: Date.now(),
-        adminId: request.adminId
+        adminId: request.adminId,
       });
       toast({ title: `Leave ${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}`, description: `Leave request has been ${newStatus}.` });
-    } catch (error) { toast({ title: "Error", description: `Failed to ${newStatus} leave request`, variant: "destructive" }); }
-    finally { setLoading(false); }
+    } catch (error) {
+      toast({ title: "Error", description: `Failed to ${newStatus} leave request`, variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApprove = (req: LeaveRequest) => updateLeaveStatus(req, 'approved');
+  const handleReject = (req: LeaveRequest) => updateLeaveStatus(req, 'rejected');
+  const handleReapprove = (req: LeaveRequest) => updateLeaveStatus(req, 'pending');
+
+  const handleDelete = async (request: LeaveRequest) => {
+    if (!user || !request.adminId) return;
+    if (!window.confirm('Delete this leave request?')) return;
+    setLoading(true);
+    try {
+      if (request.status === 'approved') {
+        const days = calculateDays(request.startDate, request.endDate);
+        const balanceField = getBalanceField(request.leaveType);
+        if (balanceField) {
+          const currentBalanceObj = leaveBalances[request.employeeId] || { casual: 0, sick: 0, annual: 0, compOff: 0 };
+          const currentVal = Number(currentBalanceObj[balanceField]);
+          const newBalance = { ...currentBalanceObj, [balanceField]: currentVal + days };
+          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
+        }
+      }
+      const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
+      await remove(leaveRef);
+      toast({ title: "Deleted", description: "Leave request deleted" });
+
+      await addAuditLog({
+        action: 'leave_deleted',
+        performedBy: user.id,
+        performedByName: user.name || 'Admin',
+        targetId: request.id,
+        details: {
+          employeeId: request.employeeId,
+          leaveType: request.leaveType,
+          startDate: request.startDate,
+          endDate: request.endDate,
+          previousStatus: request.status,
+        },
+      });
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to delete", variant: "destructive" });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const openBalanceModal = (employee: Employee) => {
@@ -381,23 +460,23 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
     if (!selectedEmployee) return;
     await set(ref(database, `leaveBalances/${selectedEmployee.id}`), {
       ...balanceForm,
-      updatedAt: new Date().toISOString()
+      updatedAt: new Date().toISOString(),
     });
-    toast.success(`Leave balance updated for ${selectedEmployee.name}`);
+    toast({ title: "Balance Updated", description: `Leave balance updated for ${selectedEmployee.name}` });
     setShowBalanceModal(false);
   };
 
   const saveCarryForwardSettings = async () => {
     await set(ref(database, 'leaveSettings/carryForward'), carryForwardForm);
-    toast.success('Carry‑forward rules saved');
+    toast({ title: "Settings Saved", description: "Carry‑forward rules saved" });
     setShowSettingsModal(false);
   };
 
   const runCarryForward = async () => {
     if (!confirm('Run year-end carry-forward? This will reset balances based on current rules.')) return;
-    const currentYearBalances = { ...leaveBalances };
+    const currentBalances = { ...leaveBalances };
     const rules = leaveSettings.carryForward;
-    for (const [empId, balance] of Object.entries(currentYearBalances)) {
+    for (const [empId, balance] of Object.entries(currentBalances)) {
       const newBalance: LeaveBalance = { casual: 0, sick: 0, annual: 0, compOff: 0 };
       for (const type of ['casual', 'sick', 'annual', 'compOff'] as const) {
         const rule = rules[type];
@@ -411,53 +490,28 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
       }
       await set(ref(database, `leaveBalances/${empId}`), { ...newBalance, updatedAt: new Date().toISOString() });
     }
-    toast.success('Carry-forward completed');
-  };
-
-  const handleApprove = (req: LeaveRequest) => updateLeaveStatus(req, 'approved');
-  const handleReject = (req: LeaveRequest) => updateLeaveStatus(req, 'rejected');
-  const handleReapprove = (req: LeaveRequest) => updateLeaveStatus(req, 'pending');
-
-  const handleDelete = async (request: LeaveRequest) => {
-    if (!user || !request.adminId) return;
-    if (!window.confirm('Delete this leave request?')) return;
-    try {
-      setLoading(true);
-      if (request.status === 'approved') {
-        const days = calculateDays(request.startDate, request.endDate);
-        const balanceField = getBalanceField(request.leaveType);
-        if (balanceField) {
-          const currentBalanceObj = leaveBalances[request.employeeId] || { casual: 0, sick: 0, annual: 0, compOff: 0 };
-          const newBalance = { ...currentBalanceObj, [balanceField]: currentBalanceObj[balanceField] + days };
-          await set(ref(database, `leaveBalances/${request.employeeId}`), { ...newBalance, updatedAt: new Date().toISOString() });
-        }
-      }
-      const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
-      await remove(leaveRef);
-      toast({ title: "Deleted", description: "Leave request deleted" });
-    } catch (error) { toast({ title: "Error", description: "Failed to delete", variant: "destructive" }); }
-    finally { setLoading(false); }
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'pending': return 'bg-yellow-100 text-yellow-700';
-      case 'approved': return 'bg-green-100 text-green-700';
-      case 'rejected': return 'bg-red-100 text-red-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
+    toast({ title: "Carry‑forward Completed", description: "Year‑end carry‑forward processed" });
   };
 
   const exportLeaves = () => {
-    const csv = [
-      ['Employee Name', 'Employee ID', 'Department', 'Leave Type', 'Start Date', 'End Date', 'Duration', 'Status', 'Reason', 'Applied At'],
-      ...filteredRequests.map(r => [r.employeeName, r.employeeId, r.department, r.leaveType, new Date(r.startDate).toLocaleDateString(), new Date(r.endDate).toLocaleDateString(), calculateDays(r.startDate, r.endDate), r.status, r.reason, new Date(r.appliedAt).toLocaleString()])
-    ].map(row => row.join(',')).join('\n');
+    const rows = filteredRequests.map(r => [
+      r.employeeName,
+      r.employeeId,
+      r.department,
+      r.leaveType,
+      new Date(r.startDate).toLocaleDateString(),
+      new Date(r.endDate).toLocaleDateString(),
+      calculateDays(r.startDate, r.endDate),
+      r.status,
+      r.reason,
+      new Date(r.appliedAt).toLocaleString(),
+    ]);
+    const csv = [['Employee Name', 'Employee ID', 'Department', 'Leave Type', 'Start Date', 'End Date', 'Duration', 'Status', 'Reason', 'Applied At'], ...rows].map(row => row.join(',')).join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `leave-report-${new Date().toISOString().split('T')[0]}.csv`;
+    a.download = `leave-report-${getTodayStr()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -466,11 +520,13 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
   const approvedCount = allLeaveRequests.filter(r => r.status === 'approved').length;
   const rejectedCount = allLeaveRequests.filter(r => r.status === 'rejected').length;
 
-  if (loading && allLeaveRequests.length === 0) return <div className="flex justify-center items-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div></div>;
+  if (loading && allLeaveRequests.length === 0) {
+    return <div className="flex justify-center items-center h-64"><div className="animate-spin rounded-full h-12 w-12 border-b-2 border-gray-900"></div></div>;
+  }
 
   return (
-    <div className="space-y-6 relative">
-      {/* Notification toast – same as before, omitted for brevity but keep your existing JSX */}
+    <div className="space-y-6 relative px-4 pb-20 sm:px-6 sm:pb-0">
+      {/* Notification Toast */}
       {showNotification && currentNotification && (
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -503,12 +559,12 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
         </motion.div>
       )}
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Leave Management</h1>
-          <p className="text-gray-600">Manage all employee leave requests across the organization</p>
+          <p className="text-gray-600 text-sm">Manage all employee leave requests across the organization</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <Badge variant="outline" className="bg-yellow-50">Pending: {pendingCount}</Badge>
           <Badge variant="outline" className="bg-green-50">Approved: {approvedCount}</Badge>
           <Badge variant="outline" className="bg-red-50">Rejected: {rejectedCount}</Badge>
@@ -518,7 +574,7 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
       <Card>
         <CardHeader><CardTitle className="flex items-center gap-2"><Filter className="h-4 w-4" /> Filters</CardTitle></CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="relative"><Search className="absolute left-3 top-3 h-4 w-4 text-gray-400" /><Input placeholder="Search employee..." value={searchTerm} onChange={e => setSearchTerm(e.target.value)} className="pl-10" /></div>
             <Input type="date" value={filterDate} onChange={e => setFilterDate(e.target.value)} />
             <Select value={filterStatus} onValueChange={setFilterStatus}>
@@ -545,25 +601,42 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
             <table className="w-full border-collapse">
               <thead>
                 <tr className="border-b">
-                  <th className="text-left p-3">Employee</th><th className="text-left p-3">Leave Type</th><th className="text-left p-3">Dates</th>
-                  <th className="text-left p-3">Duration</th><th className="text-left p-3">Status</th><th className="text-left p-3">Applied On</th>
-                  <th className="text-left p-3">Balance</th><th className="text-left p-3">Actions</th>
+                  <th className="text-left p-3">Employee</th>
+                  <th className="text-left p-3">Leave Type</th>
+                  <th className="text-left p-3">Dates</th>
+                  <th className="text-left p-3">Duration</th>
+                  <th className="text-left p-3">Status</th>
+                  <th className="text-left p-3">Applied On</th>
+                  <th className="text-left p-3">Balance</th>
+                  <th className="text-left p-3">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {displayedRequests.map((req, idx) => {
+                {displayedRequests.map(req => {
                   const balanceField = getBalanceField(req.leaveType);
-                  const currentBalance = balanceField ? (leaveBalances[req.employeeId]?.[balanceField] || 0) : 0;
+                  let currentBalance = 0;
+                  if (balanceField) {
+                    const raw = leaveBalances[req.employeeId]?.[balanceField];
+                    currentBalance = typeof raw === 'number' ? raw : 0;
+                  }
+                  const days = calculateDays(req.startDate, req.endDate);
                   return (
-                    <tr key={`${req.id}-${idx}`} className="border-b hover:bg-gray-50">
-                      <td className="p-3"><div><p className="font-medium">{req.employeeName}</p><p className="text-sm text-gray-500">{req.employeeId}</p><p className="text-sm text-gray-500">{req.department}</p></div></td>
+                    <tr key={req.id} className="border-b hover:bg-gray-50">
+                      <td className="p-3">
+                        <div><p className="font-medium">{req.employeeName}</p><p className="text-sm text-gray-500">{req.employeeId}</p><p className="text-sm text-gray-500">{req.department}</p></div>
+                      </td>
                       <td className="p-3">{req.leaveType}</td>
-                      <td className="p-3"><div><p>{new Date(req.startDate).toLocaleDateString()}</p><p>to</p><p>{new Date(req.endDate).toLocaleDateString()}</p></div></td>
-                      <td className="p-3">{calculateDays(req.startDate, req.endDate)} days</td>
-                      <td className="p-3"><Badge className={getStatusColor(req.status)}>{req.status}</Badge>{req.approvedBy && <p className="text-xs text-gray-500 mt-1">Approved by {req.approvedBy}</p>}</td>
+                      <td className="p-3">
+                        <div>{new Date(req.startDate).toLocaleDateString()} → {new Date(req.endDate).toLocaleDateString()}</div>
+                      </td>
+                      <td className="p-3">{days} days</td>
+                      <td className="p-3">
+                        <Badge className={getStatusColor(req.status)}>{req.status}</Badge>
+                        {req.approvedBy && <p className="text-xs text-gray-500 mt-1">Approved by {req.approvedBy}</p>}
+                      </td>
                       <td className="p-3">{new Date(req.appliedAt).toLocaleString()}</td>
                       <td className="p-3">
-                        <span className={`font-medium ${currentBalance < calculateDays(req.startDate, req.endDate) && req.status === 'pending' ? 'text-red-500' : 'text-green-600'}`}>
+                        <span className={`font-medium ${currentBalance < days && req.status === 'pending' ? 'text-red-500' : 'text-green-600'}`}>
                           {currentBalance} left
                         </span>
                         <Button variant="ghost" size="sm" className="ml-2" onClick={() => openBalanceModal(employees.find(e => e.id === req.employeeId)!)}>
@@ -578,12 +651,10 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
                               <Button size="sm" variant="outline" onClick={() => handleReject(req)} className="border-red-200 text-red-600 hover:bg-red-50" disabled={loading}><X className="h-3 w-3 mr-1" /> Reject</Button>
                             </>
                           )}
-                          {(req.status === 'approved' || req.status === 'rejected') && role === 'admin' && (
+                          {(req.status === 'approved' || req.status === 'rejected') && (
                             <Button size="sm" variant="outline" onClick={() => handleReapprove(req)} className="text-blue-600 hover:bg-blue-50" disabled={loading}><RotateCcw className="h-3 w-3 mr-1" /> Re-open</Button>
                           )}
-                          {role === 'admin' && (
-                            <Button size="sm" variant="outline" onClick={() => handleDelete(req)} className="text-red-600 hover:bg-red-50" disabled={loading}><Trash2 className="h-3 w-3" /> Delete</Button>
-                          )}
+                          <Button size="sm" variant="outline" onClick={() => handleDelete(req)} className="text-red-600 hover:bg-red-50" disabled={loading}><Trash2 className="h-3 w-3" /> Delete</Button>
                         </div>
                       </td>
                     </tr>
@@ -591,21 +662,28 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
                 })}
               </tbody>
             </table>
-            {displayedRequests.length === 0 && <div className="text-center py-8 text-gray-500">{allLeaveRequests.length === 0 ? "No leave requests found" : "No leave requests match the current filter"}</div>}
+            {displayedRequests.length === 0 && (
+              <div className="text-center py-8 text-gray-500">{allLeaveRequests.length === 0 ? "No leave requests found" : "No leave requests match the current filter"}</div>
+            )}
           </div>
-          {hasMore && <div className="flex justify-center mt-4"><Button onClick={loadMore} disabled={loadingMore} variant="outline">{loadingMore ? 'Loading...' : 'Load More'}</Button></div>}
+          {hasMoreItems && (
+            <div className="flex justify-center mt-4">
+              <Button onClick={loadMore} disabled={loadingMore} variant="outline">{loadingMore ? 'Loading...' : 'Load More'}</Button>
+            </div>
+          )}
         </CardContent>
       </Card>
 
       {/* Balance Modal */}
       <Dialog open={showBalanceModal} onOpenChange={setShowBalanceModal}>
-        <DialogContent><DialogHeader><DialogTitle>Set Leave Balance – {selectedEmployee?.name}</DialogTitle></DialogHeader>
+        <DialogContent>
+          <DialogHeader><DialogTitle>Set Leave Balance – {selectedEmployee?.name}</DialogTitle></DialogHeader>
           <div className="space-y-4">
             <div className="grid grid-cols-2 gap-3">
-              <div><Label>Casual Leave</Label><Input type="number" value={balanceForm.casual} onChange={e => setBalanceForm({...balanceForm, casual: parseInt(e.target.value) || 0})} /></div>
-              <div><Label>Sick Leave</Label><Input type="number" value={balanceForm.sick} onChange={e => setBalanceForm({...balanceForm, sick: parseInt(e.target.value) || 0})} /></div>
-              <div><Label>Annual Leave</Label><Input type="number" value={balanceForm.annual} onChange={e => setBalanceForm({...balanceForm, annual: parseInt(e.target.value) || 0})} /></div>
-              <div><Label>Comp‑Off</Label><Input type="number" value={balanceForm.compOff} onChange={e => setBalanceForm({...balanceForm, compOff: parseInt(e.target.value) || 0})} /></div>
+              <div><Label>Casual Leave</Label><Input type="number" value={balanceForm.casual} onChange={e => setBalanceForm({ ...balanceForm, casual: parseInt(e.target.value) || 0 })} /></div>
+              <div><Label>Sick Leave</Label><Input type="number" value={balanceForm.sick} onChange={e => setBalanceForm({ ...balanceForm, sick: parseInt(e.target.value) || 0 })} /></div>
+              <div><Label>Annual Leave</Label><Input type="number" value={balanceForm.annual} onChange={e => setBalanceForm({ ...balanceForm, annual: parseInt(e.target.value) || 0 })} /></div>
+              <div><Label>Comp‑Off</Label><Input type="number" value={balanceForm.compOff} onChange={e => setBalanceForm({ ...balanceForm, compOff: parseInt(e.target.value) || 0 })} /></div>
             </div>
             <div className="flex justify-end gap-2"><Button variant="outline" onClick={() => setShowBalanceModal(false)}>Cancel</Button><Button onClick={saveBalance}>Save</Button></div>
           </div>
@@ -614,14 +692,19 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
 
       {/* Settings Modal */}
       <Dialog open={showSettingsModal} onOpenChange={setShowSettingsModal}>
-        <DialogContent className="max-w-lg"><DialogHeader><DialogTitle>Leave Settings</DialogTitle></DialogHeader>
-          <Tabs defaultValue="carryForward"><TabsList className="grid w-full grid-cols-2"><TabsTrigger value="carryForward">Carry‑Forward Rules</TabsTrigger><TabsTrigger value="yearEnd">Year‑End Action</TabsTrigger></TabsList>
+        <DialogContent className="max-w-lg">
+          <DialogHeader><DialogTitle>Leave Settings</DialogTitle></DialogHeader>
+          <Tabs defaultValue="carryForward">
+            <TabsList className="grid w-full grid-cols-2">
+              <TabsTrigger value="carryForward">Carry‑Forward Rules</TabsTrigger>
+              <TabsTrigger value="yearEnd">Year‑End Action</TabsTrigger>
+            </TabsList>
             <TabsContent value="carryForward" className="space-y-4 pt-4">
-              {['casual', 'sick', 'annual', 'compOff'].map(type => (
+              {(['casual', 'sick', 'annual', 'compOff'] as const).map(type => (
                 <div key={type} className="grid grid-cols-2 gap-3 border-b pb-3">
                   <div><Label className="capitalize">{type}</Label></div>
-                  <div><Label>Percentage to carry</Label><Input type="number" value={carryForwardForm[type]?.percentage || 0} onChange={e => setCarryForwardForm({...carryForwardForm, [type]: {...carryForwardForm[type], percentage: parseInt(e.target.value) || 0}})} /></div>
-                  <div><Label>Max carry‑over</Label><Input type="number" value={carryForwardForm[type]?.max || 0} onChange={e => setCarryForwardForm({...carryForwardForm, [type]: {...carryForwardForm[type], max: parseInt(e.target.value) || 0}})} /></div>
+                  <div><Label>Percentage to carry</Label><Input type="number" value={carryForwardForm[type]?.percentage || 0} onChange={e => setCarryForwardForm({ ...carryForwardForm, [type]: { ...carryForwardForm[type], percentage: parseInt(e.target.value) || 0 } })} /></div>
+                  <div><Label>Max carry‑over</Label><Input type="number" value={carryForwardForm[type]?.max || 0} onChange={e => setCarryForwardForm({ ...carryForwardForm, [type]: { ...carryForwardForm[type], max: parseInt(e.target.value) || 0 } })} /></div>
                 </div>
               ))}
               <Button onClick={saveCarryForwardSettings} className="w-full">Save Rules</Button>
@@ -637,4 +720,4 @@ const LeaveManagement: React.FC<LeaveManagementProps> = ({ role = 'admin' }) => 
   );
 };
 
-export default LeaveManagement;
+export default React.memo(LeaveManagement);

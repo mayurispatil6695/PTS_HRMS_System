@@ -3,19 +3,9 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialo
 import { Badge } from '../../ui/badge';
 import { Clock, User, CalendarClock } from 'lucide-react';
 
-// Define the missing AttendanceRecord type
-interface AttendanceRecord {
-  id: string;
-  employeeName: string;
-  department?: string;
-  punchIn: string;
-  punchOut?: string;
-  hoursWorked?: number;
-  date: string;
-  status: 'present' | 'late' | 'half-day' | 'on-leave' | 'absent';
-  location?: { lat: number; lng: number; name: string };
-  locationOut?: { lat: number; lng: number; name: string };
-}
+// ✅ Import central AttendanceRecord type
+import type { AttendanceRecord } from '@/types/attendance';
+
 interface AttendancePopupProps {
   isOpen: boolean;
   onClose: () => void;
@@ -50,11 +40,22 @@ const AttendancePopup: React.FC<AttendancePopupProps> = ({
     }
   };
 
+  // Helper to format date safely
+  const formatDate = (dateValue: string | Date): string => {
+    if (!dateValue) return 'Invalid date';
+    if (typeof dateValue === 'string') {
+      return new Date(dateValue).toLocaleDateString('en-US', {
+        month: 'short', day: 'numeric', year: 'numeric'
+      });
+    }
+    return dateValue.toLocaleDateString();
+  };
+
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
+          <DialogTitle className="flex items-center gap-2 text-xl sm:text-2xl">
             <Clock className="h-5 w-5" />
             Today's Attendance Review
           </DialogTitle>
@@ -66,20 +67,23 @@ const AttendancePopup: React.FC<AttendancePopupProps> = ({
             <h3 className="text-lg font-semibold text-red-600 mb-3">Latecomers ({lateEmployees.length})</h3>
             <div className="space-y-2">
               {lateEmployees.map((record) => (
-                <div key={record.id} className="flex items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200">
+                <div key={record.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-3 bg-red-50 rounded-lg border border-red-200 gap-2">
                   <div className="flex items-center gap-3">
-                    <User className="h-4 w-4 text-red-600" />
+                    <User className="h-4 w-4 text-red-600 flex-shrink-0" />
                     <div>
                       <p className="font-medium">{record.employeeName}</p>
-                      <p className="text-sm text-gray-600">{record.department}</p>
+                      <p className="text-sm text-gray-600">{record.department || '—'}</p>
                     </div>
                   </div>
-                  <div className="text-right">
+                  <div className="text-left sm:text-right">
                     <p className="font-medium text-red-600">{record.punchIn}</p>
-                    <p className="text-xs text-gray-500">{new Date(record.date).toLocaleDateString()}</p>
+                    <p className="text-xs text-gray-500">{formatDate(record.date)}</p>
                   </div>
                 </div>
               ))}
+              {lateEmployees.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No latecomers today</p>
+              )}
             </div>
           </div>
 
@@ -89,85 +93,91 @@ const AttendancePopup: React.FC<AttendancePopupProps> = ({
               <CalendarClock className="h-4 w-4" />
               Half-Day ({halfDayEmployees.length})
             </h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {halfDayEmployees.map((record) => (
-                <div key={record.id} className="flex items-center justify-between p-3 bg-amber-50 rounded-lg border border-amber-100">
+                <div key={record.id} className="flex flex-col p-3 bg-amber-50 rounded-lg border border-amber-100 gap-2">
                   <div>
                     <p className="font-medium">{record.employeeName}</p>
-                    <p className="text-sm text-gray-600">{record.department}</p>
+                    <p className="text-sm text-gray-600">{record.department || '—'}</p>
                   </div>
-                  <div className="text-right">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       {getStatusBadge('half-day')}
-                      {record.hoursWorked && (
-                        <span className="text-xs text-amber-700">
-                          {record.hoursWorked.toFixed(1)} hrs
-                        </span>
+                      {record.totalHours && (
+                        <span className="text-xs text-amber-700">{record.totalHours}</span>
                       )}
                     </div>
-                    <p className="text-xs text-gray-500 mt-1">
+                    <p className="text-xs text-gray-500">
                       {record.punchIn} - {record.punchOut || 'N/A'}
                     </p>
                   </div>
                 </div>
               ))}
+              {halfDayEmployees.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No half‑day records</p>
+              )}
             </div>
           </div>
 
           {/* Present Employees */}
           <div>
             <h3 className="text-lg font-semibold text-green-600 mb-3">Present ({presentEmployees.length})</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {presentEmployees.map((record) => (
-                <div key={record.id} className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
+                <div key={record.id} className="flex flex-col p-3 bg-green-50 rounded-lg gap-2">
                   <div>
                     <p className="font-medium">{record.employeeName}</p>
-                    <p className="text-sm text-gray-600">{record.department}</p>
+                    <p className="text-sm text-gray-600">{record.department || '—'}</p>
                   </div>
-                  <div className="text-right">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     {getStatusBadge('present')}
-                    <p className="text-xs text-gray-500 mt-1">
+                    <p className="text-xs text-gray-500">
                       {record.punchIn} - {record.punchOut || 'N/A'}
                     </p>
                   </div>
                 </div>
               ))}
+              {presentEmployees.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No present records</p>
+              )}
             </div>
           </div>
 
           {/* On Leave Employees */}
           <div>
             <h3 className="text-lg font-semibold text-blue-600 mb-3">On Leave ({onLeaveEmployees.length})</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {onLeaveEmployees.map((record) => (
                 <div key={record.id} className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
                   <div>
                     <p className="font-medium">{record.employeeName}</p>
-                    <p className="text-sm text-gray-600">{record.department}</p>
+                    <p className="text-sm text-gray-600">{record.department || '—'}</p>
                   </div>
-                  <div>
-                    {getStatusBadge('on-leave')}
-                  </div>
+                  <div>{getStatusBadge('on-leave')}</div>
                 </div>
               ))}
+              {onLeaveEmployees.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No on‑leave records</p>
+              )}
             </div>
           </div>
 
           {/* Absent Employees */}
           <div>
             <h3 className="text-lg font-semibold text-gray-600 mb-3">Absent ({absentEmployees.length})</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
               {absentEmployees.map((record) => (
                 <div key={record.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
                   <div>
                     <p className="font-medium">{record.employeeName}</p>
-                    <p className="text-sm text-gray-600">{record.department}</p>
+                    <p className="text-sm text-gray-600">{record.department || '—'}</p>
                   </div>
-                  <div>
-                    {getStatusBadge('absent')}
-                  </div>
+                  <div>{getStatusBadge('absent')}</div>
                 </div>
               ))}
+              {absentEmployees.length === 0 && (
+                <p className="text-sm text-gray-500 italic">No absent records</p>
+              )}
             </div>
           </div>
         </div>

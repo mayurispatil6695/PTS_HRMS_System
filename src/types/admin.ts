@@ -1,83 +1,54 @@
 // src/types/admin.ts
-import { AttendanceRecord } from './attendance';
-import { Project } from './project';
+import type { Employee } from './employee';
+import type { AttendanceRecord } from './attendance';
 
-export interface Employee {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  department: string;
-  designation: string;
-  employeeId: string;
-  isActive: boolean;
-  createdAt: string;
-  profileImage?: string;
-  addedBy?: string;
-  status: string;
-  adminId?: string;
-}
-
-export interface MarketingPost {
-  id: string;
-  platform: string;
-  content: string;
-  scheduledDate: string;
-  scheduledTime: string;
-  postUrl?: string;
-  imageUrl?: string;
-  status: string;
-  createdBy: string;
-  createdByName: string;
-  department: string;
-  createdAt: string;
-  updatedAt: string;
-  adminId?: string;
-}
-
-export interface LeaveRequest {
-  id: string;
-  employeeId: string;
-  employeeName: string;
-  employeeEmail: string;
-  department: string;
-  leaveType: string;
-  startDate: string;
-  endDate: string;
-  reason: string;
-  status: 'pending' | 'approved' | 'rejected';
-  appliedAt: string;
-  adminId?: string;
-}
-
-
-
-export interface IdleUser {
-  id: string;
-  idleStartTime: number;
-  idleDuration: number;
-  lastActive: number;
-  status: string;
-}
-
-export interface FirebaseEmployee {
-  status?: string;
-  employeeId?: string;
+// Admin-specific Firebase raw shapes (for fetching)
+export interface FirebaseEmployeeRaw {
   name?: string;
   email?: string;
-  phone?: string;
   department?: string;
   designation?: string;
-  createdAt?: string;
+  status?: string;
+  employeeId?: string;
+  phone?: string;        // ✅ add
+  createdAt?: string;    // ✅ add
 }
 
-export interface ActivityData {
+export interface FirebaseAttendanceRaw {
+  selfie?: string;
+  selfieOut?: string;
+  breaks?: Record<string, import('./attendance').BreakRecord>;
+  punchIn?: string;
+  punchOut?: string;
+  date?: string;
   status?: string;
-  idleStartTime?: number;
-  idleDuration?: number;
-  lastActive?: number;
-  isIdle?: boolean;
+  workMode?: string;
   timestamp?: number;
+  markedLateBy?: string;
+  markedLateAt?: string;
+  markedHalfDayBy?: string;
+  markedHalfDayAt?: string;
+  location?: import('./common').LocationData;
+  locationOut?: import('./common').LocationData;
+  [key: string]: unknown;
+}
+
+export interface FirebaseEmployeeData {
+  name?: string;
+  department?: string;
+  email?: string;
+  designation?: string;
+  status?: string;
+  [key: string]: unknown;
+}
+
+export interface FirebaseUserData {
+  role?: string;
+  name?: string;
+  email?: string;
+  profile?: { role?: string; name?: string; [key: string]: unknown };
+  employee?: { role?: string; name?: string; [key: string]: unknown };
+  [key: string]: unknown;
 }
 
 export interface IdleNotification {
@@ -89,4 +60,13 @@ export interface IdleNotification {
   idleDuration: number;
   status: string;
   isIdle: boolean;
+}
+
+export interface PredefinedAdmin {
+  id: string;
+  email: string;
+  password: string;
+  name: string;
+  designation: string;
+  phone?: string;
 }

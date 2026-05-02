@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+// src/components/employee/MyTasks.tsx
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { Play, StopCircle, Edit, Eye, X, Paperclip, Download, Trash2, Image, File, StopCircleIcon } from 'lucide-react';
+import { Play, StopCircle, Edit, Eye, X, Paperclip, Download, Trash2, Image, File } from 'lucide-react';
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -67,7 +68,6 @@ interface Task {
   achievementSummary?: string;
 }
 
-// Helper type for Firebase task data
 interface FirebaseTaskData {
   title?: string;
   description?: string;
@@ -384,11 +384,14 @@ const MyTasks: React.FC = () => {
     toast.success('Attachment deleted');
   };
 
-  const filteredTasks = tasks.filter(task => {
-    const statusMatch = filterStatus === 'all' || task.status === filterStatus;
-    const dateMatch = !filterDate || task.dueDate?.startsWith(filterDate);
-    return statusMatch && dateMatch;
-  });
+  // Memoize filtered tasks for performance
+  const filteredTasks = useMemo(() => {
+    return tasks.filter(task => {
+      const statusMatch = filterStatus === 'all' || task.status === filterStatus;
+      const dateMatch = !filterDate || task.dueDate?.startsWith(filterDate);
+      return statusMatch && dateMatch;
+    });
+  }, [tasks, filterStatus, filterDate]);
 
   const getStatusBadge = (status: string): string => {
     switch (status) {

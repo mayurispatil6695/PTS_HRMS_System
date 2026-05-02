@@ -6,37 +6,102 @@ import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '.
 import { Save, X, Edit, ChevronUp, ChevronDown } from 'lucide-react';
 import TaskComments from './TaskComments';
 import TaskAttachments from './TaskAttachments';
-import TimeTracker from './TimeTracker'
+import TimeTracker from './TimeTracker';
 import TaskUpdateHistory from './TaskUpdateHistory';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../ui/collapsible';
 
-interface Task {
+// This interface MUST match TaskAttachments' Attachment interface exactly
+interface Attachment {
   id: string;
-  title: string;
-  description?: string;
-  dueDate: string;
-  status: string;
-  assignedToName?: string;
-  assignedTo?: string;
-  comments?: any[];
-  attachments?: any[];
-  updates?: any[];
-  totalTimeSpentMs?: number;
-  timeLogs?: any;
+  name: string;
+  url: string;
+  size: number;
+  type: string;
+  uploadedBy: string;
+  uploadedById: string;
+}
+
+// Local types from ProjectCard
+interface LocalComment {
+  id: string;
+  text: string;
+  createdAt: string;
+  createdBy: string;
+}
+
+interface LocalAttachment {
+  id: string;
+  name: string;
+  url: string;
+  size: number;
+  type: string;
+  uploadedById: string;
+  uploadedAt: string;
+}
+
+interface LocalUpdate {
+  id: string;
+  field: string;
+  oldValue: string;
+  newValue: string;
+  updatedBy: string;
+  updatedAt: string;
+  timestamp: string;
+  changes: { field: string; oldValue: unknown; newValue: unknown; }[];
 }
 
 interface TaskCardProps {
-  task: Task;
+  task: {
+    id: string;
+    title: string;
+    description?: string;
+    assignedTo?: string;
+    dueDate?: string;
+    status: string;
+    comments: LocalComment[];
+    attachments: LocalAttachment[];
+    totalTimeSpentMs?: number;
+    updates?: LocalUpdate[];
+  };
   projectId: string;
   isTeamLead: boolean;
   currentUserId: string;
   employeesList: { id: string; name: string }[];
-  onStatusUpdate: (taskId: string, newStatus: string) => Promise<void>;
-  onAddComment: (taskId: string, text: string, mentions: string[]) => Promise<void>;
-  onUploadAttachment: (taskId: string, file: File) => Promise<void>;
-  onDeleteAttachment: (taskId: string, attachmentId: string, url: string) => Promise<void>;
+  onStatusUpdate: (projectId: string, taskId: string, newStatus: string) => Promise<void>;
+  onAddComment: (projectId: string, taskId: string, text: string, mentions: string[]) => Promise<void>;
+  onUploadAttachment: (projectId: string, taskId: string, attachment: LocalAttachment) => Promise<void>;
+  onDeleteAttachment: (projectId: string, taskId: string, attachmentId: string, url: string) => Promise<void>;
   onTimeLogged: () => void;
 }
+
+// Convert LocalAttachment → Attachment (add uploadedBy, drop uploadedAt)
+function toAttachment(local: LocalAttachment): Attachment {
+  return {
+    id: local.id,
+    name: local.name,
+    url: local.url,
+    size: local.size,
+    type: local.type,
+    uploadedBy: local.uploadedById,
+    uploadedById: local.uploadedById,
+  };
+}
+
+// Convert Attachment → LocalAttachment (add uploadedAt placeholder)
+function toLocalAttachment(att: Attachment): LocalAttachment {
+  return {
+    id: att.id,
+    name: att.name,
+    url: att.url,
+    size: att.size,
+    type: att.type,
+    uploadedById: att.uploadedById,
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
+const getAssignedName = (id: string | undefined, list: { id: string; name: string }[]) =>
+  id ? list.find(e => e.id === id)?.name || id : 'Unassigned';
 
 const TaskCard: React.FC<TaskCardProps> = ({
   task,
@@ -54,18 +119,26 @@ const TaskCard: React.FC<TaskCardProps> = ({
   const [newStatus, setNewStatus] = useState(task.status);
   const [expanded, setExpanded] = useState(false);
 
+  const canEdit = isTeamLead || task.assignedTo === currentUserId;
+  const formatDate = (d?: string) => d ? new Date(d).toLocaleDateString() : '';
+  const assignedToName = getAssignedName(task.assignedTo, employeesList);
+
   const getStatusColor = (status: string) => {
-    switch (status) {
-      case 'completed': return 'bg-green-100 text-green-700';
-      case 'in_progress': return 'bg-yellow-100 text-yellow-700';
-      case 'overdue': return 'bg-red-100 text-red-700';
-      default: return 'bg-gray-100 text-gray-700';
-    }
+    if (status === 'completed') return 'bg-green-100 text-green-700';
+    if (status === 'in_progress') return 'bg-yellow-100 text-yellow-700';
+    return 'bg-gray-100 text-gray-700';
   };
 
-  const canEdit = isTeamLead || task.assignedTo === currentUserId;
+  const handleSaveStatus = async () => {
+    await onStatusUpdate(projectId, task.id, newStatus);
+    setEditingStatus(false);
+  };
 
-  const formatDate = (dateStr: string) => new Date(dateStr).toLocaleDateString();
+  const attachmentsForTaskAttachments = task.attachments.map(toAttachment);
+  const handleUploadComplete = (att: Attachment) => {
+    const localAtt = toLocalAttachment(att);
+    onUploadAttachment(projectId, task.id, localAtt);
+  };
 
   return (
     <div className="border rounded-lg p-4 space-y-3">
@@ -82,11 +155,10 @@ const TaskCard: React.FC<TaskCardProps> = ({
 
       {isTeamLead && (
         <div className="text-sm">
-          <span className="font-medium">Assigned to:</span> {task.assignedToName || 'Unassigned'}
+          <span className="font-medium">Assigned to:</span> {assignedToName}
         </div>
       )}
 
-      {/* Status update */}
       <div className="border-t pt-3">
         {canEdit ? (
           editingStatus ? (
@@ -96,14 +168,13 @@ const TaskCard: React.FC<TaskCardProps> = ({
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="not_started">Not Started</SelectItem>
-                  <SelectItem value="in_progress">In Progress</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
                   <SelectItem value="pending">Pending</SelectItem>
-                  <SelectItem value="having_issue">Having Issue</SelectItem>
+                  <SelectItem value="in_progress">In Progress</SelectItem>
+                  <SelectItem value="review">Review</SelectItem>
+                  <SelectItem value="completed">Completed</SelectItem>
                 </SelectContent>
               </Select>
-              <Button size="sm" onClick={async () => { await onStatusUpdate(task.id, newStatus); setEditingStatus(false); }}>
+              <Button size="sm" onClick={handleSaveStatus}>
                 <Save className="h-4 w-4 mr-1" /> Save
               </Button>
               <Button variant="outline" size="sm" onClick={() => setEditingStatus(false)}>
@@ -120,17 +191,15 @@ const TaskCard: React.FC<TaskCardProps> = ({
         )}
       </div>
 
-      {/* Attachments */}
       <TaskAttachments
         projectId={projectId}
         taskId={task.id}
-        attachments={task.attachments || []}
+        attachments={attachmentsForTaskAttachments}
         canUpload={canEdit}
-        onUploadComplete={(att) => onUploadAttachment(task.id, att as any)}
-        onDeleteComplete={(attId) => onDeleteAttachment(task.id, attId, '')}
+        onUploadComplete={handleUploadComplete}
+        onDeleteComplete={(attId) => onDeleteAttachment(projectId, task.id, attId, '')}
       />
 
-      {/* Time Tracking */}
       <TimeTracker
         projectId={projectId}
         taskId={task.id}
@@ -138,17 +207,16 @@ const TaskCard: React.FC<TaskCardProps> = ({
         onTimeLogged={onTimeLogged}
       />
 
-      {/* Update History */}
-      <TaskUpdateHistory updates={task.updates || []} />
+      {task.updates && task.updates.length > 0 && (
+        <TaskUpdateHistory updates={task.updates} />
+      )}
 
-      {/* Comments */}
       <TaskComments
-        comments={task.comments || []}
+        comments={task.comments}
         employeesList={employeesList}
-        onAddComment={(text, mentions) => onAddComment(task.id, text, mentions)}
+        onAddComment={(text, mentions) => onAddComment(projectId, task.id, text, mentions)}
       />
 
-      {/* Expand/Collapse (if needed) */}
       <Collapsible>
         <CollapsibleTrigger asChild>
           <Button variant="ghost" size="sm" className="w-full" onClick={() => setExpanded(!expanded)}>
@@ -156,9 +224,7 @@ const TaskCard: React.FC<TaskCardProps> = ({
             {expanded ? 'Show less' : 'Show more'}
           </Button>
         </CollapsibleTrigger>
-        <CollapsibleContent>
-          {/* Any extra details */}
-        </CollapsibleContent>
+        <CollapsibleContent />
       </Collapsible>
     </div>
   );

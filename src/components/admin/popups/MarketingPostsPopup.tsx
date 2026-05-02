@@ -20,21 +20,8 @@ import {
 } from 'lucide-react';
 import { Badge } from '../../ui/badge';
 
-interface MarketingPost {
-  id: string;
-  platform: string;
-  content: string;
-  scheduledDate: string;
-  scheduledTime: string;
-  postUrl?: string;
-  imageUrl?: string;
-  status: string;
-  createdBy: string;
-  createdByName: string;
-  department: string;
-  createdAt: string;
-  updatedAt: string;
-}
+// ✅ Import central MarketingPost type
+import type { MarketingPost } from '@/types/popup';
 
 interface MarketingPostsPopupProps {
   isOpen: boolean;
@@ -90,9 +77,9 @@ const MarketingPostsPopup: React.FC<MarketingPostsPopupProps> = ({
 
   return (
     <Dialog open={isOpen} onOpenChange={onClose}>
-      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto">
+      <DialogContent className="sm:max-w-2xl max-h-[90vh] overflow-y-auto p-4 sm:p-6">
         <DialogHeader>
-          <DialogTitle>
+          <DialogTitle className="flex items-center gap-2 text-xl sm:text-2xl">
             {showDetails && selectedPost ? (
               <div className="flex items-center gap-2">
                 <Button 
@@ -115,7 +102,7 @@ const MarketingPostsPopup: React.FC<MarketingPostsPopupProps> = ({
           <div className="space-y-4">
             <Card>
               <CardHeader className="pb-2">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
                     {platformIcons[selectedPost.platform] || <Share2 className="h-5 w-5" />}
                     <span className="font-semibold">{selectedPost.platform}</span>
@@ -128,17 +115,17 @@ const MarketingPostsPopup: React.FC<MarketingPostsPopupProps> = ({
               <CardContent>
                 <div className="space-y-4">
                   <div>
-                    <p className="text-gray-800 whitespace-pre-line">{selectedPost.content}</p>
+                    <p className="text-gray-800 whitespace-pre-line break-words">{selectedPost.content}</p>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <div className="flex items-center gap-2 text-sm text-gray-600">
-                        <Calendar className="h-4 w-4" />
+                        <Calendar className="h-4 w-4 flex-shrink-0" />
                         <span>Scheduled: {formatDate(`${selectedPost.scheduledDate}T${selectedPost.scheduledTime}`)}</span>
                       </div>
                       <div className="flex items-center gap-2 text-sm text-gray-600">
-                        <Clock className="h-4 w-4" />
+                        <Clock className="h-4 w-4 flex-shrink-0" />
                         <span>Created: {formatDate(selectedPost.createdAt)}</span>
                       </div>
                     </div>
@@ -200,9 +187,9 @@ const MarketingPostsPopup: React.FC<MarketingPostsPopupProps> = ({
                   onClick={() => handlePostClick(post)}
                 >
                   <CardContent className="p-4">
-                    <div className="flex items-start justify-between">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
                       <div className="flex-1">
-                        <div className="flex items-center gap-2 mb-2">
+                        <div className="flex flex-wrap items-center gap-2 mb-2">
                           {platformIcons[post.platform] || <Share2 className="h-4 w-4" />}
                           <span className="font-medium">{post.platform}</span>
                           <Badge className={getStatusColor(post.status)}>
@@ -210,9 +197,9 @@ const MarketingPostsPopup: React.FC<MarketingPostsPopupProps> = ({
                           </Badge>
                         </div>
                         
-                        <p className="text-gray-800 line-clamp-2 mb-3">{post.content}</p>
+                        <p className="text-gray-800 line-clamp-2 mb-3 break-words">{post.content}</p>
                         
-                        <div className="flex items-center gap-4 text-sm text-gray-500">
+                        <div className="flex flex-wrap items-center gap-4 text-sm text-gray-500">
                           <div className="flex items-center gap-1">
                             <Calendar className="h-3 w-3" />
                             <span>
@@ -225,7 +212,7 @@ const MarketingPostsPopup: React.FC<MarketingPostsPopupProps> = ({
                           </div>
                         </div>
                       </div>
-                      <ChevronUp className="h-4 w-4 text-gray-400 rotate-90" />
+                      <ChevronUp className="h-4 w-4 text-gray-400 rotate-90 self-end sm:self-center flex-shrink-0" />
                     </div>
                   </CardContent>
                 </Card>
