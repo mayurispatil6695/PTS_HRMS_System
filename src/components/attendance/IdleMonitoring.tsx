@@ -9,7 +9,6 @@ import { database } from '../../firebase';
 import { ref, onValue, off, update, DataSnapshot } from 'firebase/database';
 import { useAuth } from '../../hooks/useAuth';
 
-// Local interface matching the data stored under idleNotifications
 interface IdleEmployee {
   id: string;
   name: string;
@@ -23,10 +22,8 @@ interface IdleEmployee {
   isIdle: boolean;
 }
 
-// Helper to extract admin UID from the auth user object (no `any`)
 const getAdminUid = (user: unknown): string | null => {
   if (!user || typeof user !== 'object') return null;
-  // Try common field names safely
   const candidate = user as Record<string, unknown>;
   const uid = candidate.adminUid ?? candidate.adminId ?? candidate.id ?? candidate.uid;
   return typeof uid === 'string' ? uid : null;
@@ -47,7 +44,6 @@ const IdleMonitoring: React.FC = () => {
     }
 
     const idleRef = ref(database, `users/${adminUid}/idleNotifications`);
-    
     const unsubscribe = onValue(idleRef, (snapshot: DataSnapshot) => {
       const data = snapshot.val() as Record<string, {
         isIdle?: boolean;
@@ -60,9 +56,8 @@ const IdleMonitoring: React.FC = () => {
         department?: string;
         designation?: string;
       }> | null;
-      
-      const employees: IdleEmployee[] = [];
 
+      const employees: IdleEmployee[] = [];
       if (data && typeof data === 'object') {
         Object.entries(data).forEach(([id, employeeData]) => {
           if (employeeData.isIdle === true) {
@@ -76,14 +71,16 @@ const IdleMonitoring: React.FC = () => {
               idleDuration: employeeData.idleDuration || 0,
               lastActive: employeeData.lastActive || Date.now(),
               status: (employeeData.status as IdleEmployee['status']) || 'unread',
-              isIdle: true
+              isIdle: true,
             });
           }
         });
       }
 
-      employees.sort((a, b) => b.idleDuration - a.idleDuration);
-      setIdleEmployees(employees);
+      // ✅ Exclude the currently logged‑in user (admin) from own idle alerts
+      const filtered = employees.filter(emp => emp.id !== user?.id);
+      filtered.sort((a, b) => b.idleDuration - a.idleDuration);
+      setIdleEmployees(filtered);
       setLoading(false);
     }, (error) => {
       console.error('Error fetching idle notifications:', error);
@@ -91,19 +88,15 @@ const IdleMonitoring: React.FC = () => {
     });
 
     return () => off(idleRef);
-  }, [adminUid]);
+  }, [adminUid, user]);
 
   const markAsRead = useCallback(async (employeeId: string) => {
     if (!adminUid) return;
-    
     try {
       const notificationRef = ref(database, `users/${adminUid}/idleNotifications/${employeeId}`);
       await update(notificationRef, { status: 'read' });
-      
-      setIdleEmployees(prev => 
-        prev.map(emp => 
-          emp.id === employeeId ? { ...emp, status: 'read' } : emp
-        )
+      setIdleEmployees(prev =>
+        prev.map(emp => (emp.id === employeeId ? { ...emp, status: 'read' } : emp))
       );
     } catch (error) {
       console.error('Error marking notification as read:', error);
@@ -114,7 +107,6 @@ const IdleMonitoring: React.FC = () => {
     const idleSeconds = Math.floor((Date.now() - startTime) / 1000);
     const minutes = Math.floor(idleSeconds / 60);
     const seconds = idleSeconds % 60;
-    
     if (minutes >= 60) {
       const hours = Math.floor(minutes / 60);
       const remainingMinutes = minutes % 60;
@@ -166,24 +158,17 @@ const IdleMonitoring: React.FC = () => {
                 {idleEmployees.length} {idleEmployees.length === 1 ? 'Employee' : 'Employees'}
               </Badge>
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={toggleNotifications}
-              className="h-8 px-2"
-            >
+            <Button variant="ghost" size="sm" onClick={toggleNotifications} className="h-8 px-2">
               {showNotifications ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </Button>
           </CardTitle>
         </CardHeader>
-        
         {showNotifications && (
           <CardContent>
             <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
-              {idleEmployees.map((employee) => {
+              {idleEmployees.map(employee => {
                 const idleTimeFormatted = formatIdleTime(employee.idleStartTime);
                 const employeeAlertColor = getAlertColor(employee.idleDuration);
-                
                 return (
                   <motion.div
                     key={employee.id}
@@ -205,13 +190,10 @@ const IdleMonitoring: React.FC = () => {
                         )}
                       </div>
                     </div>
-                    
                     <div className="text-left sm:text-right">
                       <div className="flex items-center gap-2">
                         <Clock className="h-4 w-4 flex-shrink-0" />
-                        <span className="text-sm font-medium">
-                          Idle: {idleTimeFormatted}
-                        </span>
+                        <span className="text-sm font-medium">Idle: {idleTimeFormatted}</span>
                       </div>
                       <p className="text-xs text-gray-400 mt-1">
                         Last active: {new Date(employee.lastActive).toLocaleTimeString()}
@@ -223,8 +205,7 @@ const IdleMonitoring: React.FC = () => {
                           className="mt-2 text-xs w-full sm:w-auto"
                           onClick={() => markAsRead(employee.id)}
                         >
-                          <Bell className="h-3 w-3 mr-1" />
-                          Dismiss
+                          <Bell className="h-3 w-3 mr-1" /> Dismiss
                         </Button>
                       )}
                     </div>
@@ -232,7 +213,6 @@ const IdleMonitoring: React.FC = () => {
                 );
               })}
             </div>
-            
             <div className="mt-3 pt-2 border-t">
               <p className="text-xs text-gray-500">
                 Employees are considered idle after 10 seconds of inactivity. 

@@ -761,7 +761,7 @@ const EmployeeDashboardHome = () => {
     employeeName: user?.name,
   });
   useIdleDetection({
-    idleTimeout: 10000,
+    idleTimeout: 120000,
     userId: user?.id,
     adminId: user?.adminUid,
     employeeName: user?.name,
