@@ -91,7 +91,7 @@ const SalaryManagement: React.FC = () => {
     if (!user || user.role !== 'admin') return;
 
     setLoading(true);
-    const employeesRef = ref(database, 'employees');
+    const employeesRef = ref(database, 'users');
     
     const fetchEmployees = onValue(employeesRef, (snapshot) => {
       const employeesData: Employee[] = [];
