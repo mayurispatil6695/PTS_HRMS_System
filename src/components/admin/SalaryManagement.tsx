@@ -55,6 +55,21 @@ interface SalarySlip {
   sentAt?: string;
 }
 
+// Type for raw employee data from Firebase
+interface FirebaseEmployeeData {
+  name?: string;
+  email?: string;
+  phone?: string;
+  department?: string;
+  designation?: string;
+  employeeId?: string;
+  status?: string;
+  createdAt?: string;
+  salary?: number;
+  workMode?: string;
+  employmentType?: string;
+}
+
 const months = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
@@ -86,45 +101,45 @@ const SalaryManagement: React.FC = () => {
   const workModes = ['office', 'remote', 'hybrid'];
   const employmentTypes = ['full-time', 'part-time', 'contract', 'internship'];
 
-  // Fetch employees from Firebase
+  // Fetch employees from all admins (deduplicated by employeeId)
   useEffect(() => {
     if (!user || user.role !== 'admin') return;
-
     setLoading(true);
-    const employeesRef = ref(database, 'users');
-    
-    const fetchEmployees = onValue(employeesRef, (snapshot) => {
-      const employeesData: Employee[] = [];
-      snapshot.forEach((childSnapshot) => {
-        const employee = childSnapshot.val();
-        employeesData.push({
-          id: childSnapshot.key || '',
-          name: employee.name,
-          email: employee.email,
-          phone: employee.phone,
-          department: employee.department,
-          designation: employee.designation,
-          employeeId: employee.employeeId || `EMP-${childSnapshot.key?.slice(0, 8)}`,
-          isActive: employee.status === 'active',
-          createdAt: employee.createdAt,
-          profileImage: employee.profileImage,
-          salary: employee.salary,
-          workMode: employee.workMode || 'office',
-          employmentType: employee.employmentType || 'full-time'
-        });
+    const usersRef = ref(database, 'users');
+    const unsubscribe = onValue(usersRef, (snapshot) => {
+      const employeeMap = new Map<string, Employee>();
+      snapshot.forEach((adminSnap) => {
+        const employeesData = adminSnap.child('employees').val() as Record<string, FirebaseEmployeeData> | null;
+        if (employeesData) {
+          Object.entries(employeesData).forEach(([key, value]) => {
+            const empData = value as FirebaseEmployeeData;
+            if (!employeeMap.has(key)) {
+              employeeMap.set(key, {
+                id: key,
+                name: empData.name || '',
+                email: empData.email || '',
+                phone: empData.phone || '',
+                department: empData.department || '',
+                designation: empData.designation || '',
+                employeeId: empData.employeeId || `EMP-${key.slice(0, 8)}`,
+                isActive: empData.status === 'active',
+                createdAt: empData.createdAt || '',
+                salary: empData.salary || 0,
+                workMode: empData.workMode || 'office',
+                employmentType: empData.employmentType || 'full-time',
+              });
+            }
+          });
+        }
       });
-
-      setEmployees(employeesData.filter(emp => emp.isActive));
+      setEmployees(Array.from(employeeMap.values()).filter(emp => emp.isActive));
       setLoading(false);
-    }, (error) => {
-      console.error('Error fetching employees:', error);
+    }, (err) => {
+      console.error(err);
       setError('Failed to load employees');
       setLoading(false);
     });
-
-    return () => {
-      off(employeesRef);
-    };
+    return () => off(usersRef);
   }, [user]);
 
   // Fetch salary slips from Firebase
