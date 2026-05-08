@@ -13,6 +13,8 @@ import { useAttendanceRealtime } from '../../hooks/useAttendanceRealtime';
 import { update, ref, remove } from 'firebase/database';
 import { database } from '../../firebase';
 import { AttendanceRecord } from '@/types/attendance';
+import { calculateNetWorkDuration, calculateTotalBreakTime, getRemark } from '../../utils/attendanceHelpers';
+
 // Lazy load the table row component (optional, but keeps bundle smaller)
 const AttendanceTableRow = lazy(() => import('./AttendanceTableRow'));
 
@@ -130,8 +132,56 @@ const AttendanceManagement: React.FC = () => {
       toast({ title: "No Data", description: "No records to export", variant: "destructive" });
       return;
     }
-    // (Export logic remains the same, just use filteredRecords)
-    // ... (I'll keep it short, but you can copy your existing export function)
+
+    // CSV headers
+    const headers = [
+      "Employee Name",
+      "Employee ID",
+      "Date",
+      "Punch In",
+      "Punch Out",
+      "Net Hours",
+      "Break",
+      "Status",
+      "Work Mode",
+      "Late By",
+      "Half-Day By",
+      "Remark"
+    ];
+
+    // Build rows from filteredRecords
+    const rows = filteredRecords.map(record => [
+      record.employeeName,
+      record.employeeId,
+      new Date(record.date).toLocaleDateString(),
+      record.punchIn || "-",
+      record.punchOut || "-",
+      calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks),
+      calculateTotalBreakTime(record.breaks),
+      record.status,
+      record.workMode || "office",
+      record.markedLateBy || "-",
+      record.markedHalfDayBy || "-",
+      getRemark(record)
+    ]);
+
+    // Generate CSV string
+    const csvContent = [headers, ...rows]
+      .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\n");
+
+    // Create download link
+    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.href = url;
+    link.setAttribute("download", `attendance_${new Date().toISOString().slice(0,10)}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+
+    toast({ title: "Success", description: `${filteredRecords.length} records exported` });
   }, [filteredRecords]);
 
   const clearFilters = useCallback(() => {
