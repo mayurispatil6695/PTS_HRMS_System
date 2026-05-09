@@ -40,6 +40,7 @@ import { Project, Task } from '@/types/project';
 interface AttendanceRecord {
   id: string;
   employeeId: string;
+  employeeCode?: string;   
   employeeName: string;
   date: string;
   punchIn: string;
@@ -760,15 +761,15 @@ const EmployeeDashboardHome = () => {
     adminId: user?.adminUid,
     employeeName: user?.name,
   });
-  useIdleDetection({
-    idleTimeout: 120000,
-    userId: user?.id,
-    adminId: user?.adminUid,
-    employeeName: user?.name,
-    employeeEmail: user?.email,
-    department: user?.department,
-    isActive: isPunchedIn && !isOnBreak,
-  });
+  // useIdleDetection({
+  //   idleTimeout: 120000,
+  //   userId: user?.id,
+  //   adminId: user?.adminUid,
+  //   employeeName: user?.name,
+  //   employeeEmail: user?.email,
+  //   department: user?.department,
+  //   isActive: isPunchedIn && !isOnBreak,
+  // });
 
   const handleSelfieCapture = async (imageData: string): Promise<void> => {
     const location = await getCurrentLocation();

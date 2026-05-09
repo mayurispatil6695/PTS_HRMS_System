@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { ref, onValue, off, DataSnapshot } from 'firebase/database';
+import { ref, onValue, DataSnapshot } from 'firebase/database';
 import { database } from '../firebase';
 import { AttendanceRecord, BreakRecord } from '@/types/attendance';
 import { Employee } from '@/types/employee';
@@ -7,7 +7,7 @@ import { Employee } from '@/types/employee';
 interface FirebaseAttendanceRaw {
   selfie?: string;
   selfieOut?: string;
-  breaks?: Record<string, BreakRecord>;   // ✅ replaced 'any'
+  breaks?: Record<string, BreakRecord>;
   punchIn?: string;
   punchOut?: string;
   date?: string;
@@ -20,6 +20,7 @@ interface FirebaseAttendanceRaw {
   markedHalfDayAt?: string;
   location?: { lat: number; lng: number; name: string };
   locationOut?: { lat: number; lng: number; name: string };
+  employeeCode?: string;  // ✅ added to read custom employee ID
 }
 
 export const useAttendanceRealtime = (employees: Employee[]) => {
@@ -51,6 +52,7 @@ export const useAttendanceRealtime = (employees: Employee[]) => {
             recordsMap.set(recordId, {
               id: dbKey,
               employeeId: employee.id,
+              employeeCode: raw.employeeCode,  // ✅ read custom employee ID
               employeeName: employee.name,
               date: raw.date || '',
               punchIn: raw.punchIn || '',
@@ -69,7 +71,7 @@ export const useAttendanceRealtime = (employees: Employee[]) => {
               markedHalfDayAt: raw.markedHalfDayAt,
               location: raw.location,
               locationOut: raw.locationOut,
-              adminId: employee.adminId,   // ✅ add adminId to the record
+              adminId: employee.adminId,
             } as AttendanceRecord);
           });
         }

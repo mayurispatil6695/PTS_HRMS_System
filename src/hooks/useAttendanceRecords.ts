@@ -1,8 +1,28 @@
 import { useState, useEffect } from 'react';
-import { ref, onValue, off, query, orderByChild, DataSnapshot } from 'firebase/database';
+import { ref, onValue, query, orderByChild, DataSnapshot } from 'firebase/database';
 import { database } from '../firebase';
 import { Employee } from '@/types/employee';
-import { AttendanceRecord } from '@/types/attendance';
+import { AttendanceRecord, BreakRecord } from '@/types/attendance';
+
+// Define the raw attendance data structure (matching Firebase)
+interface FirebaseAttendanceRaw {
+  selfie?: string;
+  selfieOut?: string;
+  breaks?: Record<string, BreakRecord>;
+  punchIn?: string;
+  punchOut?: string;
+  date?: string;
+  status?: string;
+  workMode?: string;
+  timestamp?: number;
+  markedLateBy?: string;
+  markedLateAt?: string;
+  markedHalfDayBy?: string;
+  markedHalfDayAt?: string;
+  location?: { lat: number; lng: number; name: string };
+  locationOut?: { lat: number; lng: number; name: string };
+  employeeCode?: string;   // human-readable ID
+}
 
 export const useAttendanceRecords = (user: unknown, employees: Employee[]) => {
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
@@ -31,7 +51,8 @@ export const useAttendanceRecords = (user: unknown, employees: Employee[]) => {
         const attendanceQuery = query(attendanceRef, orderByChild('timestamp'));
 
         const unsubscribe = onValue(attendanceQuery, (snapshot: DataSnapshot) => {
-          const data = snapshot.val() as Record<string, Partial<AttendanceRecord>> | null;
+          // ✅ Use defined interface instead of 'any'
+          const data = snapshot.val() as Record<string, FirebaseAttendanceRaw> | null;
 
           const index = allRecords.findIndex(r => r.employeeId === employee.id);
           if (index !== -1) allRecords.splice(index, 1);
@@ -48,6 +69,7 @@ export const useAttendanceRecords = (user: unknown, employees: Employee[]) => {
               return {
                 id: key,
                 employeeId: employee.id,
+                employeeCode: value.employeeCode,   // ✅ now properly typed
                 employeeName: employee.name,
                 department: employee.department,
                 adminId: adminId,
