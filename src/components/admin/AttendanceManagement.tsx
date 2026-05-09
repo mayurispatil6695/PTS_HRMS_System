@@ -33,13 +33,14 @@ const AttendanceManagement: React.FC = () => {
   // Memoized filtered records
   const filteredRecords = useMemo(() => {
     let filtered = allRecords;
-    if (searchTerm) {
-      const term = searchTerm.toLowerCase();
-      filtered = filtered.filter(record =>
-        record.employeeName?.toLowerCase().includes(term) ||
-        record.employeeId?.toLowerCase().includes(term)
-      );
-    }
+   if (searchTerm) {
+  const term = searchTerm.toLowerCase();
+  filtered = filtered.filter(record =>
+    record.employeeName?.toLowerCase().includes(term) ||
+    record.employeeCode?.toLowerCase().includes(term) ||
+    record.employeeId?.toLowerCase().includes(term)
+  );
+}
     if (filterDateFrom) {
       filtered = filtered.filter(record => record.date?.split('T')[0] >= filterDateFrom);
     }

@@ -780,37 +780,45 @@ const EmployeeDashboardHome = () => {
   };
 
   const performPunchIn = async (selfieImage: string, location: { lat: number; lng: number; name: string } | null): Promise<void> => {
-    if (!user?.id || !user?.adminUid) { toast.error("User information not available"); return; }
-    if (todayAttendance) { toast.error("You've already punched in today"); return; }
-    setLoading(true);
-    try {
-      const now = new Date();
-      const newRecord: Omit<AttendanceRecord, 'id'> = {
-        employeeId: user.id,
-        employeeName: user.name || 'Unknown',
-        date: now.toISOString(),
-        punchIn: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        punchOut: null,
-        status: 'present',
-        workMode: employeeProfile?.workMode || 'office',
-        timestamp: now.getTime(),
-        department: user.department || '',
-        designation: user.designation || '',
-        selfie: selfieImage,
-        location: location || undefined,
-      };
-      const punchingRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching`);
-      const newRecordRef = push(punchingRef);
-      await set(newRecordRef, newRecord);
-      await punchIn();
-      toast.success("Punched in successfully with selfie verification!");
-    } catch (error) {
-      console.error(error);
-      toast.error("Failed to punch in");
-    } finally {
-      setLoading(false);
-    }
-  };
+  if (!user?.id || !user?.adminUid) { toast.error("User information not available"); return; }
+  if (todayAttendance) { toast.error("You've already punched in today"); return; }
+  setLoading(true);
+  try {
+    const now = new Date();
+
+    // ✅ Get the custom employee ID (already fetched from admin list into employeeIdDisplay)
+    // Fallbacks: user.employeeId, then user.id
+    const customEmployeeId = employeeIdDisplay || user?.employeeId || user?.id;
+
+    const newRecord: Omit<AttendanceRecord, 'id'> = {
+      employeeId: user.id,           // Firebase UID – for DB operations
+      employeeCode: customEmployeeId, // ← NEW: human-readable ID
+      employeeName: user.name || 'Unknown',
+      date: now.toISOString(),
+      punchIn: now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      punchOut: null,
+      status: 'present',
+      workMode: employeeProfile?.workMode || 'office',
+      timestamp: now.getTime(),
+      department: user.department || '',
+      designation: user.designation || '',
+      selfie: selfieImage,
+      location: location || undefined,
+    };
+    const punchingRef = ref(database, `users/${user.adminUid}/employees/${user.id}/punching`);
+    const newRecordRef = push(punchingRef);
+    await set(newRecordRef, newRecord);
+    await punchIn();
+    toast.success("Punched in successfully with selfie verification!");
+  } catch (error) {
+    console.error(error);
+    toast.error("Failed to punch in");
+  } finally {
+    setLoading(false);
+  }
+};
+     
+ 
 
   // ✅ MODIFIED: performPunchOut now accepts an extra parameter `skipSelfieCheck`
   const performPunchOut = async (selfieImage: string, location: { lat: number; lng: number; name: string } | null, skipSelfieCheck: boolean = false): Promise<void> => {

@@ -50,9 +50,9 @@ const AttendanceTableRow: React.FC<Props> = React.memo(({
     <>
       <tr className="hover:bg-gray-50 transition-colors">
         <td className="px-4 py-3 whitespace-nowrap">
-          <div className="text-sm font-medium text-gray-900">{record.employeeName}</div>
-          <div className="text-xs text-gray-500">{record.employeeId}</div>
-        </td>
+  <div className="text-sm font-medium text-gray-900">{record.employeeName}</div>
+  <div className="text-xs text-gray-500">{record.employeeCode || record.employeeId}</div>
+</td>
         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
           {new Date(record.date).toLocaleDateString()}
         </td>

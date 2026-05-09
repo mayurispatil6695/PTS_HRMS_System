@@ -13,6 +13,7 @@ export interface BreakRecord {
 export interface AttendanceRecord {
   id: string;
   employeeId: string;
+  employeeCode?: string;  
   employeeName: string;
   date: string;
   punchIn: string;
