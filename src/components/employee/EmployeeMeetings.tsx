@@ -47,7 +47,6 @@ interface FirebaseMeeting {
   participantCount?: number;
 }
 
-
 const EmployeeMeetings = () => {
   const { user } = useAuth();
   const [meetings, setMeetings] = useState<Meeting[]>([]);
@@ -58,7 +57,7 @@ const EmployeeMeetings = () => {
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   const [participantStatuses, setParticipantStatuses] = useState<Record<string, ParticipantStatus>>({});
 
-  // Request notification permission
+  // Request notification permission (only for later use, no direct popup)
   useEffect(() => {
     if ('Notification' in window) {
       Notification.requestPermission().then(permission => {
@@ -78,32 +77,28 @@ const EmployeeMeetings = () => {
       const statusMap: Record<string, ParticipantStatus> = {};
 
       if (data) {
-        // For each meeting, check if current user is a participant
         for (const [id, meeting] of Object.entries(data)) {
-          // Within the useEffect that fetches meetings, replace the meeting creation block:
-
-const meetingData = meeting as FirebaseMeeting;
-const participantRef = ref(database, `meetingParticipants/${id}/${user.id}`);
-const participantSnap = await get(participantRef);
-if (participantSnap.exists()) {
-  meetingsList.push({
-    id,
-    title: meetingData.title || '',
-    description: meetingData.description || '',
-    date: meetingData.date || '',
-    time: meetingData.time || '',
-    duration: meetingData.duration || '30',
-    meetingLink: meetingData.meetingLink || '',
-    agenda: meetingData.agenda,
-    status: (meetingData.status as Meeting['status']) || 'scheduled',
-    createdAt: meetingData.createdAt || new Date().toISOString(),
-    type: (meetingData.type as Meeting['type']) || 'common',
-    department: meetingData.department,
-    participantCount: meetingData.participantCount,
-  });
-  statusMap[id] = participantSnap.val();
-}
-           
+          const meetingData = meeting as FirebaseMeeting;
+          const participantRef = ref(database, `meetingParticipants/${id}/${user.id}`);
+          const participantSnap = await get(participantRef);
+          if (participantSnap.exists()) {
+            meetingsList.push({
+              id,
+              title: meetingData.title || '',
+              description: meetingData.description || '',
+              date: meetingData.date || '',
+              time: meetingData.time || '',
+              duration: meetingData.duration || '30',
+              meetingLink: meetingData.meetingLink || '',
+              agenda: meetingData.agenda,
+              status: (meetingData.status as Meeting['status']) || 'scheduled',
+              createdAt: meetingData.createdAt || new Date().toISOString(),
+              type: (meetingData.type as Meeting['type']) || 'common',
+              department: meetingData.department,
+              participantCount: meetingData.participantCount,
+            });
+            statusMap[id] = participantSnap.val();
+          }
         }
       }
 
@@ -132,14 +127,9 @@ if (participantSnap.exists()) {
     return () => unsubscribe();
   }, [user]);
 
-  // Notification functions – update participant status in Firebase
+  // ✅ Notification function – only in‑app toast, no browser popup
   const showMeetingNotification = useCallback((meeting: Meeting, message: string) => {
-    if (notificationPermission === 'granted') {
-      new Notification(`Meeting Reminder: ${meeting.title}`, {
-        body: `${message}\nTime: ${meeting.time}\nDuration: ${meeting.duration} minutes`,
-        icon: '/favicon.ico'
-      });
-    }
+    // ❌ Browser popup removed – only toast remains
     toast(
       <div className="flex items-start gap-3">
         <Bell className="h-5 w-5 text-blue-500 mt-0.5" />
@@ -153,7 +143,7 @@ if (participantSnap.exists()) {
       </div>,
       { duration: 10000 }
     );
-  }, [notificationPermission]);
+  }, []);
 
   const updateParticipantStatus = useCallback(async (meetingId: string, field: 'reminded5MinBefore' | 'notifiedAtStart', value: boolean) => {
     if (!user?.id) return;

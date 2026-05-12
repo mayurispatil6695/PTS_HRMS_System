@@ -1,4 +1,3 @@
-// src/components/employee/EmployeeLeaves.tsx
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import { Plane, Plus, Calendar, Clock, Bell, AlertCircle, Users } from 'lucide-react';
@@ -114,7 +113,7 @@ const EmployeeLeaves = () => {
     return Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
   };
 
-  // Request notification permission
+  // Request notification permission (only for later use, no direct popup)
   useEffect(() => {
     if ('Notification' in window) {
       Notification.requestPermission().then(permission => {
@@ -225,6 +224,7 @@ const EmployeeLeaves = () => {
     };
   }, [user?.id, user?.adminUid]);
 
+  // ✅ System notification – only in‑app toast, no browser popup
   const showSystemNotification = useCallback((notification: Omit<Notification, 'id' | 'read'>) => {
     const newNotification: Notification = {
       ...notification,
@@ -235,28 +235,15 @@ const EmployeeLeaves = () => {
     setCurrentNotification(newNotification);
     setShowNotification(true);
 
-    if (notificationPermission === 'granted') {
-      const notificationDetails = getNotificationDetails(notification.type);
-      try {
-        new Notification(notificationDetails.title, {
-          body: notificationDetails.description
-            .replace('{leaveType}', notification.leaveType)
-            .replace('{startDate}', new Date(notification.startDate).toLocaleDateString())
-            .replace('{endDate}', new Date(notification.endDate).toLocaleDateString()),
-          icon: '/logo.png',
-          tag: `leave-${notification.type}-${notification.timestamp}`
-        });
-      } catch (error) {
-        console.error('Error showing system notification:', error);
-      }
-    }
+    // ❌ Browser popup removed – will be handled by NotificationSystem.tsx if needed
+    // For now, only in‑app toast is shown.
 
     if (notificationTimeoutRef.current) clearTimeout(notificationTimeoutRef.current);
     notificationTimeoutRef.current = setTimeout(() => {
       setShowNotification(false);
       setTimeout(() => setCurrentNotification(null), 500);
     }, 5000);
-  }, [notificationPermission]);
+  }, []);
 
   const getNotificationDetails = (type: string) => {
     switch (type) {

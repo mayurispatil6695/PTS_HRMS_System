@@ -8,11 +8,13 @@ import { toast } from 'react-hot-toast';
 interface ProjectsReportSummaryProps {
   adminUid?: string;
 }
+
 interface FirebaseProject {
   status?: string;
   progress?: number;
-  // add other fields if needed (e.g., name, startDate)
+  // other fields not needed for summary
 }
+
 interface ReportData {
   totalProjects: number;
   completed: number;
@@ -41,9 +43,9 @@ const ProjectsReportSummary: React.FC<ProjectsReportSummaryProps> = ({ adminUid 
 
     const unsubscribe = onValue(projectsRef, (snapshot) => {
       try {
-        const projectsData = snapshot.val();
+        const projectsData = snapshot.val() as Record<string, FirebaseProject> | null;
         if (projectsData) {
-          const projectsArray = Object.values(projectsData) as FirebaseProject[];
+          const projectsArray = Object.values(projectsData);
           
           const totalProjects = projectsArray.length;
           const completed = projectsArray.filter(project => project.status === 'completed').length;
@@ -51,10 +53,13 @@ const ProjectsReportSummary: React.FC<ProjectsReportSummaryProps> = ({ adminUid 
             project.status === 'in_progress' || project.status === 'on_hold'
           ).length;
           
-          const totalProgress = projectsArray.reduce((sum, project) => {
-            return sum + (Number(project.progress) || 0);
-          }, 0);
-          
+          // ✅ FIX: For completed projects, force progress = 100
+          let totalProgress = 0;
+          for (const project of projectsArray) {
+            let progress = Number(project.progress) || 0;
+            if (project.status === 'completed') progress = 100;
+            totalProgress += progress;
+          }
           const avgProgress = totalProjects > 0 ? totalProgress / totalProjects : 0;
 
           setReportData({

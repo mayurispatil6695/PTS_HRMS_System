@@ -1,8 +1,7 @@
-// src/components/manager/TaskReminder.tsx
 import { useEffect } from 'react';
 import { useAuth } from '../../hooks/useAuth';
 import { database } from '../../firebase';
-import { ref, get, push, set } from 'firebase/database';
+import { ref, get, push, set, runTransaction } from 'firebase/database';
 import { toast } from 'react-hot-toast';
 
 // Types
@@ -25,9 +24,19 @@ const TaskReminder: React.FC = () => {
       if (!user?.adminUid || !user?.id) return;
 
       const today = new Date().toISOString().split('T')[0];
-      const lastCheckKey = `lastOverdueCheck_${user.id}`;
-      const lastCheck = localStorage.getItem(lastCheckKey);
-      if (lastCheck === today) return;
+      const lastCheckRef = ref(database, `users/${user.id}/meta/lastOverdueCheck`);
+
+      // Use transaction to atomically read and update last check date
+      let alreadyCheckedToday = false;
+      await runTransaction(lastCheckRef, (current) => {
+        if (current === today) {
+          alreadyCheckedToday = true;
+          return; // abort transaction
+        }
+        return today;
+      });
+
+      if (alreadyCheckedToday) return;
 
       try {
         const projectsSnap = await get(ref(database, 'projects'));
@@ -49,7 +58,7 @@ const TaskReminder: React.FC = () => {
         }
 
         if (overdueCount > 0) {
-          // In‑app notification
+          // Only save to Firebase – browser notification handled by NotificationSystem
           const notifRef = push(ref(database, `notifications/${user.id}`));
           await set(notifRef, {
             title: '⚠️ Overdue Tasks Alert',
@@ -58,16 +67,7 @@ const TaskReminder: React.FC = () => {
             read: false,
             createdAt: Date.now(),
           });
-
-          // Browser notification
-          if ('Notification' in window && Notification.permission === 'granted') {
-            new Notification('Overdue Tasks Alert', {
-              body: `${overdueCount} task(s) overdue. Please check.`,
-              icon: '/logo.png',
-            });
-          }
         }
-        localStorage.setItem(lastCheckKey, today);
       } catch (error) {
         console.error('Error checking overdue tasks:', error);
         toast.error('Failed to check overdue tasks');

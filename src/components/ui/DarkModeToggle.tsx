@@ -19,11 +19,14 @@ export const DarkModeToggle = () => {
     }
   };
 
-  // Save preference to localStorage and optionally Firebase
+  // Save preference to Firebase (only if user is logged in)
   const savePreference = async (dark: boolean) => {
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
     if (user?.id) {
-      await set(ref(database, `users/${user.id}/settings/theme`), dark ? 'dark' : 'light');
+      try {
+        await set(ref(database, `users/${user.id}/settings/theme`), dark ? 'dark' : 'light');
+      } catch (error) {
+        console.error('Failed to save theme preference:', error);
+      }
     }
   };
 
@@ -31,25 +34,32 @@ export const DarkModeToggle = () => {
   useEffect(() => {
     const loadTheme = async () => {
       let dark = false;
-      // 1. Check Firebase if user is logged in
+
       if (user?.id) {
-        const snapshot = await get(ref(database, `users/${user.id}/settings/theme`));
-        const firebaseTheme = snapshot.val();
-        if (firebaseTheme) {
-          dark = firebaseTheme === 'dark';
-        } else {
-          // Fallback to localStorage
-          const stored = localStorage.getItem('theme');
-          dark = stored === 'dark';
+        // Check Firebase first
+        try {
+          const snapshot = await get(ref(database, `users/${user.id}/settings/theme`));
+          const firebaseTheme = snapshot.val();
+          if (firebaseTheme === 'dark' || firebaseTheme === 'light') {
+            dark = firebaseTheme === 'dark';
+          } else {
+            // No saved preference – use system preference
+            dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          }
+        } catch (error) {
+          console.error('Failed to load theme from Firebase:', error);
+          dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
         }
       } else {
-        const stored = localStorage.getItem('theme');
-        dark = stored === 'dark';
+        // Not logged in – use system preference
+        dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
       }
+
       setIsDark(dark);
       applyTheme(dark);
       setLoaded(true);
     };
+
     loadTheme();
   }, [user]);
 

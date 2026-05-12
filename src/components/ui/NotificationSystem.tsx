@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ref, onValue, off, update, remove } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
+import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Bell, X, Check, FolderOpen, Calendar, AlertTriangle, UserCheck } from 'lucide-react';
+import { Bell, X, Check, FolderOpen, Calendar, AlertTriangle, UserCheck, Trash2 } from 'lucide-react';
 import { Button } from './button';
 import { Card, CardContent } from './card';
 import { Badge } from './badge';
@@ -12,15 +13,16 @@ interface Notification {
   id: string;
   title: string;
   body: string;
-  type: 'task_assigned' | 'task_due' | 'mention' | 'leave_approved' | 'leave_rejected' | 'project_assigned' | 'escalation';
+  type: 'task_assigned' | 'task_due' | 'mention' | 'leave_approved' | 'leave_rejected' | 'project_assigned' | 'escalation' | 'group_chat' | 'chat_message';
   read: boolean;
   createdAt: number;
   taskId?: string;
   projectId?: string;
   leaveId?: string;
+  messageId?: string;
+  chatType?: 'global' | 'dm';
 }
 
-// Firebase notification data structure
 interface FirebaseNotification {
   title?: string;
   body?: string;
@@ -30,13 +32,21 @@ interface FirebaseNotification {
   taskId?: string;
   projectId?: string;
   leaveId?: string;
+  messageId?: string;
+  chatType?: string;
+}
+
+interface NavigationState {
+  highlightMessageId?: string;
 }
 
 const NotificationSystem = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showDropdown, setShowDropdown] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const shownNotifications = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     if (!user?.id) return;
@@ -56,6 +66,8 @@ const NotificationSystem = () => {
             taskId: notif.taskId,
             projectId: notif.projectId,
             leaveId: notif.leaveId,
+            messageId: notif.messageId,
+            chatType: notif.chatType as 'global' | 'dm',
           });
         });
       }
@@ -66,24 +78,86 @@ const NotificationSystem = () => {
     return () => off(notifRef);
   }, [user?.id]);
 
+  // Centralised browser notifications with deduplication and visibility check
+  useEffect(() => {
+    if (Notification.permission !== 'granted') return;
+    // Do not show notifications if the tab is currently visible
+    if (document.visibilityState === 'visible') return;
+
+    notifications.forEach((n) => {
+      if (shownNotifications.current.has(n.id)) return;
+      if (!n.read) {
+        shownNotifications.current.add(n.id);
+        new Notification(n.title, {
+          body: n.body,
+          icon: '/favicon.ico',
+        });
+      }
+    });
+  }, [notifications]);
+
   const markAsRead = async (id: string) => {
     if (!user?.id) return;
-    const notifRef = ref(database, `notifications/${user.id}/${id}`);
-    await update(notifRef, { read: true });
+    await update(ref(database, `notifications/${user.id}/${id}`), { read: true });
   };
 
   const markAllAsRead = async () => {
     if (!user?.id) return;
-    const updates: Record<string, { read: boolean }> = {};
+    const updates: Record<string, boolean> = {};
     notifications.forEach(n => {
-      updates[`${n.id}/read`] = { read: true };
+      updates[`${n.id}/read`] = true;
     });
     await update(ref(database, `notifications/${user.id}`), updates);
+    setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+    setUnreadCount(0);
   };
 
   const deleteNotification = async (id: string) => {
     if (!user?.id) return;
     await remove(ref(database, `notifications/${user.id}/${id}`));
+  };
+
+  const clearAllNotifications = async () => {
+    if (!user?.id) return;
+    await remove(ref(database, `notifications/${user.id}`));
+    setNotifications([]);
+    setUnreadCount(0);
+  };
+
+  const handleNotificationClick = (notification: Notification) => {
+    if (!notification.read) markAsRead(notification.id);
+    let targetRoute = '/employee';
+    let state: NavigationState | undefined = undefined;
+    switch (notification.type) {
+      case 'task_assigned':
+      case 'task_due':
+        targetRoute = '/employee/my-work';
+        break;
+      case 'project_assigned':
+        targetRoute = '/employee/my-projects';
+        break;
+      case 'leave_approved':
+      case 'leave_rejected':
+        targetRoute = '/employee/leaves';
+        break;
+      case 'mention':
+      case 'group_chat':
+      case 'chat_message':
+        targetRoute = '/employee/chat';
+        if (notification.messageId) {
+          state = { highlightMessageId: notification.messageId };
+        }
+        break;
+      default:
+        targetRoute = '/employee';
+    }
+    try {
+      navigate(targetRoute, { state });
+    } catch (err) {
+      console.error('Navigation error:', err);
+    } finally {
+      setShowDropdown(false);
+    }
   };
 
   const getIcon = (type: string) => {
@@ -115,14 +189,19 @@ const NotificationSystem = () => {
             exit={{ opacity: 0, y: -10, scale: 0.95 }}
             className="absolute right-0 top-full mt-2 w-80 max-w-sm z-50"
           >
-            <Card className="shadow-lg">
+            <Card className="shadow-lg border-border">
               <CardContent className="p-0">
-                <div className="flex items-center justify-between p-4 border-b">
-                  <h3 className="font-semibold">Notifications</h3>
+                <div className="flex items-center justify-between p-4 border-b border-border">
+                  <h3 className="font-semibold text-foreground">Notifications</h3>
                   <div className="flex gap-2">
                     {unreadCount > 0 && (
                       <Button variant="ghost" size="sm" onClick={markAllAsRead}>
                         <Check className="h-3 w-3 mr-1" /> Mark all read
+                      </Button>
+                    )}
+                    {notifications.length > 0 && (
+                      <Button variant="ghost" size="sm" onClick={clearAllNotifications}>
+                        <Trash2 className="h-3 w-3 mr-1" /> Clear all
                       </Button>
                     )}
                     <Button variant="ghost" size="icon" onClick={() => setShowDropdown(false)}>
@@ -130,22 +209,24 @@ const NotificationSystem = () => {
                     </Button>
                   </div>
                 </div>
-                <div className="max-h-96 overflow-y-auto divide-y">
+                <div className="max-h-96 overflow-y-auto divide-y divide-border">
                   {notifications.length === 0 ? (
-                    <div className="p-4 text-center text-gray-500">No notifications</div>
+                    <div className="p-4 text-center text-muted-foreground">No notifications</div>
                   ) : (
                     notifications.map((n) => (
                       <div
                         key={n.id}
-                        className={`p-4 hover:bg-gray-50 cursor-pointer transition ${!n.read ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''}`}
-                        onClick={() => markAsRead(n.id)}
+                        className={`p-4 hover:bg-muted/50 cursor-pointer transition ${
+                          !n.read ? 'bg-blue-50 dark:bg-blue-950/30 border-l-4 border-l-blue-500' : ''
+                        }`}
+                        onClick={() => handleNotificationClick(n)}
                       >
                         <div className="flex items-start gap-3">
                           {getIcon(n.type)}
                           <div className="flex-1 min-w-0">
-                            <p className="font-medium text-sm">{n.title}</p>
-                            <p className="text-sm text-gray-600 mt-1">{n.body}</p>
-                            <p className="text-xs text-gray-400 mt-2">
+                            <p className="font-medium text-sm text-foreground">{n.title}</p>
+                            <p className="text-sm text-muted-foreground mt-1">{n.body}</p>
+                            <p className="text-xs text-muted-foreground/70 mt-2">
                               {new Date(n.createdAt).toLocaleString()}
                             </p>
                           </div>

@@ -1,4 +1,5 @@
 // src/components/attendance/IdleMonitoring.tsx
+
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { Users, Clock, AlertTriangle, Eye, EyeOff, Bell } from 'lucide-react';
@@ -24,13 +25,21 @@ interface IdleEmployee {
 
 const getAdminUid = (user: unknown): string | null => {
   if (!user || typeof user !== 'object') return null;
+
   const candidate = user as Record<string, unknown>;
-  const uid = candidate.adminUid ?? candidate.adminId ?? candidate.id ?? candidate.uid;
+
+  const uid =
+    candidate.adminUid ??
+    candidate.adminId ??
+    candidate.id ??
+    candidate.uid;
+
   return typeof uid === 'string' ? uid : null;
 };
 
 const IdleMonitoring: React.FC = () => {
   const { user } = useAuth();
+
   const [idleEmployees, setIdleEmployees] = useState<IdleEmployee[]>([]);
   const [showNotifications, setShowNotifications] = useState(true);
   const [loading, setLoading] = useState(true);
@@ -43,87 +52,156 @@ const IdleMonitoring: React.FC = () => {
       return;
     }
 
-    const idleRef = ref(database, `users/${adminUid}/idleNotifications`);
-    const unsubscribe = onValue(idleRef, (snapshot: DataSnapshot) => {
-      const data = snapshot.val() as Record<string, {
-        isIdle?: boolean;
-        idleStartTime?: number;
-        idleDuration?: number;
-        lastActive?: number;
-        status?: string;
-        employeeName?: string;
-        employeeEmail?: string;
-        department?: string;
-        designation?: string;
-      }> | null;
+    const idleRef = ref(
+      database,
+      `users/${adminUid}/idleNotifications`
+    );
 
-      const employees: IdleEmployee[] = [];
-      if (data && typeof data === 'object') {
-        Object.entries(data).forEach(([id, employeeData]) => {
-          if (employeeData.isIdle === true) {
-            employees.push({
-              id,
-              name: employeeData.employeeName || id,
-              email: employeeData.employeeEmail || '',
-              department: employeeData.department,
-              designation: employeeData.designation,
-              idleStartTime: employeeData.idleStartTime || Date.now(),
-              idleDuration: employeeData.idleDuration || 0,
-              lastActive: employeeData.lastActive || Date.now(),
-              status: (employeeData.status as IdleEmployee['status']) || 'unread',
-              isIdle: true,
-            });
-          }
-        });
+    const unsubscribe = onValue(
+      idleRef,
+      (snapshot: DataSnapshot) => {
+        const data = snapshot.val() as
+          | Record<
+              string,
+              {
+                isIdle?: boolean;
+                idleStartTime?: number;
+                idleDuration?: number;
+                lastActive?: number;
+                status?: string;
+                employeeName?: string;
+                employeeEmail?: string;
+                department?: string;
+                designation?: string;
+              }
+            >
+          | null;
+
+        const employees: IdleEmployee[] = [];
+
+        if (data && typeof data === 'object') {
+          Object.entries(data).forEach(([id, employeeData]) => {
+            if (employeeData.isIdle === true) {
+              employees.push({
+                id,
+                name: employeeData.employeeName || id,
+                email: employeeData.employeeEmail || '',
+                department: employeeData.department,
+                designation: employeeData.designation,
+                idleStartTime:
+                  employeeData.idleStartTime || Date.now(),
+                idleDuration:
+                  employeeData.idleDuration || 0,
+                lastActive:
+                  employeeData.lastActive || Date.now(),
+                status:
+                  (employeeData.status as IdleEmployee['status']) ||
+                  'unread',
+                isIdle: true,
+              });
+            }
+          });
+        }
+
+        // Exclude currently logged-in admin from own alerts
+        const filtered = employees.filter(
+          emp => emp.id !== user?.id
+        );
+
+        // Sort by highest idle duration
+        filtered.sort(
+          (a, b) => b.idleDuration - a.idleDuration
+        );
+
+        setIdleEmployees(filtered);
+        setLoading(false);
+      },
+      error => {
+        console.error(
+          'Error fetching idle notifications:',
+          error
+        );
+        setLoading(false);
       }
+    );
 
-      // ✅ Exclude the currently logged‑in user (admin) from own idle alerts
-      const filtered = employees.filter(emp => emp.id !== user?.id);
-      filtered.sort((a, b) => b.idleDuration - a.idleDuration);
-      setIdleEmployees(filtered);
-      setLoading(false);
-    }, (error) => {
-      console.error('Error fetching idle notifications:', error);
-      setLoading(false);
-    });
-
-    return () => off(idleRef);
+    return () => {
+      off(idleRef);
+      unsubscribe();
+    };
   }, [adminUid, user]);
 
-  const markAsRead = useCallback(async (employeeId: string) => {
-    if (!adminUid) return;
-    try {
-      const notificationRef = ref(database, `users/${adminUid}/idleNotifications/${employeeId}`);
-      await update(notificationRef, { status: 'read' });
-      setIdleEmployees(prev =>
-        prev.map(emp => (emp.id === employeeId ? { ...emp, status: 'read' } : emp))
+  const markAsRead = useCallback(
+    async (employeeId: string) => {
+      if (!adminUid) return;
+
+      try {
+        const notificationRef = ref(
+          database,
+          `users/${adminUid}/idleNotifications/${employeeId}`
+        );
+
+        await update(notificationRef, {
+          status: 'read',
+        });
+
+        setIdleEmployees(prev =>
+          prev.map(emp =>
+            emp.id === employeeId
+              ? { ...emp, status: 'read' }
+              : emp
+          )
+        );
+      } catch (error) {
+        console.error(
+          'Error marking notification as read:',
+          error
+        );
+      }
+    },
+    [adminUid]
+  );
+
+  // ✅ Correct formatter using idleDuration
+  const formatDuration = useCallback(
+    (durationMs: number): string => {
+      const totalSeconds = Math.floor(durationMs / 1000);
+
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor(
+        (totalSeconds % 3600) / 60
       );
-    } catch (error) {
-      console.error('Error marking notification as read:', error);
-    }
-  }, [adminUid]);
+      const seconds = totalSeconds % 60;
 
-  const formatIdleTime = useCallback((startTime: number): string => {
-    const idleSeconds = Math.floor((Date.now() - startTime) / 1000);
-    const minutes = Math.floor(idleSeconds / 60);
-    const seconds = idleSeconds % 60;
-    if (minutes >= 60) {
-      const hours = Math.floor(minutes / 60);
-      const remainingMinutes = minutes % 60;
-      return `${hours}h ${remainingMinutes}m`;
-    } else if (minutes > 0) {
-      return `${minutes}m ${seconds}s`;
-    } else {
+      if (hours > 0) {
+        return `${hours}h ${minutes}m`;
+      }
+
+      if (minutes > 0) {
+        return `${minutes}m ${seconds}s`;
+      }
+
       return `${seconds}s`;
-    }
-  }, []);
+    },
+    []
+  );
 
-  const getAlertColor = useCallback((duration: number): string => {
-    const idleSeconds = Math.floor(duration / 1000);
-    if (idleSeconds >= 60) return 'bg-red-100 border-red-400 text-red-800';
-    if (idleSeconds >= 30) return 'bg-orange-100 border-orange-400 text-orange-800';
-    return 'bg-yellow-100 border-yellow-400 text-yellow-800';
-  }, []);
+  const getAlertColor = useCallback(
+    (duration: number): string => {
+      const idleSeconds = Math.floor(duration / 1000);
+
+      if (idleSeconds >= 300) {
+        return 'bg-red-100 border-red-400 text-red-800';
+      }
+
+      if (idleSeconds >= 120) {
+        return 'bg-orange-100 border-orange-400 text-orange-800';
+      }
+
+      return 'bg-yellow-100 border-yellow-400 text-yellow-800';
+    },
+    []
+  );
 
   const toggleNotifications = useCallback(() => {
     setShowNotifications(prev => !prev);
@@ -137,9 +215,13 @@ const IdleMonitoring: React.FC = () => {
     );
   }
 
-  if (idleEmployees.length === 0) return null;
+  if (idleEmployees.length === 0) {
+    return null;
+  }
 
-  const highestDuration = idleEmployees[0]?.idleDuration || 0;
+  const highestDuration =
+    idleEmployees[0]?.idleDuration || 0;
+
   const alertColor = getAlertColor(highestDuration);
 
   return (
@@ -153,22 +235,49 @@ const IdleMonitoring: React.FC = () => {
           <CardTitle className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex items-center gap-2">
               <AlertTriangle className="h-5 w-5" />
-              <span className="text-sm sm:text-base">Idle Employee Alerts</span>
-              <Badge variant="outline" className="ml-2 text-xs">
-                {idleEmployees.length} {idleEmployees.length === 1 ? 'Employee' : 'Employees'}
+
+              <span className="text-sm sm:text-base">
+                Idle Employee Alerts
+              </span>
+
+              <Badge
+                variant="outline"
+                className="ml-2 text-xs"
+              >
+                {idleEmployees.length}{' '}
+                {idleEmployees.length === 1
+                  ? 'Employee'
+                  : 'Employees'}
               </Badge>
             </div>
-            <Button variant="ghost" size="sm" onClick={toggleNotifications} className="h-8 px-2">
-              {showNotifications ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggleNotifications}
+              className="h-8 px-2"
+            >
+              {showNotifications ? (
+                <EyeOff className="h-4 w-4" />
+              ) : (
+                <Eye className="h-4 w-4" />
+              )}
             </Button>
           </CardTitle>
         </CardHeader>
+
         {showNotifications && (
           <CardContent>
             <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
               {idleEmployees.map(employee => {
-                const idleTimeFormatted = formatIdleTime(employee.idleStartTime);
-                const employeeAlertColor = getAlertColor(employee.idleDuration);
+                // ✅ Use idleDuration instead of Date.now() math
+                const idleTimeFormatted = formatDuration(
+                  employee.idleDuration
+                );
+
+                const employeeAlertColor =
+                  getAlertColor(employee.idleDuration);
+
                 return (
                   <motion.div
                     key={employee.id}
@@ -180,32 +289,53 @@ const IdleMonitoring: React.FC = () => {
                       <div className="w-10 h-10 rounded-full bg-yellow-100 flex items-center justify-center flex-shrink-0">
                         <Users className="h-5 w-5 text-yellow-600" />
                       </div>
+
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium text-gray-900 text-sm sm:text-base truncate">{employee.name}</p>
-                        <p className="text-xs text-gray-500 truncate">{employee.email}</p>
+                        <p className="font-medium text-gray-900 text-sm sm:text-base truncate">
+                          {employee.name}
+                        </p>
+
+                        <p className="text-xs text-gray-500 truncate">
+                          {employee.email}
+                        </p>
+
                         {employee.department && (
                           <p className="text-xs text-gray-400">
-                            {employee.department} • {employee.designation || 'Employee'}
+                            {employee.department} •{' '}
+                            {employee.designation ||
+                              'Employee'}
                           </p>
                         )}
                       </div>
                     </div>
+
                     <div className="text-left sm:text-right">
                       <div className="flex items-center gap-2">
                         <Clock className="h-4 w-4 flex-shrink-0" />
-                        <span className="text-sm font-medium">Idle: {idleTimeFormatted}</span>
+
+                        <span className="text-sm font-medium">
+                          Idle: {idleTimeFormatted}
+                        </span>
                       </div>
+
                       <p className="text-xs text-gray-400 mt-1">
-                        Last active: {new Date(employee.lastActive).toLocaleTimeString()}
+                        Last active:{' '}
+                        {new Date(
+                          employee.lastActive
+                        ).toLocaleTimeString()}
                       </p>
+
                       {employee.status === 'unread' && (
                         <Button
                           size="sm"
                           variant="outline"
                           className="mt-2 text-xs w-full sm:w-auto"
-                          onClick={() => markAsRead(employee.id)}
+                          onClick={() =>
+                            markAsRead(employee.id)
+                          }
                         >
-                          <Bell className="h-3 w-3 mr-1" /> Dismiss
+                          <Bell className="h-3 w-3 mr-1" />
+                          Dismiss
                         </Button>
                       )}
                     </div>
@@ -213,10 +343,12 @@ const IdleMonitoring: React.FC = () => {
                 );
               })}
             </div>
+
             <div className="mt-3 pt-2 border-t">
               <p className="text-xs text-gray-500">
-                Employees are considered idle after 10 seconds of inactivity. 
-                This helps monitor productivity and well-being.
+                Employees are considered idle after
+                2 minutes of inactivity. Break time is
+                excluded from idle tracking automatically.
               </p>
             </div>
           </CardContent>

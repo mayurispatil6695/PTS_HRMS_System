@@ -1,4 +1,3 @@
-// src/components/admin/popups/ProjectsPopup.tsx
 import React, { useState, useMemo } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../../ui/dialog';
 import { Badge } from '../../ui/badge';
@@ -16,7 +15,6 @@ interface ProjectsPopupProps {
   employees?: Employee[];
 }
 
-// Helper: convert tasks from Record to array
 const getTasksArray = (tasks: Project['tasks']): Task[] => {
   if (!tasks) return [];
   return Object.values(tasks);
@@ -81,11 +79,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
   const formatDisplayDate = (dateString?: string) => {
     if (!dateString) return 'Not set';
     const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'short',
-      day: 'numeric',
-    });
+    return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
   };
 
   const getEmployeeName = (employeeId?: string): string => {
@@ -120,7 +114,9 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
         </div>
 
         <div className="space-y-4">
-          {filteredProjects.map((project, projectIndex) => {
+          {filteredProjects.map((project) => {
+            // Ensure unique key – project.id must exist (if not, fallback to index)
+            const projectKey = project.id || `project-${Math.random()}`;
             const tasksArray = getTasksArray(project.tasks);
             const completedTasksCount = tasksArray.filter(t => t.status === 'completed').length;
             const totalTasksCount = tasksArray.length;
@@ -139,8 +135,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
               .filter(name => name !== 'Unknown' && name !== 'Unassigned');
             const teamLeaderName = getEmployeeName(project.assignedTeamLeader);
 
-            const projectKey = project.id ? `${project.id}-${projectIndex}` : `project-${projectIndex}`;
-
             return (
               <div key={projectKey} className="border rounded-xl p-4 shadow-sm hover:shadow-lg transition-all duration-200 bg-white">
                 <div className="flex items-start justify-between mb-3">
@@ -155,9 +149,7 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                         </div>
                       </Badge>
                     </div>
-
                     <p className="text-gray-600 mb-3">{project.description}</p>
-
                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-3">
                       <div className="flex items-center gap-2">
                         <Calendar className="h-4 w-4 text-gray-500" />
@@ -168,7 +160,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                         <span className="text-sm">End: {formatDisplayDate(project.endDate)}</span>
                       </div>
                     </div>
-
                     <div className="flex flex-wrap items-center gap-4 mb-3">
                       <div className="flex items-center gap-2">
                         <Users className="h-4 w-4 text-gray-500" />
@@ -179,7 +170,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                         <span className="text-sm">Tasks: {completedTasksCount}/{totalTasksCount}</span>
                       </div>
                     </div>
-
                     <div className="mb-3">
                       <div className="flex items-center justify-between mb-1">
                         <span className="text-sm font-medium">Progress</span>
@@ -188,7 +178,6 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
                       <Progress value={progress} className="h-2" />
                     </div>
                   </div>
-
                   <Button variant="ghost" size="sm" className="h-8 w-8 p-0 flex-shrink-0" onClick={() => toggleProjectExpand(project.id)}>
                     {expandedProjects[project.id] ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
                   </Button>
@@ -196,19 +185,21 @@ const ProjectsPopup: React.FC<ProjectsPopupProps> = ({
 
                 <Collapsible open={expandedProjects[project.id]}>
                   <CollapsibleContent className="mt-4 space-y-4 border-t pt-4">
-                    {Object.entries(tasksByEmployee).map(([empId, tasks], empIndex) => {
+                    {Object.entries(tasksByEmployee).map(([empId, tasks], idx) => {
                       const employeeName = getEmployeeName(empId);
                       const completed = tasks.filter(t => t.status === 'completed').length;
+                      // Use empId + idx as fallback key
+                      const sectionKey = `${empId}-${idx}`;
                       return (
-                        <div key={`${empId}-${empIndex}`} className="space-y-2">
+                        <div key={sectionKey} className="space-y-2">
                           <div className="flex items-center gap-2 pl-2">
                             <User className="h-4 w-4 text-gray-500" />
                             <span className="text-sm font-medium">{employeeName}:</span>
                             <span className="text-xs">{completed} / {tasks.length} completed</span>
                           </div>
                           <div className="pl-6 space-y-2">
-                            {tasks.map(task => (
-                              <div key={task.id} className="border rounded p-2">
+                            {tasks.map((task) => (
+                              <div key={task.id || `task-${Math.random()}`} className="border rounded p-2">
                                 <div className="flex flex-col sm:flex-row justify-between gap-2">
                                   <div>
                                     <h4 className="text-sm font-medium">{task.title}</h4>

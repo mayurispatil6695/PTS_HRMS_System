@@ -1,42 +1,32 @@
-// src/pages/admin/dashboard/AdminDashboardHome.tsx
 import React, { useState, useEffect, useMemo, lazy, Suspense, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { Users, UserCheck, Calendar, Clock, FolderOpen, Camera, Bell, X, AlertTriangle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import DashboardCard from './DashboardCard';
 import { ref, onValue, off, update, DataSnapshot } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
 import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
 import { useEmployees } from '../../hooks/useEmployees';
 import { useProjects } from '../../hooks/useProjects';
 import { useAttendanceRecords } from '../../hooks/useAttendanceRecords';
 import { useLeaveRequests } from '../../hooks/useLeaveRequests';
-import { useMarketingPosts } from '../../hooks/useMarketingPosts';  
+import { useMarketingPosts } from '../../hooks/useMarketingPosts';
 import { AttendanceRecord } from '@/types/attendance';
 import { IdleUser, ActivityData } from '@/types/attendance';
 import { Employee } from '@/types/employee';
 import { LeaveRequest, MarketingPost } from '@/types/popup';
 import { Project } from '@/types/project';
 
-// Lazy load popups – only loaded when opened
+// Lazy load popups
 const AttendancePopup = lazy(() => import('./popups/AttendancePopup'));
 const LeavePopup = lazy(() => import('./popups/LeavePopup'));
 const EmployeesPopup = lazy(() => import('./popups/EmployeesPopup'));
 const ProjectsPopup = lazy(() => import('./popups/ProjectsPopup'));
 const MarketingPostsPopup = lazy(() => import('./popups/MarketingPostsPopup'));
 
-// Work session interface
-interface WorkSession {
-  isPunchedIn?: boolean;
-  isOnBreak?: boolean;
-  punchInTime?: number;
-  punchOutTime?: number;
-  breakStartTime?: number;
-  lastUpdated?: number;
-}
-
-// Helper to detect mobile screen
 const useMediaQuery = (query: string) => {
   const [matches, setMatches] = useState(false);
   useEffect(() => {
@@ -51,6 +41,7 @@ const useMediaQuery = (query: string) => {
 
 const AdminDashboardHome = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const isMobile = useMediaQuery('(max-width: 640px)');
 
   // Data hooks
@@ -60,15 +51,12 @@ const AdminDashboardHome = () => {
   const { leaveRequests } = useLeaveRequests(user, employees);
   const { marketingPosts } = useMarketingPosts(user, employees);
 
-  // Local state
   const [idleUsers, setIdleUsers] = useState<IdleUser[]>([]);
   const [notificationPermission, setNotificationPermission] = useState<NotificationPermission>('default');
   const [activeNotification, setActiveNotification] = useState<{ post: MarketingPost; timer: number } | null>(null);
   const [notificationTimeout, setNotificationTimeout] = useState<NodeJS.Timeout | null>(null);
   const [notifiedIdleIds, setNotifiedIdleIds] = useState<Set<string>>(new Set());
-  const prevWorkSessionsRef = React.useRef<Map<string, WorkSession>>(new Map());
 
-  // Popup states
   const [popups, setPopups] = useState({
     attendance: false,
     leave: false,
@@ -90,48 +78,6 @@ const AdminDashboardHome = () => {
       }
     }
   }, []);
-
-  // ========== Work Sessions (Attendance Notifications) ==========
-  useEffect(() => {
-    if (!employees.length) return;
-    let isFirstRun = true;
-    const workSessionsRef = ref(database, 'workSessions');
-    const unsubscribe = onValue(workSessionsRef, (snapshot) => {
-      const data = snapshot.val() as Record<string, WorkSession> | null;
-      if (!data) return;
-      if (isFirstRun) {
-        prevWorkSessionsRef.current = new Map(Object.entries(data));
-        isFirstRun = false;
-        return;
-      }
-      for (const [empId, current] of Object.entries(data)) {
-        const prev = prevWorkSessionsRef.current.get(empId);
-        const employee = employees.find(e => e.id === empId);
-        if (!employee) continue;
-        if (!prev?.isPunchedIn && current.isPunchedIn) {
-          showNotif('Punched In', `${employee.name} punched in.`, 'green');
-        }
-        if (prev?.isPunchedIn && !current.isPunchedIn) {
-          showNotif('Punched Out', `${employee.name} punched out.`, 'blue');
-        }
-        if (!prev?.isOnBreak && current.isOnBreak) {
-          showNotif('Break Started', `${employee.name} started a break.`, 'yellow');
-        }
-        if (prev?.isOnBreak && !current.isOnBreak) {
-          showNotif('Break Ended', `${employee.name} ended break.`, 'purple');
-        }
-      }
-      prevWorkSessionsRef.current = new Map(Object.entries(data));
-    });
-    return () => off(workSessionsRef);
-  }, [employees]);
-
-  const showNotif = (title: string, body: string, _color: string) => {
-    toast(body, { icon: '🔔', duration: 4000 });
-    if (notificationPermission === 'granted') {
-      new Notification(title, { body, icon: '/logo.png' });
-    }
-  };
 
   // ========== Idle Users Monitoring ==========
   useEffect(() => {
@@ -155,7 +101,7 @@ const AdminDashboardHome = () => {
       newIdleUsers.sort((a, b) => b.idleDuration - a.idleDuration);
       setIdleUsers(newIdleUsers);
 
-      // Notify only once per idle employee
+      // Browser notifications for new idle employees (once per idle session)
       const newIds = newIdleUsers.map(u => u.id);
       const justBecameIdle = newIds.filter(id => !notifiedIdleIds.has(id));
       if (justBecameIdle.length && notificationPermission === 'granted') {
@@ -180,6 +126,13 @@ const AdminDashboardHome = () => {
     });
     return () => unsubscribe();
   }, [employees, notificationPermission, notifiedIdleIds]);
+
+  // Clear idle alerts (button handler)
+  const clearIdleAlerts = () => {
+    setIdleUsers([]);
+    setNotifiedIdleIds(new Set());
+    toast.success('Idle alerts cleared');
+  };
 
   // ========== Marketing Scheduled Notifications ==========
   useEffect(() => {
@@ -206,7 +159,6 @@ const AdminDashboardHome = () => {
     return () => clearInterval(interval);
   }, [marketingPosts, notificationPermission]);
 
-  // Auto-close marketing notification
   useEffect(() => {
     if (!activeNotification) return;
     const interval = setInterval(() => {
@@ -255,7 +207,6 @@ const AdminDashboardHome = () => {
     };
   }, [employees, attendanceRecords, leaveRequests, projects, marketingPosts]);
 
-  // ========== Format idle time ==========
   const formatIdleTime = (startTime: number) => {
     const sec = Math.floor((Date.now() - startTime) / 1000);
     const mins = Math.floor(sec / 60);
@@ -264,7 +215,6 @@ const AdminDashboardHome = () => {
     return `${sec}s`;
   };
 
-  // Dashboard cards configuration
   const cards = [
     { title: 'Total Employees', value: stats.totalEmployees, subtitle: 'All registered employees', icon: Users, color: 'blue', onClick: () => togglePopup('employees')(true) },
     { title: 'Active Employees', value: stats.activeEmployees, subtitle: 'Currently active', icon: UserCheck, color: 'green', onClick: () => togglePopup('activeEmployees')(true) },
@@ -278,19 +228,28 @@ const AdminDashboardHome = () => {
 
   return (
     <div className="space-y-4 sm:space-y-6 px-3 sm:px-0 relative pb-20 sm:pb-0">
-      {/* Idle Employees Alert - Collapsible on mobile? We'll keep as is but with scroll */}
+      {/* Idle Employees Alert - with Clear button and clickable rows */}
       {idleUsers.length > 0 && (
         <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="bg-yellow-50 border border-yellow-400 rounded-lg p-3 sm:p-4">
-          <div className="flex items-center gap-2 mb-2 sm:mb-3">
-            <AlertTriangle className="h-5 w-5 text-yellow-700" />
-            <h3 className="font-semibold text-yellow-800 text-sm sm:text-base">Idle Employees Alert</h3>
-            <Badge className="bg-yellow-200 text-yellow-800">{idleUsers.length}</Badge>
+          <div className="flex items-center justify-between mb-2 sm:mb-3">
+            <div className="flex items-center gap-2">
+              <AlertTriangle className="h-5 w-5 text-yellow-700" />
+              <h3 className="font-semibold text-yellow-800 text-sm sm:text-base">Idle Employees Alert</h3>
+              <Badge className="bg-yellow-200 text-yellow-800">{idleUsers.length}</Badge>
+            </div>
+            <Button size="sm" variant="outline" onClick={clearIdleAlerts}>
+              Clear All
+            </Button>
           </div>
           <div className="space-y-2 max-h-48 sm:max-h-64 overflow-y-auto">
             {idleUsers.map(user => {
               const emp = employees.find(e => e.id === user.id);
               return (
-                <div key={user.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-2 sm:p-3 bg-white rounded-lg shadow-sm border border-yellow-200 gap-2">
+                <div
+                  key={user.id}
+                  onClick={() => navigate(`/admin/employees/${user.id}`)}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between p-2 sm:p-3 bg-white rounded-lg shadow-sm border border-yellow-200 gap-2 cursor-pointer hover:bg-yellow-50 transition-colors"
+                >
                   <div className="flex items-center gap-3">
                     <div className="w-8 h-8 sm:w-10 sm:h-10 rounded-full bg-yellow-100 flex items-center justify-center">
                       <Users className="h-4 w-4 sm:h-5 sm:w-5 text-yellow-600" />
@@ -314,7 +273,7 @@ const AdminDashboardHome = () => {
         </motion.div>
       )}
 
-      {/* Marketing popup notification */}
+      {/* Marketing popup */}
       {activeNotification && (
         <div className="fixed inset-0 flex items-center justify-center z-50 bg-black/50 p-4">
           <div className="bg-white rounded-xl shadow-xl max-w-md w-full p-5 relative">
@@ -345,7 +304,7 @@ const AdminDashboardHome = () => {
         ))}
       </div>
 
-      {/* Lazy-loaded popups with mobile bottom-sheet behaviour */}
+      {/* Lazy-loaded popups */}
       <Suspense fallback={null}>
         {popups.attendance && (
           <AttendancePopup
@@ -364,7 +323,7 @@ const AdminDashboardHome = () => {
           <EmployeesPopup isOpen={popups.activeEmployees} onClose={() => togglePopup('activeEmployees')(false)} employees={employees.filter(e => e.isActive)} title="Active Employees" />
         )}
         {popups.projects && (
-          <ProjectsPopup isOpen={popups.projects} onClose={() => togglePopup('projects')(false)} projects={projects} />
+          <ProjectsPopup isOpen={popups.projects} onClose={() => togglePopup('projects')(false)} projects={projects} employees={[]} />
         )}
         {popups.marketing && (
           <MarketingPostsPopup isOpen={popups.marketing} onClose={() => togglePopup('marketing')(false)} posts={marketingPosts} />

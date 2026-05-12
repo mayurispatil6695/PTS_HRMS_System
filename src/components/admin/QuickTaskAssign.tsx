@@ -26,6 +26,7 @@ const QuickTaskAssign: React.FC<QuickTaskAssignProps> = ({ open, onOpenChange, o
   const { user } = useAuth();
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [loading, setLoading] = useState(false);
+  const [internalProjectId, setInternalProjectId] = useState<string | null>(null);
   const [formData, setFormData] = useState({
     title: '',
     description: '',
@@ -34,6 +35,7 @@ const QuickTaskAssign: React.FC<QuickTaskAssignProps> = ({ open, onOpenChange, o
     priority: 'medium' as 'low' | 'medium' | 'high',
   });
 
+  // Fetch employees when modal opens
   useEffect(() => {
     if (!open) return;
     const fetchEmployees = async () => {
@@ -57,6 +59,34 @@ const QuickTaskAssign: React.FC<QuickTaskAssignProps> = ({ open, onOpenChange, o
     fetchEmployees();
   }, [open]);
 
+  // Get or create the "Internal Operations" project (cached in Firebase)
+  useEffect(() => {
+    if (!open) return;
+    const getOrCreateInternalProject = async () => {
+      const configRef = ref(database, 'config/internalProjectId');
+      const configSnap = await get(configRef);
+      if (configSnap.exists()) {
+        setInternalProjectId(configSnap.val());
+        return;
+      }
+      // Create project if it doesn't exist
+      const projectsRef = ref(database, 'projects');
+      const newProjRef = push(projectsRef);
+      await set(newProjRef, {
+        name: 'Internal Operations',
+        description: 'Default project for quick daily tasks',
+        type: 'internal',
+        createdAt: new Date().toISOString(),
+        createdBy: user?.id,
+        assignedEmployees: [],
+      });
+      const projId = newProjRef.key!;
+      await set(configRef, projId);
+      setInternalProjectId(projId);
+    };
+    getOrCreateInternalProject();
+  }, [open, user?.id]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formData.title.trim()) {
@@ -67,39 +97,14 @@ const QuickTaskAssign: React.FC<QuickTaskAssignProps> = ({ open, onOpenChange, o
       toast.error('Select an employee');
       return;
     }
+    if (!internalProjectId) {
+      toast.error('Internal project not ready. Please try again.');
+      return;
+    }
     setLoading(true);
 
     try {
-      // Ensure default project "Internal Operations" exists
-      let internalProjectId = localStorage.getItem('internal_project_id');
-      if (!internalProjectId) {
-        const projectsRef = ref(database, 'projects');
-        const snapshot = await get(projectsRef);
-        let existing = null;
-        snapshot.forEach((child) => {
-          const proj = child.val();
-          if (proj.name === 'Internal Operations') {
-            existing = child.key;
-          }
-        });
-        if (existing) {
-          internalProjectId = existing;
-        } else {
-          const newProjRef = push(projectsRef);
-          await set(newProjRef, {
-            name: 'Internal Operations',
-            description: 'Default project for quick daily tasks',
-            type: 'internal',
-            createdAt: new Date().toISOString(),
-            createdBy: user?.id,
-            assignedEmployees: [],
-          });
-          internalProjectId = newProjRef.key;
-        }
-        localStorage.setItem('internal_project_id', internalProjectId!);
-      }
-
-      // Create task inside that project
+      // Create task inside the internal project
       const taskRef = push(ref(database, `projects/${internalProjectId}/tasks`));
       await set(taskRef, {
         title: formData.title,
@@ -114,7 +119,7 @@ const QuickTaskAssign: React.FC<QuickTaskAssignProps> = ({ open, onOpenChange, o
         createdByName: user?.name,
       });
 
-      // Send notification
+      // Send notification to the assigned employee
       const notifRef = push(ref(database, `notifications/${formData.assignedTo}`));
       await set(notifRef, {
         title: 'New Daily Task',

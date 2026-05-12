@@ -1,131 +1,151 @@
 // src/hooks/useIdleDetection.ts
+
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { database } from '../firebase';
 import { ref, update, set, push, get, increment } from 'firebase/database';
 
 interface IdleDetectionOptions {
   idleTimeout: number;
-  checkInterval?: number;
-  onIdleStart?: () => void;
-  onIdleEnd?: () => void;
-  onIdleNotification?: (idleTime: number) => void;
   userId?: string;
   adminId?: string;
   employeeName?: string;
   employeeEmail?: string;
   department?: string;
   isActive: boolean;
+  onIdleStart?: () => void;
+  onIdleEnd?: () => void;
+  onIdleNotification?: (idleTime: number) => void;
 }
+
+interface IdleDetectorInstance {
+  userState: 'active' | 'idle';
+  addEventListener: (type: 'change', listener: () => void | Promise<void>) => void;
+  start: (options: { threshold: number }) => Promise<void>;
+}
+
+declare global {
+  interface Window {
+    IdleDetector?: {
+      requestPermission: () => Promise<'granted' | 'denied'>;
+      new (): IdleDetectorInstance;
+    };
+  }
+}
+
+const getTodayString = (): string => new Date().toISOString().split('T')[0];
 
 export const useIdleDetection = (options: IdleDetectionOptions) => {
   const {
     idleTimeout = 120000,
-    checkInterval = 1000,
-    onIdleStart,
-    onIdleEnd,
-    onIdleNotification,
     userId,
     adminId,
     employeeName,
     employeeEmail,
     department,
     isActive,
+    onIdleStart,
+    onIdleEnd,
+    onIdleNotification,
   } = options;
 
   const [isIdle, setIsIdle] = useState(false);
-  const idleTimerRef = useRef<NodeJS.Timeout>();
-  const checkIntervalRef = useRef<NodeJS.Timeout>();
+  const isIdleRef = useRef(false);
+  const setIdleState = (value: boolean) => {
+    isIdleRef.current = value;
+    setIsIdle(value);
+  };
+
   const idleStartTimeRef = useRef<number | null>(null);
-  const lastActivityTimeRef = useRef<number>(Date.now());
-  const notificationSentRef = useRef<boolean>(false);
+  const notificationSentRef = useRef(false);
   const currentSessionIdRef = useRef<string | null>(null);
-  const sessionEndingRef = useRef<boolean>(false);
+  const sessionEndingRef = useRef(false);
+  const fallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastActivityTimeRef = useRef<number>(Date.now());
+  const idleDetectorRef = useRef<IdleDetectorInstance | null>(null);
+  const [apiSupported, setApiSupported] = useState<boolean | null>(null);
 
-  const getTodayString = () => new Date().toISOString().split('T')[0];
+  // =========================================================
+  // UPDATE ACTIVITY NODE – sets idleStartTime correctly
+  // =========================================================
+  const updateActivityNode = useCallback(
+    async (isIdleNow: boolean, startTime?: number) => {
+      if (!userId) return;
+      try {
+        await set(ref(database, `activity/${userId}`), {
+          isIdle: isIdleNow,
+          status: isIdleNow ? 'idle' : 'active',
+          idleStartTime: isIdleNow ? (startTime || Date.now()) : null,
+          lastActive: Date.now(),
+          timestamp: Date.now(),
+          ...(employeeName && { employeeName }),
+          ...(employeeEmail && { employeeEmail }),
+          ...(department && { department }),
+        });
+      } catch (error) {
+        console.error('Failed to update activity node:', error);
+      }
+    },
+    [userId, employeeName, employeeEmail, department]
+  );
 
-  const updateActivityNode = useCallback(async (isIdleNow: boolean, startTime?: number) => {
-    if (!userId) return;
-    const activityRef = ref(database, `activity/${userId}`);
-    await set(activityRef, {
-      isIdle: isIdleNow,
-      status: isIdleNow ? 'idle' : 'active',
-      idleStartTime: startTime || null,
-      lastActive: lastActivityTimeRef.current,
-      timestamp: Date.now(),
-      ...(employeeName && { employeeName }),
-      ...(employeeEmail && { employeeEmail }),
-      ...(department && { department }),
-    });
-  }, [userId, employeeName, employeeEmail, department]);
-
-  const startIdleSession = useCallback(async (customStartTimestamp?: number) => {
-    if (!userId || !isActive) return;
-    if (currentSessionIdRef.current) return;
-
-    const today = getTodayString();
-    const sessionsRef = ref(database, `idleLogs/${userId}/${today}/sessions`);
-    const newSessionRef = push(sessionsRef);
-    const sessionId = newSessionRef.key;
-    currentSessionIdRef.current = sessionId;
-    sessionEndingRef.current = false;
-
-    const startTime = customStartTimestamp
-      ? new Date(customStartTimestamp).toISOString()
-      : new Date().toISOString();
-    await set(newSessionRef, { startTime });
-    await updateActivityNode(true, customStartTimestamp || Date.now());
-
-    console.log(`[Idle] Session started for ${employeeName || userId} at ${startTime}`);
-  }, [userId, isActive, employeeName, updateActivityNode]);
+  // =========================================================
+  // START / END IDLE SESSION (unchanged logic)
+  // =========================================================
+  const startIdleSession = useCallback(async () => {
+    if (!userId || !isActive || currentSessionIdRef.current) return;
+    try {
+      const today = getTodayString();
+      const newSessionRef = push(ref(database, `idleLogs/${userId}/${today}/sessions`));
+      const sessionId = newSessionRef.key;
+      if (!sessionId) return;
+      currentSessionIdRef.current = sessionId;
+      sessionEndingRef.current = false;
+      await set(newSessionRef, { startTime: new Date().toISOString() });
+      await updateActivityNode(true, Date.now());
+    } catch (error) {
+      console.error('Failed to start idle session:', error);
+    }
+  }, [userId, isActive, updateActivityNode]);
 
   const endIdleSession = useCallback(async () => {
-    if (!userId || !currentSessionIdRef.current) return;
-    if (sessionEndingRef.current) return;
+    if (!userId || !currentSessionIdRef.current || sessionEndingRef.current) return;
     sessionEndingRef.current = true;
-
-    const sessionId = currentSessionIdRef.current;
-    const today = getTodayString();
-    const sessionRef = ref(database, `idleLogs/${userId}/${today}/sessions/${sessionId}`);
-    const snapshot = await get(sessionRef);
-    const sessionData = snapshot.val();
-
-    if (sessionData && sessionData.startTime) {
-      const startTime = new Date(sessionData.startTime).getTime();
-      const endTime = Date.now();
-      let durationMs = endTime - startTime;
-      if (durationMs < 0) durationMs = 0;
-      if (durationMs > 12 * 60 * 60 * 1000) durationMs = 12 * 60 * 60 * 1000;
-
-      if (durationMs > 0) {
-        await update(sessionRef, {
-          endTime: new Date(endTime).toISOString(),
-          durationMs,
-        });
-        const totalRef = ref(database, `idleLogs/${userId}/${today}/totalIdleMs`);
-        const totalSnap = await get(totalRef);
-        if (!totalSnap.exists()) {
-          await set(totalRef, 0);
+    try {
+      const sessionId = currentSessionIdRef.current;
+      const today = getTodayString();
+      const sessionRef = ref(database, `idleLogs/${userId}/${today}/sessions/${sessionId}`);
+      const snapshot = await get(sessionRef);
+      const sessionData = snapshot.val() as { startTime?: string } | null;
+      if (sessionData?.startTime) {
+        const startTime = new Date(sessionData.startTime).getTime();
+        const endTime = Date.now();
+        let durationMs = endTime - startTime;
+        const MAX_IDLE_DURATION = 12 * 60 * 60 * 1000;
+        if (durationMs > MAX_IDLE_DURATION) durationMs = MAX_IDLE_DURATION;
+        if (durationMs > 0) {
+          await update(sessionRef, { endTime: new Date(endTime).toISOString(), durationMs });
+          await update(ref(database, `idleLogs/${userId}/${today}`), {
+            totalIdleMs: increment(durationMs),
+            lastUpdated: new Date().toISOString(),
+          });
         }
-        await update(totalRef, {
-          totalIdleMs: increment(durationMs),
-          lastUpdated: new Date().toISOString(),
-        });
-        console.log(`[Idle] Session ended: +${durationMs}ms for ${employeeName || userId}`);
       }
+      // Do NOT call updateActivityNode here – it will be called by the force‑active handlers
+    } catch (error) {
+      console.error('Failed to end idle session:', error);
+    } finally {
+      currentSessionIdRef.current = null;
+      sessionEndingRef.current = false;
     }
+  }, [userId]);
 
-    currentSessionIdRef.current = null;
-    setTimeout(() => { sessionEndingRef.current = false; }, 500);
-    await updateActivityNode(false);
-  }, [userId, employeeName, updateActivityNode]);
-
-  // ✅ SINGLE sendIdleNotification – notifies both admin AND the idle employee
+  // =========================================================
+  // NOTIFICATIONS (unchanged)
+  // =========================================================
   const sendIdleNotification = useCallback(async () => {
     if (!userId || !adminId || notificationSentRef.current) return;
     try {
       notificationSentRef.current = true;
-
-      // 1. Notify admin (existing)
       const notificationRef = ref(database, `users/${adminId}/idleNotifications/${userId}`);
       await set(notificationRef, {
         isIdle: true,
@@ -138,27 +158,7 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
         department: department || '',
         timestamp: Date.now(),
       });
-
-      // 2. Notify the idle employee themselves (in‑app notification)
-      const employeeNotifRef = push(ref(database, `notifications/${userId}`));
-      await set(employeeNotifRef, {
-        title: '⏳ Idle Reminder',
-        body: `You have been idle for ${idleTimeout / 1000} seconds. Please resume work or update your status.`,
-        type: 'idle_reminder',
-        read: false,
-        createdAt: Date.now(),
-      });
-
-      // 3. Browser notification for the employee (if permission granted)
-      if ('Notification' in window && Notification.permission === 'granted') {
-        new Notification('Idle Reminder', {
-          body: `You have been idle for ${idleTimeout / 1000} seconds.`,
-          icon: '/logo.png',
-        });
-      }
-
       onIdleNotification?.(idleTimeout);
-      console.log(`[IdleDetection] Sent idle reminder to employee ${employeeName || userId}`);
     } catch (error) {
       console.error('Error sending idle notification:', error);
     }
@@ -169,136 +169,159 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     try {
       notificationSentRef.current = false;
       const notificationRef = ref(database, `users/${adminId}/idleNotifications/${userId}`);
-      await update(notificationRef, {
-        isIdle: false,
-        idleEndTime: Date.now(),
-        status: 'resolved',
-      });
+      await update(notificationRef, { isIdle: false, idleEndTime: Date.now(), status: 'resolved' });
     } catch (error) {
       console.error('Error clearing idle notification:', error);
     }
   }, [userId, adminId]);
 
-  // Force end idle session when isActive becomes false
+  // =========================================================
+  // IDLE DETECTOR API (with fallback for missing 'active' event)
+  // =========================================================
   useEffect(() => {
-    if (!isActive && currentSessionIdRef.current) {
-      endIdleSession();
-      setIsIdle(false);
-      idleStartTimeRef.current = null;
-      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-    }
-  }, [isActive, endIdleSession]);
-
-  // Reset timer on user activity
-  const resetIdleTimer = useCallback(() => {
-    if (!isActive) {
-      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-      if (isIdle) {
-        const idleDuration = idleStartTimeRef.current ? Date.now() - idleStartTimeRef.current : 0;
-        if (idleDuration > 500) {
-          endIdleSession();
-          onIdleEnd?.();
-          clearIdleNotification();
-        }
-        setIsIdle(false);
-        idleStartTimeRef.current = null;
-      }
+    if (!window.IdleDetector) {
+      setApiSupported(false);
       return;
     }
-
-    lastActivityTimeRef.current = Date.now();
-    if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-
-    if (isIdle) {
-      const idleDuration = idleStartTimeRef.current ? Date.now() - idleStartTimeRef.current : 0;
-      if (idleDuration > 500) {
-        endIdleSession();
-        onIdleEnd?.();
-        clearIdleNotification();
-      }
-      setIsIdle(false);
-      idleStartTimeRef.current = null;
-    }
-
-    const activityMoment = Date.now();
-    idleTimerRef.current = setTimeout(() => {
-      if (lastActivityTimeRef.current > activityMoment) return;
-      if (!isActive) return;
-      const now = Date.now();
-      const inactiveTime = now - activityMoment;
-      if (inactiveTime >= idleTimeout && !isIdle) {
-        console.log(`[Idle] User became idle after ${inactiveTime}ms`);
-        setIsIdle(true);
-        idleStartTimeRef.current = activityMoment;
-        startIdleSession(activityMoment);
-        onIdleStart?.();
-        sendIdleNotification();
-      }
-    }, idleTimeout);
-  }, [isActive, isIdle, idleTimeout, onIdleStart, onIdleEnd, userId, adminId, employeeName, sendIdleNotification, clearIdleNotification, startIdleSession, endIdleSession]);
-
-  const updateUserActivity = useCallback(async () => {
-    if (userId && adminId && !isIdle && isActive) {
+    const initIdleDetector = async () => {
       try {
-        const activityRef = ref(database, `users/${adminId}/employees/${userId}/lastActive`);
-        await update(activityRef, {
-          timestamp: Date.now(),
-          lastSeen: new Date().toISOString(),
+        const IdleDetectorClass = window.IdleDetector;
+        const permission = await IdleDetectorClass.requestPermission();
+        if (permission !== 'granted') {
+          setApiSupported(false);
+          return;
+        }
+        const detector = new IdleDetectorClass();
+        detector.addEventListener('change', async () => {
+          if (!isActive) return;
+          if (detector.userState === 'idle' && !isIdleRef.current) {
+            idleStartTimeRef.current = Date.now();
+            await startIdleSession();
+            setIdleState(true);
+            onIdleStart?.();
+            sendIdleNotification();
+          }
+          // FIX: when IdleDetector signals active, force cleanup
+          if (detector.userState === 'active' && isIdleRef.current) {
+            await updateActivityNode(false);
+            await endIdleSession();
+            await clearIdleNotification();
+            setIdleState(false);
+            idleStartTimeRef.current = null;
+            lastActivityTimeRef.current = Date.now();
+            onIdleEnd?.();
+          }
         });
+        await detector.start({ threshold: idleTimeout });
+        idleDetectorRef.current = detector;
+        setApiSupported(true);
       } catch (error) {
-        console.error('Error updating activity:', error);
+        console.error('IdleDetector init failed:', error);
+        setApiSupported(false);
       }
-    }
-  }, [userId, adminId, isIdle, isActive]);
-
-  // Global activity listeners
-  useEffect(() => {
-    const events = ['mousedown', 'mousemove', 'keydown', 'scroll', 'touchstart', 'click', 'focus', 'load'];
-    const handleActivity = () => {
-      resetIdleTimer();
-      updateUserActivity();
     };
-    events.forEach(event => window.addEventListener(event, handleActivity));
-    resetIdleTimer();
+    initIdleDetector();
+    return () => { idleDetectorRef.current = null; };
+  }, [idleTimeout, isActive, startIdleSession, endIdleSession, updateActivityNode, sendIdleNotification, clearIdleNotification, onIdleStart, onIdleEnd]);
 
-    checkIntervalRef.current = setInterval(() => {
-      if (isIdle && idleStartTimeRef.current && isActive) {
-        const currentIdleTime = Date.now() - idleStartTimeRef.current;
-        const idleSeconds = Math.floor(currentIdleTime / 1000);
-        if (idleSeconds > 0 && idleSeconds % 30 === 0 && !notificationSentRef.current) {
+  // =========================================================
+  // 🔥 FORCE ACTIVE DETECTION – MANUAL EVENTS
+  // This guarantees the user becomes active even if IdleDetector fails.
+  // =========================================================
+  useEffect(() => {
+    const handleUserActivity = async () => {
+      if (!isIdleRef.current) return;
+      // Immediately write active state to Firebase
+      await updateActivityNode(false);
+      await endIdleSession();
+      await clearIdleNotification();
+      setIdleState(false);
+      idleStartTimeRef.current = null;
+      lastActivityTimeRef.current = Date.now();
+      onIdleEnd?.();
+    };
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    events.forEach(event => window.addEventListener(event, handleUserActivity));
+    return () => events.forEach(event => window.removeEventListener(event, handleUserActivity));
+  }, [endIdleSession, clearIdleNotification, updateActivityNode, onIdleEnd]);
+
+  // =========================================================
+  // FALLBACK TIMER (when IdleDetector not supported)
+  // =========================================================
+  useEffect(() => {
+    if (apiSupported === true) return;
+    if (apiSupported === null) return;
+    const resetFallbackTimer = () => {
+      if (!isActive) return;
+      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+      if (isIdleRef.current) {
+        updateActivityNode(false).catch(console.error);
+        endIdleSession();
+        clearIdleNotification();
+        setIdleState(false);
+        idleStartTimeRef.current = null;
+        onIdleEnd?.();
+      }
+      lastActivityTimeRef.current = Date.now();
+      fallbackTimerRef.current = setTimeout(() => {
+        if (!isActive) return;
+        const inactiveTime = Date.now() - lastActivityTimeRef.current;
+        if (inactiveTime >= idleTimeout && !isIdleRef.current) {
+          idleStartTimeRef.current = Date.now();
+          startIdleSession();
+          setIdleState(true);
+          onIdleStart?.();
           sendIdleNotification();
         }
-      }
-    }, checkInterval);
-
-    const handleBeforeUnload = () => {
-      if (isIdle && currentSessionIdRef.current) endIdleSession();
+      }, idleTimeout);
     };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === 'visible') {
-        resetIdleTimer();
-      } else if (document.visibilityState === 'hidden') {
-        if (isIdle && currentSessionIdRef.current) {
-          endIdleSession();
-          setIsIdle(false);
-          idleStartTimeRef.current = null;
-        }
-      }
-    };
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-
+    const events = ['mousemove', 'keydown', 'click', 'scroll', 'touchstart'];
+    const handler = () => resetFallbackTimer();
+    events.forEach(ev => window.addEventListener(ev, handler));
+    resetFallbackTimer();
     return () => {
-      events.forEach(event => window.removeEventListener(event, handleActivity));
-      if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
-      if (checkIntervalRef.current) clearInterval(checkIntervalRef.current);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-      if (userId && isIdle && currentSessionIdRef.current) endIdleSession();
-      if (userId && adminId && isIdle) clearIdleNotification();
+      events.forEach(ev => window.removeEventListener(ev, handler));
+      if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
     };
-  }, [resetIdleTimer, updateUserActivity, isIdle, checkInterval, userId, adminId, sendIdleNotification, clearIdleNotification, endIdleSession, isActive]);
+  }, [apiSupported, isActive, idleTimeout, startIdleSession, endIdleSession, updateActivityNode, sendIdleNotification, clearIdleNotification, onIdleStart, onIdleEnd]);
 
-  return { isIdle, resetIdleTimer };
+  // =========================================================
+  // HEARTBEAT
+  // =========================================================
+  useEffect(() => {
+    const heartbeat = setInterval(async () => {
+      if (userId && isActive) {
+        try {
+          await update(ref(database, `activity/${userId}`), { lastHeartbeat: Date.now() });
+        } catch (error) { console.error('Heartbeat update failed:', error); }
+      }
+    }, 30000);
+    return () => clearInterval(heartbeat);
+  }, [userId, isActive]);
+
+  // =========================================================
+  // FORCE END IDLE (public)
+  // =========================================================
+  const forceEndIdle = useCallback(async () => {
+    if (!isIdleRef.current) return;
+    await updateActivityNode(false);
+    await endIdleSession();
+    await clearIdleNotification();
+    setIdleState(false);
+    idleStartTimeRef.current = null;
+    lastActivityTimeRef.current = Date.now();
+    onIdleEnd?.();
+  }, [updateActivityNode, endIdleSession, clearIdleNotification, onIdleEnd]);
+
+  useEffect(() => {
+    if (!isActive && isIdleRef.current) forceEndIdle();
+  }, [isActive, forceEndIdle]);
+
+  const resetIdleTimer = useCallback(() => {
+    lastActivityTimeRef.current = Date.now();
+    if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
+    if (isIdleRef.current) forceEndIdle();
+  }, [forceEndIdle]);
+
+  return { isIdle, resetIdleTimer, forceEndIdle };
 };

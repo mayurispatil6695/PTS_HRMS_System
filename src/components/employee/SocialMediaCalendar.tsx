@@ -43,7 +43,6 @@ const SocialMediaCalendar = () => {
     status: 'scheduled'
   });
   const [loading, setLoading] = useState(true);
-  const [notificationPermission, setNotificationPermission] = useState('default');
   const [activeNotification, setActiveNotification] = useState<{
     post: SocialMediaPost;
     timer: number;
@@ -54,23 +53,7 @@ const SocialMediaCalendar = () => {
   const platforms = ['Facebook', 'Instagram', 'Twitter', 'LinkedIn', 'YouTube', 'TikTok'];
   const statuses = ['scheduled', 'published', 'draft'];
 
-  // Check and request notification permission
-  useEffect(() => {
-    if (!('Notification' in window)) {
-      console.log('This browser does not support desktop notification');
-      return;
-    }
-
-    if (Notification.permission !== 'granted' && Notification.permission !== 'denied') {
-      Notification.requestPermission().then(permission => {
-        setNotificationPermission(permission);
-      });
-    } else {
-      setNotificationPermission(Notification.permission);
-    }
-  }, []);
-
-  // Check for posts scheduled for today and upcoming posts
+  // Check for posts scheduled for today and upcoming posts (only in‑app popup for due posts)
   useEffect(() => {
     if (posts.length === 0) return;
 
@@ -85,10 +68,7 @@ const SocialMediaCalendar = () => {
       );
     });
 
-    if (todayPosts.length > 0 && notificationPermission === 'granted') {
-      showScheduledPostsNotification(todayPosts);
-    }
-
+    // No browser notification – we show only the centered popup when exact time arrives
     // Set up interval to check for upcoming posts every minute
     const checkInterval = setInterval(() => {
       const now = new Date();
@@ -102,40 +82,11 @@ const SocialMediaCalendar = () => {
         if (currentHour === hours && currentMinute === minutes) {
           showCenteredPostNotification(post);
         }
-        
-        // Notify 15 minutes before scheduled time
-        if (
-          currentHour === hours && 
-          currentMinute === minutes - 15 && 
-          notificationPermission === 'granted'
-        ) {
-          showUpcomingPostNotification(post);
-        }
       });
     }, 60000); // Check every minute
 
     return () => clearInterval(checkInterval);
-  }, [posts, notificationPermission]);
-
-  const showScheduledPostsNotification = (posts: SocialMediaPost[]) => {
-    const notificationOptions = {
-      body: `You have ${posts.length} post(s) scheduled for today.`,
-      icon: '/notification-icon.png',
-      tag: 'today-posts-notification'
-    };
-
-    new Notification('Scheduled Posts Reminder', notificationOptions);
-  };
-
-  const showUpcomingPostNotification = (post: SocialMediaPost) => {
-    const notificationOptions = {
-      body: `Post scheduled for ${post.scheduledTime}: ${post.content.substring(0, 50)}...`,
-      icon: '/notification-icon.png',
-      tag: 'upcoming-post-notification'
-    };
-
-    new Notification(`Upcoming ${post.platform} Post`, notificationOptions);
-  };
+  }, [posts]);
 
   const showCenteredPostNotification = (post: SocialMediaPost) => {
     // Clear any existing notification and intervals
@@ -274,7 +225,7 @@ const SocialMediaCalendar = () => {
         createdByName: user?.name || '',
         department: user?.department || '',
         createdAt: editingPost ? editingPost.createdAt : new Date().toISOString(),
-        updatedAt: new Date().toISOString()
+        updatedAt: editingPost ? new Date().toISOString() : new Date().toISOString()
       };
 
       if (editingPost) {
@@ -288,16 +239,6 @@ const SocialMediaCalendar = () => {
         const newPostRef = push(postsRef);
         await set(newPostRef, newPost);
         toast.success("Post scheduled successfully");
-
-        // Show notification if scheduled for today
-        if (newPost.scheduledDate === new Date().toISOString().split('T')[0]) {
-          if (notificationPermission === 'granted') {
-            new Notification('Post Scheduled', {
-              body: `Your ${newPost.platform} post has been scheduled for today at ${newPost.scheduledTime}`,
-              icon: '/notification-icon.png'
-            });
-          }
-        }
       }
       
       resetForm();
@@ -330,17 +271,6 @@ const SocialMediaCalendar = () => {
       console.error("Error deleting post:", error);
       toast.error("Failed to delete post");
     }
-  };
-
-  const requestNotificationPermission = () => {
-    Notification.requestPermission().then(permission => {
-      setNotificationPermission(permission);
-      if (permission === 'granted') {
-        toast.success('Notification permission granted!');
-      } else {
-        toast.error('You need to allow notifications for this feature');
-      }
-    });
   };
 
   const getPlatformColor = (platform: string) => {
@@ -483,22 +413,10 @@ const SocialMediaCalendar = () => {
           <h1 className="text-2xl font-bold text-gray-800">Social Media Calendar</h1>
           <p className="text-gray-600">Schedule and manage your social media posts</p>
         </div>
-        <div className="flex gap-2">
-          {notificationPermission !== 'granted' && (
-            <Button 
-              variant="outline" 
-              onClick={requestNotificationPermission}
-              className="flex items-center gap-2"
-            >
-              <Bell className="h-4 w-4" />
-              Enable Notifications
-            </Button>
-          )}
-          <Button onClick={() => setShowAddForm(true)}>
-            <Plus className="h-4 w-4 mr-2" />
-            Schedule Post
-          </Button>
-        </div>
+        <Button onClick={() => setShowAddForm(true)}>
+          <Plus className="h-4 w-4 mr-2" />
+          Schedule Post
+        </Button>
       </motion.div>
 
       {/* Stats Cards */}

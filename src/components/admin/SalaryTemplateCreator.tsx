@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { motion } from 'framer-motion';
 import { FileText, Save, Plus, Trash2 } from 'lucide-react';
@@ -7,6 +6,9 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
 import { toast } from '../ui/use-toast';
+import { ref, push, set } from 'firebase/database';
+import { database } from '../../firebase';
+import { useAuth } from '../../hooks/useAuth';
 
 interface SalaryField {
   id: string;
@@ -18,7 +20,9 @@ interface SalaryField {
 }
 
 const SalaryTemplateCreator = () => {
+  const { user } = useAuth();
   const [templateName, setTemplateName] = useState('');
+  const [loading, setLoading] = useState(false);
   const [fields, setFields] = useState<SalaryField[]>([
     { id: '1', label: 'Basic Salary', type: 'earning', isDefault: true, isPercentage: false, value: 0 },
     { id: '2', label: 'HRA', type: 'earning', isDefault: true, isPercentage: true, value: 30 },
@@ -46,10 +50,20 @@ const SalaryTemplateCreator = () => {
   };
 
   const removeField = (id: string) => {
-    setFields(fields.filter(field => field.id !== id && field.isDefault));
+    const fieldToRemove = fields.find(f => f.id === id);
+    // Prevent removing default fields
+    if (fieldToRemove?.isDefault) {
+      toast({
+        title: "Error",
+        description: "Default fields cannot be removed",
+        variant: "destructive"
+      });
+      return;
+    }
+    setFields(fields.filter(field => field.id !== id));
   };
 
-  const saveTemplate = () => {
+  const saveTemplate = async () => {
     if (!templateName.trim()) {
       toast({
         title: "Error",
@@ -59,23 +73,47 @@ const SalaryTemplateCreator = () => {
       return;
     }
 
-    const template = {
-      id: Date.now().toString(),
-      name: templateName,
-      fields: fields,
-      createdAt: new Date().toISOString()
-    };
+    if (!user) {
+      toast({
+        title: "Error",
+        description: "You must be logged in",
+        variant: "destructive"
+      });
+      return;
+    }
 
-    const existingTemplates = JSON.parse(localStorage.getItem('salary_templates') || '[]');
-    const updatedTemplates = [...existingTemplates, template];
-    localStorage.setItem('salary_templates', JSON.stringify(updatedTemplates));
+    setLoading(true);
+    try {
+      const template = {
+        name: templateName,
+        fields: fields,
+        createdAt: new Date().toISOString(),
+        createdBy: user.id,
+        createdByName: user.name || 'Admin',
+      };
 
-    toast({
-      title: "Template Saved",
-      description: `Salary template "${templateName}" has been created successfully`
-    });
+      const templatesRef = ref(database, 'salaryTemplates');
+      const newTemplateRef = push(templatesRef);
+      await set(newTemplateRef, template);
 
-    setTemplateName('');
+      toast({
+        title: "Template Saved",
+        description: `Salary template "${templateName}" has been created successfully`
+      });
+
+      // Reset form
+      setTemplateName('');
+      // Optionally reset fields to defaults? Leave as is or reset to original defaults
+    } catch (error) {
+      console.error('Error saving template:', error);
+      toast({
+        title: "Error",
+        description: "Failed to save template. Please try again.",
+        variant: "destructive"
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -99,13 +137,14 @@ const SalaryTemplateCreator = () => {
               value={templateName}
               onChange={(e) => setTemplateName(e.target.value)}
               placeholder="e.g., Standard Salary Template"
+              disabled={loading}
             />
           </div>
 
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-lg font-semibold">Salary Components</h3>
-              <Button onClick={addField} size="sm">
+              <Button onClick={addField} size="sm" disabled={loading}>
                 <Plus className="h-3 w-3 mr-1" />
                 Add Field
               </Button>
@@ -119,14 +158,14 @@ const SalaryTemplateCreator = () => {
                       value={field.label}
                       onChange={(e) => updateField(field.id, { label: e.target.value })}
                       placeholder="Field Label"
-                      disabled={field.isDefault}
+                      disabled={field.isDefault || loading}
                     />
                   </div>
                   <select
                     value={field.type}
                     onChange={(e) => updateField(field.id, { type: e.target.value as 'earning' | 'deduction' })}
                     className="px-3 py-2 border rounded-md"
-                    disabled={field.isDefault}
+                    disabled={field.isDefault || loading}
                   >
                     <option value="earning">Earning</option>
                     <option value="deduction">Deduction</option>
@@ -138,12 +177,14 @@ const SalaryTemplateCreator = () => {
                       onChange={(e) => updateField(field.id, { value: parseFloat(e.target.value) || 0 })}
                       placeholder="Value"
                       className="w-20"
+                      disabled={loading}
                     />
                     <label className="flex items-center gap-1 text-sm">
                       <input
                         type="checkbox"
                         checked={field.isPercentage}
                         onChange={(e) => updateField(field.id, { isPercentage: e.target.checked })}
+                        disabled={loading}
                       />
                       %
                     </label>
@@ -153,6 +194,7 @@ const SalaryTemplateCreator = () => {
                       onClick={() => removeField(field.id)}
                       size="sm"
                       variant="outline"
+                      disabled={loading}
                     >
                       <Trash2 className="h-3 w-3" />
                     </Button>
@@ -162,9 +204,9 @@ const SalaryTemplateCreator = () => {
             </div>
           </div>
 
-          <Button onClick={saveTemplate} className="w-full">
+          <Button onClick={saveTemplate} className="w-full" disabled={loading}>
             <Save className="h-3 w-3 mr-1" />
-            Save Template
+            {loading ? 'Saving...' : 'Save Template'}
           </Button>
         </CardContent>
       </Card>

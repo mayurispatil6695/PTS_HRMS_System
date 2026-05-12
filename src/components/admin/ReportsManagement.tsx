@@ -20,6 +20,7 @@ interface Employee {
   department?: string;
   designation?: string;
   status: string;
+  employeeId?: string;   // ✅ custom employee ID (e.g., EMP-00002)
 }
 
 interface AttendanceRecord {
@@ -91,7 +92,7 @@ interface Project {
   assignedEmployees?: string[];
 }
 
-// Firebase raw structures
+// Raw types
 interface RawUserData {
   role?: string;
   name?: string;
@@ -109,6 +110,7 @@ interface RawEmployeeData {
   department?: string;
   designation?: string;
   status?: string;
+  employeeId?: string;
   [key: string]: unknown;
 }
 
@@ -171,33 +173,28 @@ interface RawProject {
   assignedEmployees?: string[];
   [key: string]: unknown;
 }
+
 interface ReportsManagementProps {
   role?: 'admin' | 'manager' | 'team_leader' | 'client';
   department?: string;
 }
-// Helper: safe string
+
+// Helpers
 const safeString = (obj: Record<string, unknown>, key: string, defaultValue = ''): string => {
   const val = obj[key];
   return typeof val === 'string' ? val : defaultValue;
 };
-
-// Helper: safe number
 const safeNumber = (obj: Record<string, unknown>, key: string, defaultValue = 0): number => {
   const val = obj[key];
   return typeof val === 'number' ? val : defaultValue;
 };
-
-// Helper: safe date
 const safeDate = (val: unknown): string => {
   if (typeof val === 'string') return val;
   if (typeof val === 'number') return new Date(val).toISOString().split('T')[0];
   return '';
 };
 
-const ReportsManagement: React.FC<ReportsManagementProps> = ({ 
-  role = 'admin', 
-  department: propDepartment 
-}) => {
+const ReportsManagement: React.FC<ReportsManagementProps> = ({ role = 'admin', department: propDepartment }) => {
   const { user } = useAuth();
   const effectiveRole = role;
   const effectiveDepartment = propDepartment || user?.department || '';
@@ -233,7 +230,7 @@ const ReportsManagement: React.FC<ReportsManagementProps> = ({
     }
   }, [isManager, effectiveDepartment]);
 
-  // ================= FETCH ALL EMPLOYEES =================
+  // ================= FETCH ALL EMPLOYEES (with employeeId) =================
   useEffect(() => {
     if (!user?.id) return;
 
@@ -243,21 +240,41 @@ const ReportsManagement: React.FC<ReportsManagementProps> = ({
         const snapshot = await get(usersRef);
         const usersData = snapshot.val() as Record<string, RawUserData> | null;
         const employeesList: Employee[] = [];
+
         if (usersData) {
+          // Build map of admin → employees to easily find employeeId
+          const adminEmployeeMap: Record<string, Record<string, { employeeId?: string }>> = {};
+          for (const [adminId, adminData] of Object.entries(usersData)) {
+            if (adminData.role !== 'admin') continue;
+            if (adminData.employees) {
+              adminEmployeeMap[adminId] = adminData.employees as Record<string, { employeeId?: string }>;
+            }
+          }
+
           for (const [uid, userData] of Object.entries(usersData)) {
             if (userData.role === 'admin' || userData.role === 'super_admin') continue;
-           const profile = (userData.profile || userData.employee) as RawEmployeeData | undefined;
-// ✅ Only include active employees
-if (profile?.status !== 'active') continue;
-const department = profile?.department || '';
-employeesList.push({
-  id: uid,
-  name: profile?.name || userData.name || `Employee ${uid.slice(0, 6)}`,
-  email: profile?.email || userData.email || '',
-  department: department,
-  designation: profile?.designation || '',
-  status: profile?.status || 'active'
-});
+            const profile = (userData.profile || userData.employee) as RawEmployeeData | undefined;
+            // ✅ Only include active employees
+            if (profile?.status !== 'active') continue;
+
+            // Find custom employeeId from any admin's employee list
+            let employeeId = '';
+            for (const adminEmployees of Object.values(adminEmployeeMap)) {
+              if (adminEmployees[uid]?.employeeId) {
+                employeeId = adminEmployees[uid].employeeId!;
+                break;
+              }
+            }
+
+            employeesList.push({
+              id: uid,
+              name: profile?.name || userData.name || `Employee ${uid.slice(0, 6)}`,
+              email: profile?.email || userData.email || '',
+              department: profile?.department || '',
+              designation: profile?.designation || '',
+              status: profile?.status || 'active',
+              employeeId: employeeId,
+            });
           }
         }
         setEmployees(employeesList);
@@ -467,7 +484,7 @@ employeesList.push({
     fetchDailyTasks();
   }, [user, reportType]);
 
-  // ================= FETCH PROJECTS DATA (new) =================
+  // ================= FETCH PROJECTS DATA =================
   useEffect(() => {
     if (!user?.id || reportType !== 'projects') return;
 
@@ -493,7 +510,7 @@ employeesList.push({
               createdAt: proj.createdAt || new Date().toISOString(),
               createdBy: proj.createdBy || '',
               assignedTeamLeader: proj.assignedTeamLeader,
-              assignedEmployees: proj.assignedEmployees || []
+              assignedEmployees: proj.assignedEmployees || [],
             });
           }
         }
@@ -604,75 +621,75 @@ employeesList.push({
 
   const { filteredAttendance, filteredLeaves, filteredDailyTasks, filteredProjects } = getFilteredData();
 
-  // ================= DEPARTMENT-WISE DATA =================
-const getDepartmentWiseData = () => {
-  let departments = Array.from(new Set(employees.map(emp => emp.department || 'No Department')));
-  if (isManager && effectiveDepartment) departments = [effectiveDepartment];
+  // ================= DEPARTMENT‑WISE DATA =================
+  const getDepartmentWiseData = () => {
+    let departments = Array.from(new Set(employees.map(emp => emp.department || 'No Department')));
+    if (isManager && effectiveDepartment) departments = [effectiveDepartment];
 
-  if (reportType === 'attendance') {
-    return departments
-      .map(dept => {
-        const deptEmployees = dept === 'No Department' ? employees.filter(emp => !emp.department) : employees.filter(emp => emp.department === dept);
-        const deptRecords = filteredAttendance.filter(r => deptEmployees.some(e => e.id === r.employeeId));
-        return {
-          department: dept,
-          present: deptRecords.filter(r => r.status === 'present').length,
-          absent: deptRecords.filter(r => r.status === 'absent').length,
-          late: deptRecords.filter(r => r.status === 'late').length,
-          total: deptRecords.length,
-          percentage: deptRecords.length ? Math.round((deptRecords.filter(r => r.status === 'present').length / deptRecords.length) * 100) : 0,
-        };
-      })
-      .filter(deptData => deptData.total > 0); // ✅ hide departments with no records
-  } else if (reportType === 'leaves') {
-    return departments
-      .map(dept => {
-        const deptEmployees = dept === 'No Department' ? employees.filter(emp => !emp.department) : employees.filter(emp => emp.department === dept);
-        const deptLeaves = filteredLeaves.filter(l => deptEmployees.some(e => e.id === l.employeeId));
-        return {
-          department: dept,
-          approved: deptLeaves.filter(l => l.status === 'approved').length,
-          pending: deptLeaves.filter(l => l.status === 'pending').length,
-          rejected: deptLeaves.filter(l => l.status === 'rejected').length,
-          total: deptLeaves.length,
-        };
-      })
-      .filter(deptData => deptData.total > 0);
-  } else if (reportType === 'dailyTasks') {
-    return departments
-      .map(dept => {
-        const deptEmployees = dept === 'No Department' ? employees.filter(emp => !emp.department) : employees.filter(emp => emp.department === dept);
-        const deptTasks = filteredDailyTasks.filter(t => deptEmployees.some(e => e.id === t.employeeId));
-        return {
-          department: dept,
-          completed: deptTasks.filter(t => t.status === 'completed').length,
-          inProgress: deptTasks.filter(t => t.status === 'in-progress').length,
-          pending: deptTasks.filter(t => t.status === 'pending').length,
-          total: deptTasks.length,
-        };
-      })
-      .filter(deptData => deptData.total > 0);
-  } else {
-    // Projects
-    return departments
-      .map(dept => {
-        const deptProjects = filteredProjects.filter(p => {
-          if (dept === 'No Department') return !p.department;
-          return p.department === dept;
-        });
-        return {
-          department: dept,
-          total: deptProjects.length,
-          completed: deptProjects.filter(p => p.status === 'completed').length,
-          inProgress: deptProjects.filter(p => p.status === 'in_progress' || p.status === 'active').length,
-          pending: deptProjects.filter(p => p.status === 'not_started' || p.status === 'pending').length,
-          onHold: deptProjects.filter(p => p.status === 'on_hold').length,
-          averageProgress: deptProjects.length ? Math.round(deptProjects.reduce((sum, p) => sum + (p.progress || 0), 0) / deptProjects.length) : 0,
-        };
-      })
-      .filter(deptData => deptData.total > 0);
-  }
-};
+    if (reportType === 'attendance') {
+      return departments
+        .map(dept => {
+          const deptEmployees = dept === 'No Department' ? employees.filter(emp => !emp.department) : employees.filter(emp => emp.department === dept);
+          const deptRecords = filteredAttendance.filter(r => deptEmployees.some(e => e.id === r.employeeId));
+          return {
+            department: dept,
+            present: deptRecords.filter(r => r.status === 'present').length,
+            absent: deptRecords.filter(r => r.status === 'absent').length,
+            late: deptRecords.filter(r => r.status === 'late').length,
+            total: deptRecords.length,
+            percentage: deptRecords.length ? Math.round((deptRecords.filter(r => r.status === 'present').length / deptRecords.length) * 100) : 0,
+          };
+        })
+        .filter(deptData => deptData.total > 0);
+    } else if (reportType === 'leaves') {
+      return departments
+        .map(dept => {
+          const deptEmployees = dept === 'No Department' ? employees.filter(emp => !emp.department) : employees.filter(emp => emp.department === dept);
+          const deptLeaves = filteredLeaves.filter(l => deptEmployees.some(e => e.id === l.employeeId));
+          return {
+            department: dept,
+            approved: deptLeaves.filter(l => l.status === 'approved').length,
+            pending: deptLeaves.filter(l => l.status === 'pending').length,
+            rejected: deptLeaves.filter(l => l.status === 'rejected').length,
+            total: deptLeaves.length,
+          };
+        })
+        .filter(deptData => deptData.total > 0);
+    } else if (reportType === 'dailyTasks') {
+      return departments
+        .map(dept => {
+          const deptEmployees = dept === 'No Department' ? employees.filter(emp => !emp.department) : employees.filter(emp => emp.department === dept);
+          const deptTasks = filteredDailyTasks.filter(t => deptEmployees.some(e => e.id === t.employeeId));
+          return {
+            department: dept,
+            completed: deptTasks.filter(t => t.status === 'completed').length,
+            inProgress: deptTasks.filter(t => t.status === 'in-progress').length,
+            pending: deptTasks.filter(t => t.status === 'pending').length,
+            total: deptTasks.length,
+          };
+        })
+        .filter(deptData => deptData.total > 0);
+    } else {
+      // Projects
+      return departments
+        .map(dept => {
+          const deptProjects = filteredProjects.filter(p => {
+            if (dept === 'No Department') return !p.department;
+            return p.department === dept;
+          });
+          return {
+            department: dept,
+            total: deptProjects.length,
+            completed: deptProjects.filter(p => p.status === 'completed').length,
+            inProgress: deptProjects.filter(p => p.status === 'in_progress' || p.status === 'active').length,
+            pending: deptProjects.filter(p => p.status === 'not_started' || p.status === 'pending').length,
+            onHold: deptProjects.filter(p => p.status === 'on_hold').length,
+            averageProgress: deptProjects.length ? Math.round(deptProjects.reduce((sum, p) => sum + (p.progress || 0), 0) / deptProjects.length) : 0,
+          };
+        })
+        .filter(deptData => deptData.total > 0);
+    }
+  };
   const departmentData = getDepartmentWiseData();
 
   // ================= EXPORT REPORT =================
@@ -690,7 +707,7 @@ const getDepartmentWiseData = () => {
           const employee = employees.find(e => e.id === record.employeeId);
           return [
             `"${record.employeeName}"`,
-            record.employeeId,
+            employee?.employeeId || record.employeeId,
             employee?.department || 'No Department',
             new Date(record.date).toLocaleDateString(),
             record.punchIn || '-',
@@ -705,36 +722,42 @@ const getDepartmentWiseData = () => {
         [`Leave Report - Generated on ${currentDate}`],
         [''],
         ['Employee Name', 'Employee ID', 'Department', 'Leave Type', 'Start Date', 'End Date', 'Duration', 'Status', 'Reason', 'Applied At'],
-        ...filteredLeaves.map(request => [
-          `"${request.employeeName}"`,
-          request.employeeId,
-          request.department,
-          request.leaveType,
-          new Date(request.startDate).toLocaleDateString(),
-          new Date(request.endDate).toLocaleDateString(),
-          `${calculateDays(request.startDate, request.endDate)} days`,
-          request.status,
-          `"${request.reason}"`,
-          new Date(request.appliedAt).toLocaleString()
-        ])
+        ...filteredLeaves.map(request => {
+          const employee = employees.find(e => e.id === request.employeeId);
+          return [
+            `"${request.employeeName}"`,
+            employee?.employeeId || request.employeeId,
+            request.department,
+            request.leaveType,
+            new Date(request.startDate).toLocaleDateString(),
+            new Date(request.endDate).toLocaleDateString(),
+            `${calculateDays(request.startDate, request.endDate)} days`,
+            request.status,
+            `"${request.reason}"`,
+            new Date(request.appliedAt).toLocaleString()
+          ];
+        })
       ].map(row => row.join(',')).join('\n');
     } else if (reportType === 'dailyTasks') {
       csvContent = [
         [`Daily Tasks Report - Generated on ${currentDate}`],
         [''],
         ['Employee Name', 'Employee ID', 'Department', 'Task Title', 'Task Type', 'Priority', 'Status', 'Date', 'Duration', 'Assigned By'],
-        ...filteredDailyTasks.map(task => [
-          `"${task.employeeName}"`,
-          task.employeeId,
-          task.department,
-          `"${task.taskTitle}"`,
-          task.taskType,
-          task.priority,
-          task.status,
-          new Date(task.date).toLocaleDateString(),
-          task.totalDuration,
-          task.assignedBy
-        ])
+        ...filteredDailyTasks.map(task => {
+          const employee = employees.find(e => e.id === task.employeeId);
+          return [
+            `"${task.employeeName}"`,
+            employee?.employeeId || task.employeeId,
+            task.department,
+            `"${task.taskTitle}"`,
+            task.taskType,
+            task.priority,
+            task.status,
+            new Date(task.date).toLocaleDateString(),
+            task.totalDuration,
+            task.assignedBy
+          ];
+        })
       ].map(row => row.join(',')).join('\n');
     } else if (reportType === 'projects') {
       csvContent = [
@@ -929,7 +952,11 @@ const getDepartmentWiseData = () => {
                     {/* Attendance */}
                     {reportType === 'attendance' && (
                       <div className="space-y-1 text-sm">
-                        <p>Present: {dept.present} / {dept.total}</p>
+                        <div className="flex items-center gap-1">
+                          <span>Attendance Records: </span>
+                          <span className="font-medium">{dept.present} / {dept.total}</span>
+                          <span className="text-xs text-gray-400 cursor-help" title="Number of attendance records (days) in the selected period">ⓘ</span>
+                        </div>
                         <div className="w-full bg-gray-200 rounded-full h-2"><div className="bg-green-500 h-2 rounded-full" style={{ width: `${dept.percentage}%` }} /></div>
                         <p>Attendance Rate: {dept.percentage}%</p>
                         <p>Late: {dept.late} | Absent: {dept.absent}</p>
@@ -987,7 +1014,7 @@ const getDepartmentWiseData = () => {
                 <TableBody>
                   {reportType === 'attendance' && filteredAttendance.slice(0,5).map(record => (
                     <TableRow key={record.id}>
-                      <TableCell>{record.employeeId}</TableCell>
+                      <TableCell>{employees.find(e => e.id === record.employeeId)?.employeeId || record.employeeId.slice(0,8)}</TableCell>
                       <TableCell>{record.employeeName}</TableCell>
                       <TableCell>{formatDate(record.date)}</TableCell>
                       <TableCell>{record.punchIn || '-'}</TableCell>
@@ -997,7 +1024,7 @@ const getDepartmentWiseData = () => {
                   ))}
                   {reportType === 'leaves' && filteredLeaves.slice(0,5).map(request => (
                     <TableRow key={request.id}>
-                      <TableCell>{request.employeeId}</TableCell>
+                      <TableCell>{employees.find(e => e.id === request.employeeId)?.employeeId || request.employeeId.slice(0,8)}</TableCell>
                       <TableCell>{request.employeeName}</TableCell>
                       <TableCell>{request.leaveType}</TableCell>
                       <TableCell>{formatDate(request.startDate)}</TableCell>
@@ -1007,7 +1034,7 @@ const getDepartmentWiseData = () => {
                   ))}
                   {reportType === 'dailyTasks' && filteredDailyTasks.slice(0,5).map(task => (
                     <TableRow key={task.id}>
-                      <TableCell>{task.employeeId}</TableCell>
+                      <TableCell>{employees.find(e => e.id === task.employeeId)?.employeeId || task.employeeId.slice(0,8)}</TableCell>
                       <TableCell>{task.employeeName}</TableCell>
                       <TableCell className="max-w-xs truncate">{task.taskTitle}</TableCell>
                       <TableCell>{formatDate(task.date)}</TableCell>
@@ -1036,7 +1063,7 @@ const getDepartmentWiseData = () => {
         </Card>
       </motion.div>
 
-      {/* View All Data Modal – keep existing logic, unchanged for brevity */}
+      {/* View All Data Modal */}
       {showAllData && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-lg w-full max-w-5xl max-h-[90vh] overflow-hidden flex flex-col">
@@ -1060,7 +1087,7 @@ const getDepartmentWiseData = () => {
                 <TableBody>
                   {reportType === 'attendance' && (modalDateFilter ? filteredAttendance.filter(r => r.date === modalDateFilter) : filteredAttendance).map(record => (
                     <TableRow key={record.id}>
-                      <TableCell>{record.employeeId}</TableCell>
+                      <TableCell>{employees.find(e => e.id === record.employeeId)?.employeeId || record.employeeId.slice(0,8)}</TableCell>
                       <TableCell>{record.employeeName}</TableCell>
                       <TableCell>{formatDate(record.date)}</TableCell>
                       <TableCell>{record.punchIn || '-'}</TableCell>
@@ -1070,7 +1097,7 @@ const getDepartmentWiseData = () => {
                   ))}
                   {reportType === 'leaves' && (modalDateFilter ? filteredLeaves.filter(r => r.startDate === modalDateFilter || r.endDate === modalDateFilter) : filteredLeaves).map(request => (
                     <TableRow key={request.id}>
-                      <TableCell>{request.employeeId}</TableCell>
+                      <TableCell>{employees.find(e => e.id === request.employeeId)?.employeeId || request.employeeId.slice(0,8)}</TableCell>
                       <TableCell>{request.employeeName}</TableCell>
                       <TableCell>{request.leaveType}</TableCell>
                       <TableCell>{formatDate(request.startDate)}</TableCell>
@@ -1080,7 +1107,7 @@ const getDepartmentWiseData = () => {
                   ))}
                   {reportType === 'dailyTasks' && filteredModalTasks.map(task => (
                     <TableRow key={task.id}>
-                      <TableCell>{task.employeeId}</TableCell>
+                      <TableCell>{employees.find(e => e.id === task.employeeId)?.employeeId || task.employeeId.slice(0,8)}</TableCell>
                       <TableCell>{task.employeeName}</TableCell>
                       <TableCell className="max-w-xs truncate">{task.taskTitle}</TableCell>
                       <TableCell>{formatDate(task.date)}</TableCell>
@@ -1106,7 +1133,7 @@ const getDepartmentWiseData = () => {
         </div>
       )}
 
-      {/* Task Details Modal – unchanged */}
+      {/* Task Details Modal */}
       {showTaskDetails && selectedTask && (
         <div className="fixed inset-0 z-50 bg-black bg-opacity-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-lg w-full max-w-2xl max-h-[80vh] overflow-auto">

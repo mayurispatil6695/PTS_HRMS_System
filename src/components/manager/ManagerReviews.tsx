@@ -1,4 +1,3 @@
-// src/components/manager/ManagerReview.tsx
 import React, { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Button } from '../ui/button';
@@ -401,7 +400,7 @@ const ManagerReview: React.FC = () => {
       await set(ref(database, `reviews/${selectedCycleId}/${selectedEmployee.id}/status`), 'manager_submitted');
       toast.success(`Review submitted. Final score: ${finalScore} (${grade})`);
       setSubmitted(true);
-      // Notify employee
+      // ✅ Only save to Firebase – browser notification handled by NotificationSystem
       const notifRef = push(ref(database, `notifications/${selectedEmployee.id}`));
       await set(notifRef, {
         title: 'Performance Review Completed',

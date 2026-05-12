@@ -259,7 +259,12 @@ const LeaveManagement: React.FC = () => {
     return () => unsubscribes.forEach(u => u());
   }, [user, employees]);
 
-  const showSystemNotification = (notification: Omit<NotificationData, 'id' | 'read'>) => {
+  // ✅ FIXED: Only write to Firebase – no direct new Notification()
+  // src/components/admin/LeaveManagement.tsx
+// ... (all imports and previous code unchanged up to showSystemNotification)
+
+  // ✅ FIXED: Only write to Firebase – no direct new Notification()
+  const showSystemNotification = async (notification: Omit<NotificationData, 'id' | 'read'>) => {
     const newNotif: NotificationData = {
       ...notification,
       id: `${notification.type}-${notification.timestamp}`,
@@ -268,25 +273,33 @@ const LeaveManagement: React.FC = () => {
     setNotifications(prev => [newNotif, ...prev]);
     setCurrentNotification(newNotif);
     setShowNotification(true);
-    if (notificationPermission === 'granted') {
-      const details = getNotificationDetails(notification.type);
-      try {
-        new Notification(details.title, {
-          body: details.description
-            .replace('{employee}', notification.employeeName)
-            .replace('{leaveType}', notification.leaveType)
-            .replace('{startDate}', new Date(notification.startDate).toLocaleDateString())
-            .replace('{endDate}', new Date(notification.endDate).toLocaleDateString()),
-          icon: '/logo.png',
-          tag: `leave-${notification.type}-notification.timestamp`,
-        });
-      } catch (error) { console.error(error); }
+
+    // ✅ Save to Firebase (admin's notification node) – Browser popup handled by NotificationSystem.tsx
+    if (notification.adminId) {
+      const notifRef = push(ref(database, `notifications/${notification.adminId}`));
+      await set(notifRef, {
+        title: getNotificationDetails(notification.type).title,
+        body: getNotificationDetails(notification.type).description
+          .replace('{employee}', notification.employeeName)
+          .replace('{leaveType}', notification.leaveType)
+          .replace('{startDate}', new Date(notification.startDate).toLocaleDateString())
+          .replace('{endDate}', new Date(notification.endDate).toLocaleDateString()),
+        type: `leave_${notification.type}`,
+        read: false,
+        createdAt: notification.timestamp,
+        leaveId: newNotif.id,  // ✅ Use the generated id
+      });
     }
+
+    // ❌ REMOVED: direct new Notification(...)
+
     setTimeout(() => {
       setShowNotification(false);
       setTimeout(() => setCurrentNotification(null), 500);
     }, 5000);
   };
+
+
 
   // Filtered and paginated requests
   const filteredRequests = useMemo(() => {
@@ -304,10 +317,7 @@ const LeaveManagement: React.FC = () => {
     return filtered;
   }, [allLeaveRequests, searchTerm, filterDate, filterStatus]);
 
-  const displayedRequests = useMemo(() => {
-    return filteredRequests.slice(0, displayCount);
-  }, [filteredRequests, displayCount]);
-
+  const displayedRequests = useMemo(() => filteredRequests.slice(0, displayCount), [filteredRequests, displayCount]);
   const hasMoreItems = filteredRequests.length > displayCount;
 
   const loadMore = useCallback(() => {
@@ -359,7 +369,6 @@ const LeaveManagement: React.FC = () => {
       const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
       await update(leaveRef, updates);
 
-      // ✅ Audit log
       await addAuditLog({
         action: `leave_${newStatus}`,
         performedBy: user.id,
@@ -375,7 +384,7 @@ const LeaveManagement: React.FC = () => {
         },
       });
 
-      // Send employee notification
+      // Send employee notification (Firebase only)
       const notifRef = push(ref(database, `notifications/${request.employeeId}`));
       await set(notifRef, {
         title: newStatus === 'approved' ? 'Leave Approved' : 'Leave Rejected',
@@ -386,6 +395,7 @@ const LeaveManagement: React.FC = () => {
         leaveId: request.id,
       });
 
+      // Notify admin (in‑app toast + Firebase notification)
       const notifType = newStatus === 'approved' ? 'approved' : (newStatus === 'rejected' ? 'rejected' : 'reopened');
       showSystemNotification({
         type: notifType,
@@ -400,6 +410,7 @@ const LeaveManagement: React.FC = () => {
       });
       toast({ title: `Leave ${newStatus.charAt(0).toUpperCase() + newStatus.slice(1)}`, description: `Leave request has been ${newStatus}.` });
     } catch (error) {
+      console.error(error);
       toast({ title: "Error", description: `Failed to ${newStatus} leave request`, variant: "destructive" });
     } finally {
       setLoading(false);
@@ -428,7 +439,6 @@ const LeaveManagement: React.FC = () => {
       const leaveRef = ref(database, `users/${request.adminId}/employees/${request.employeeId}/leaves/${request.id}`);
       await remove(leaveRef);
       toast({ title: "Deleted", description: "Leave request deleted" });
-
       await addAuditLog({
         action: 'leave_deleted',
         performedBy: user.id,

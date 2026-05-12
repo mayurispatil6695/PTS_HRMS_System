@@ -1,21 +1,24 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/card';
 import { Badge } from '../ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../ui/collapsible';
 import { ref, onValue, off } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { motion } from 'framer-motion';
-import { FolderOpen, Users, Calendar } from 'lucide-react';
+import { FolderOpen, Users, Calendar, MessageSquare } from 'lucide-react';
 import { format } from 'date-fns';
 
-// ---------- TYPES ----------
+// Lazy load chat component (optional but good for performance)
+const ProjectChat = lazy(() => import('../admin/project/ProjectChat'));
+
 interface FirebaseTask {
   id?: string;
   title?: string;
   status?: string;
   dueDate?: string;
-  [key: string]: unknown; // allow extra fields like description, priority, etc.
+  [key: string]: unknown;
 }
 
 interface FirebaseProject {
@@ -41,12 +44,12 @@ interface Project {
   tasks?: Record<string, FirebaseTask>;
 }
 
-// ---------- COMPONENT ----------
 const MyProjects: React.FC = () => {
   const { user } = useAuth();
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const [expandedChatProject, setExpandedChatProject] = useState<string | null>(null);
 
   useEffect(() => {
     if (!user?.id) return;
@@ -101,7 +104,7 @@ const MyProjects: React.FC = () => {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">My Projects</h1>
-        <p className="text-gray-600">Projects you are part of (read‑only view)</p>
+        <p className="text-gray-600">Projects you are part of – view details and team chat.</p>
       </div>
 
       {projects.length === 0 ? (
@@ -115,7 +118,7 @@ const MyProjects: React.FC = () => {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {projects.map((project) => (
             <motion.div key={project.id} initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }}>
-              <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedProject(project)}>
+              <Card className="hover:shadow-md transition-shadow">
                 <CardHeader>
                   <CardTitle className="text-lg">{project.name}</CardTitle>
                   <Badge className={getStatusColor(project.status)}>
@@ -128,6 +131,30 @@ const MyProjects: React.FC = () => {
                     <span><Calendar className="h-3 w-3 inline mr-1" /> {formatDate(project.startDate)} – {formatDate(project.endDate)}</span>
                     <span><Users className="h-3 w-3 inline mr-1" /> {Object.keys(project.tasks || {}).length} tasks</span>
                   </div>
+
+                  {/* ✅ Team Chat Collapsible */}
+                  <Collapsible
+                    open={expandedChatProject === project.id}
+                    onOpenChange={(open) => setExpandedChatProject(open ? project.id : null)}
+                    className="mt-4"
+                  >
+                    <CollapsibleTrigger className="flex items-center gap-2 text-sm text-blue-600 hover:text-blue-800 w-full justify-start p-2 rounded-md hover:bg-gray-50">
+                      <MessageSquare className="h-4 w-4" />
+                      <span>Team Chat</span>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-2">
+                      <Suspense fallback={<div className="text-center py-4">Loading chat...</div>}>
+                        <ProjectChat projectId={project.id} />
+                      </Suspense>
+                    </CollapsibleContent>
+                  </Collapsible>
+
+                  <button
+                    onClick={() => setSelectedProject(project)}
+                    className="mt-3 text-sm text-blue-600 hover:underline"
+                  >
+                    View Details →
+                  </button>
                 </CardContent>
               </Card>
             </motion.div>
@@ -135,6 +162,7 @@ const MyProjects: React.FC = () => {
         </div>
       )}
 
+      {/* Project Detail Modal */}
       <Dialog open={!!selectedProject} onOpenChange={() => setSelectedProject(null)}>
         <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
           <DialogHeader>
@@ -151,7 +179,7 @@ const MyProjects: React.FC = () => {
                 <div><span className="font-medium">Timeline:</span> {formatDate(selectedProject.startDate)} – {formatDate(selectedProject.endDate)}</div>
               </div>
               <div>
-                <h4 className="font-medium text-sm text-gray-500 mb-2">Other Tasks in this Project</h4>
+                <h4 className="font-medium text-sm text-gray-500 mb-2">Tasks</h4>
                 <div className="space-y-2 max-h-48 overflow-y-auto">
                   {Object.values(selectedProject.tasks || {}).length === 0 ? (
                     <p className="text-sm text-gray-400">No tasks yet</p>
@@ -168,8 +196,14 @@ const MyProjects: React.FC = () => {
                   )}
                 </div>
               </div>
+              <div className="border-t pt-3 mt-2">
+                <h4 className="font-medium text-sm text-gray-500 mb-2">Team Chat</h4>
+                <Suspense fallback={<div>Loading chat...</div>}>
+                  <ProjectChat projectId={selectedProject.id} />
+                </Suspense>
+              </div>
               <div className="text-center text-xs text-gray-400 pt-2">
-                This is a read‑only view. To update tasks, go to <strong>My Work</strong>.
+                You can update your assigned tasks from <strong>My Work</strong>.
               </div>
             </div>
           )}

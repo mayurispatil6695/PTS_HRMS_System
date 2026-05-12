@@ -11,9 +11,8 @@ import { Textarea } from '../ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '../ui/dialog';
-import { ref, get, update, push, set, increment } from 'firebase/database';
-import { ref as storageRef, uploadBytesResumable, getDownloadURL, deleteObject } from 'firebase/storage';
-import { database, storage } from '../../firebase';
+import { ref, update, push, set, increment, onValue, off } from 'firebase/database';
+import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
 import { toast } from 'react-hot-toast';
 import { format } from 'date-fns';
@@ -68,6 +67,7 @@ interface Task {
   achievementSummary?: string;
 }
 
+// Firebase data shapes
 interface FirebaseTaskData {
   title?: string;
   description?: string;
@@ -126,56 +126,65 @@ const MyTasks: React.FC = () => {
     return hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
   };
 
-  const fetchTasks = async (): Promise<void> => {
-    if (!user?.id) return;
-    setLoading(true);
-    try {
-      const projectsSnap = await get(ref(database, 'projects'));
-      const projects = projectsSnap.val() as Record<string, FirebaseProject> | null;
-      const taskList: Task[] = [];
-      if (projects) {
-        for (const [projId, proj] of Object.entries(projects)) {
-          if (proj.tasks) {
-            for (const [taskId, taskData] of Object.entries(proj.tasks)) {
-              if (taskData.assignedTo === user.id) {
-                taskList.push({
-                  id: taskId,
-                  projectId: projId,
-                  projectName: proj.name || 'Unnamed Project',
-                  title: taskData.title || '',
-                  description: taskData.description || '',
-                  dueDate: taskData.dueDate || '',
-                  priority: (taskData.priority as Task['priority']) || 'medium',
-                  status: (taskData.status as Task['status']) || 'pending',
-                  assignedTo: taskData.assignedTo,
-                  assignedToName: taskData.assignedToName,
-                  createdAt: taskData.createdAt || new Date().toISOString(),
-                  updatedAt: taskData.updatedAt,
-                  totalTimeSpentMs: taskData.totalTimeSpentMs || 0,
-                  timeLogs: taskData.timeLogs || {},
-                  comments: taskData.comments || {},
-                  attachments: taskData.attachments || {},
-                  dependsOn: taskData.dependsOn || [],
-                  achievementSummary: taskData.achievementSummary,
-                });
+  // ✅ REAL‑TIME LISTENER – no `any` types
+  useEffect(() => {
+    if (!user?.id) {
+      setLoading(false);
+      return;
+    }
+
+    const projectsRef = ref(database, 'projects');
+    const unsubscribe = onValue(projectsRef, (snapshot) => {
+      try {
+        const projects = snapshot.val() as Record<string, FirebaseProject> | null;
+        const taskList: Task[] = [];
+
+        if (projects) {
+          for (const [projId, proj] of Object.entries(projects)) {
+            if (proj.tasks) {
+              for (const [taskId, taskData] of Object.entries(proj.tasks)) {
+                if (taskData.assignedTo === user.id) {
+                  taskList.push({
+                    id: taskId,
+                    projectId: projId,
+                    projectName: proj.name || 'Unnamed Project',
+                    title: taskData.title || '',
+                    description: taskData.description || '',
+                    dueDate: taskData.dueDate || '',
+                    priority: (taskData.priority as Task['priority']) || 'medium',
+                    status: (taskData.status as Task['status']) || 'pending',
+                    assignedTo: taskData.assignedTo,
+                    assignedToName: taskData.assignedToName,
+                    createdAt: taskData.createdAt || new Date().toISOString(),
+                    updatedAt: taskData.updatedAt,
+                    totalTimeSpentMs: taskData.totalTimeSpentMs || 0,
+                    timeLogs: taskData.timeLogs || {},
+                    comments: taskData.comments || {},
+                    attachments: taskData.attachments || {},
+                    dependsOn: taskData.dependsOn || [],
+                    achievementSummary: taskData.achievementSummary,
+                  });
+                }
               }
             }
           }
         }
-      }
-      taskList.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
-      setTasks(taskList);
-    } catch (err) {
-      console.error(err);
-      setError('Failed to load tasks');
-    } finally {
-      setLoading(false);
-    }
-  };
 
-  useEffect(() => {
-    fetchTasks();
+        taskList.sort((a, b) => new Date(a.dueDate).getTime() - new Date(b.dueDate).getTime());
+        setTasks(taskList);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load tasks');
+      } finally {
+        setLoading(false);
+      }
+    });
+
+    return () => off(projectsRef);
   }, [user]);
+
+  // All remaining functions (startTimer, stopTimer, etc.) are unchanged from your original – they are already type‑safe.
+  // I'll include them as they were (identical to your previous version) to keep the file complete.
 
   const startTimer = async (task: Task): Promise<void> => {
     if (runningTimer) {
@@ -384,7 +393,6 @@ const MyTasks: React.FC = () => {
     toast.success('Attachment deleted');
   };
 
-  // Memoize filtered tasks for performance
   const filteredTasks = useMemo(() => {
     return tasks.filter(task => {
       const statusMatch = filterStatus === 'all' || task.status === filterStatus;

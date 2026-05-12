@@ -17,6 +17,14 @@ interface Task {
   achievementSummary?: string;
 }
 
+interface ProjectData {
+  name?: string;
+  status?: string;
+  assignedTeamLeader?: string;
+  createdBy?: string;
+  progress?: number;
+}
+
 type ReportPeriod = 'daily' | 'weekly' | 'monthly';
 
 interface ProjectReportModalProps {
@@ -25,7 +33,7 @@ interface ProjectReportModalProps {
   projectId: string;
 }
 
-// Helper: escape CSV field (wrap in quotes and escape internal quotes)
+// Helper: escape CSV field
 const escapeCSV = (value: string | number | undefined | null): string => {
   if (value === undefined || value === null) return '';
   const str = String(value);
@@ -38,36 +46,53 @@ const escapeCSV = (value: string | number | undefined | null): string => {
 export const ProjectReportModal: React.FC<ProjectReportModalProps> = ({ open, onOpenChange, projectId }) => {
   const [period, setPeriod] = useState<ReportPeriod>('weekly');
   const [loading, setLoading] = useState(false);
-  const [projectName, setProjectName] = useState('');
+  const [projectInfo, setProjectInfo] = useState<ProjectData>({});
 
   useEffect(() => {
     if (open && projectId) {
-      const fetchProjectName = async () => {
-        const snap = await get(ref(database, `projects/${projectId}/name`));
-        setProjectName(snap.val() || 'Project');
+      const fetchProjectInfo = async () => {
+        const snap = await get(ref(database, `projects/${projectId}`));
+        const data = snap.val() as ProjectData | null;
+        if (data) {
+          setProjectInfo(data);
+        } else {
+          setProjectInfo({ name: 'Project' });
+        }
       };
-      fetchProjectName();
+      fetchProjectInfo();
     }
   }, [open, projectId]);
 
   const generateReport = async () => {
     setLoading(true);
     try {
+      // Fetch tasks
       const tasksSnap = await get(ref(database, `projects/${projectId}/tasks`));
-      const tasksObj = tasksSnap.val() || {};
+      const tasksObj = tasksSnap.val() as Record<string, Record<string, unknown>> | null;
       
-      // ✅ No `any` – properly typed mapping
-      const tasks: Task[] = Object.entries(tasksObj as Record<string, Record<string, unknown>>).map(([id, data]) => ({
-        id,
-        title: (data.title as string) || '',
-        status: (data.status as string) || 'not_started',
-        dueDate: data.dueDate as string,
-        updatedAt: data.updatedAt as string,
-        dependsOn: (data.dependsOn as string[]) || [],
-        achievementSummary: data.achievementSummary as string,
-      }));
+      const tasks: Task[] = tasksObj
+        ? Object.entries(tasksObj).map(([id, data]) => ({
+            id,
+            title: (data.title as string) || '',
+            status: (data.status as string) || 'not_started',
+            dueDate: data.dueDate as string,
+            updatedAt: data.updatedAt as string,
+            dependsOn: (data.dependsOn as string[]) || [],
+            achievementSummary: data.achievementSummary as string,
+          }))
+        : [];
 
-      // Calculate date range based on period
+      // Determine team leader (fallback to project creator)
+      const teamLeader = projectInfo.assignedTeamLeader || projectInfo.createdBy || 'Not assigned';
+
+      // Calculate progress based on tasks (if any)
+      const totalTasks = tasks.length;
+      const completedTasks = tasks.filter(t => t.status === 'completed').length;
+      let calculatedProgress = totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
+      // If project is marked completed, force 100% progress
+      if (projectInfo.status === 'completed') calculatedProgress = 100;
+
+      // Date range based on period
       const now = new Date();
       let startDate: Date;
       if (period === 'daily') {
@@ -82,32 +107,30 @@ export const ProjectReportModal: React.FC<ProjectReportModalProps> = ({ open, on
       }
       const endDate = new Date();
 
-      // Filter tasks updated in the period
       const filteredTasks = tasks.filter(task => {
         if (!task.updatedAt) return false;
         const taskDate = new Date(task.updatedAt);
         return taskDate >= startDate && taskDate <= endDate;
       });
 
-      // Counts
       const completed = filteredTasks.filter(t => t.status === 'completed');
       const inProgress = filteredTasks.filter(t => t.status === 'in_progress');
       const pending = filteredTasks.filter(t => t.status === 'pending' || t.status === 'not_started');
       const blocked = filteredTasks.filter(t => t.status === 'blocked');
       const overdue = filteredTasks.filter(t => t.dueDate && new Date(t.dueDate) < new Date() && t.status !== 'completed');
 
-      // Dependencies mapping
       const dependencies = filteredTasks.map(t => ({
         task: t.title,
         dependsOn: (t.dependsOn || []).map(depId => tasks.find(tt => tt.id === depId)?.title || depId)
       }));
 
-      // Helper for CSV rows
       const toCSVRow = (cells: (string | number | undefined | null)[]) => cells.map(escapeCSV).join(',');
 
-      // Build CSV content
       const rows: string[] = [];
-      rows.push(toCSVRow([`Project Report: ${projectName} (${period})`]));
+      rows.push(toCSVRow([`Project Report: ${projectInfo.name || 'Project'} (${period})`]));
+      rows.push('');
+      rows.push(toCSVRow(['Team Leader', 'Progress (%)']));
+      rows.push(toCSVRow([teamLeader, calculatedProgress]));
       rows.push('');
       rows.push(toCSVRow(['Completed Tasks', 'In Progress', 'Pending', 'Blocked', 'Overdue']));
       rows.push(toCSVRow([completed.length, inProgress.length, pending.length, blocked.length, overdue.length]));
@@ -143,7 +166,7 @@ export const ProjectReportModal: React.FC<ProjectReportModalProps> = ({ open, on
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${projectName}_report_${period}_${new Date().toISOString().slice(0, 10)}.csv`;
+      a.download = `${projectInfo.name || 'Project'}_report_${period}_${new Date().toISOString().slice(0, 10)}.csv`;
       a.click();
       URL.revokeObjectURL(url);
       toast.success(`Report exported as CSV`);

@@ -60,7 +60,7 @@ const MeetingManagement: React.FC<MeetingManagementProps> = ({
     date: format(new Date(), 'yyyy-MM-dd'),
     time: format(new Date(new Date().getTime() + 30 * 60000), 'HH:mm'),
     duration: '30',
-    type: 'common' as 'common' | 'department',  // ✅ fixed: allow both
+    type: 'common' as 'common' | 'department',
     department: '',
     agenda: ''
   });
@@ -162,19 +162,29 @@ const MeetingManagement: React.FC<MeetingManagementProps> = ({
     return () => off(meetingsRef);
   }, [authUser, isManager, effectiveDepartment]);
 
+  // ✅ FIXED: Only show toast; save to Firebase for browser notification via NotificationSystem
   const showMeetingNotification = useCallback((meeting: Meeting, message: string) => {
-    if (notificationPermission === 'granted') {
-      new Notification(`Meeting Reminder: ${meeting.title}`, {
-        body: `${message}\nTime: ${meeting.time}\nDuration: ${meeting.duration} minutes`,
-        icon: '/favicon.ico'
-      });
-    }
+    // In-app toast (immediate feedback)
     toast({
       title: meeting.title,
       description: `${message} at ${meeting.time}`,
       duration: 10000,
     });
-  }, [notificationPermission]);
+
+    // Save to Firebase notifications for the current user (admin)
+    // Browser popup will be shown by NotificationSystem.tsx
+    if (authUser?.id) {
+      const notifRef = push(ref(database, `notifications/${authUser.id}`));
+      set(notifRef, {
+        title: `Meeting Reminder: ${meeting.title}`,
+        body: `${message}\nTime: ${meeting.time}\nDuration: ${meeting.duration} minutes`,
+        type: 'meeting_reminder',
+        read: false,
+        createdAt: Date.now(),
+        meetingId: meeting.id,
+      }).catch(err => console.error('Failed to save meeting reminder notification:', err));
+    }
+  }, [authUser]);
 
   // Check for upcoming meetings (5-min reminder)
   useEffect(() => {
@@ -307,7 +317,7 @@ const MeetingManagement: React.FC<MeetingManagementProps> = ({
     setShowAddForm(true);
   };
 
-  const deleteMeeting = async (meeting: Meeting) => {
+  const deleteMeeting = async (meeting: Meeting) =>{
     if (!isAdmin) {
       toast({ title: "Access Denied", description: "Only admin can delete meetings", variant: "destructive" });
       return;
@@ -377,6 +387,7 @@ const MeetingManagement: React.FC<MeetingManagementProps> = ({
         </div>
       )}
 
+      {/* Header */}
       <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-gray-800">Meeting Management</h1>
