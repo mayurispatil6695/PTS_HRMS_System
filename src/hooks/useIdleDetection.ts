@@ -1,5 +1,3 @@
-// src/hooks/useIdleDetection.ts
-
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { database } from '../firebase';
 import { ref, update, set, push, get, increment } from 'firebase/database';
@@ -65,7 +63,7 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
   const [apiSupported, setApiSupported] = useState<boolean | null>(null);
 
   // =========================================================
-  // UPDATE ACTIVITY NODE – sets idleStartTime correctly
+  // UPDATE ACTIVITY NODE – FIXED idleStartTime reset
   // =========================================================
   const updateActivityNode = useCallback(
     async (isIdleNow: boolean, startTime?: number) => {
@@ -74,6 +72,7 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
         await set(ref(database, `activity/${userId}`), {
           isIdle: isIdleNow,
           status: isIdleNow ? 'idle' : 'active',
+          // FIX: idleStartTime is null when active, otherwise set to startTime or now
           idleStartTime: isIdleNow ? (startTime || Date.now()) : null,
           lastActive: Date.now(),
           timestamp: Date.now(),
@@ -89,13 +88,14 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
   );
 
   // =========================================================
-  // START / END IDLE SESSION (unchanged logic)
+  // START IDLE SESSION
   // =========================================================
   const startIdleSession = useCallback(async () => {
     if (!userId || !isActive || currentSessionIdRef.current) return;
     try {
       const today = getTodayString();
-      const newSessionRef = push(ref(database, `idleLogs/${userId}/${today}/sessions`));
+      const sessionsRef = ref(database, `idleLogs/${userId}/${today}/sessions`);
+      const newSessionRef = push(sessionsRef);
       const sessionId = newSessionRef.key;
       if (!sessionId) return;
       currentSessionIdRef.current = sessionId;
@@ -107,6 +107,9 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     }
   }, [userId, isActive, updateActivityNode]);
 
+  // =========================================================
+  // END IDLE SESSION
+  // =========================================================
   const endIdleSession = useCallback(async () => {
     if (!userId || !currentSessionIdRef.current || sessionEndingRef.current) return;
     sessionEndingRef.current = true;
@@ -123,14 +126,16 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
         const MAX_IDLE_DURATION = 12 * 60 * 60 * 1000;
         if (durationMs > MAX_IDLE_DURATION) durationMs = MAX_IDLE_DURATION;
         if (durationMs > 0) {
-          await update(sessionRef, { endTime: new Date(endTime).toISOString(), durationMs });
+          await update(sessionRef, {
+            endTime: new Date(endTime).toISOString(),
+            durationMs,
+          });
           await update(ref(database, `idleLogs/${userId}/${today}`), {
             totalIdleMs: increment(durationMs),
             lastUpdated: new Date().toISOString(),
           });
         }
       }
-      // Do NOT call updateActivityNode here – it will be called by the force‑active handlers
     } catch (error) {
       console.error('Failed to end idle session:', error);
     } finally {
@@ -140,7 +145,7 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
   }, [userId]);
 
   // =========================================================
-  // NOTIFICATIONS (unchanged)
+  // NOTIFICATIONS – FIXED employeeName fallback
   // =========================================================
   const sendIdleNotification = useCallback(async () => {
     if (!userId || !adminId || notificationSentRef.current) return;
@@ -153,7 +158,8 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
         idleDuration: idleTimeout,
         lastActive: lastActivityTimeRef.current,
         status: 'unread',
-        employeeName: employeeName || userId,
+        // FIX: fallback to 'Unknown Employee' instead of userId
+        employeeName: employeeName || 'Unknown Employee',
         employeeEmail: employeeEmail || '',
         department: department || '',
         timestamp: Date.now(),
@@ -164,19 +170,28 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     }
   }, [userId, adminId, idleTimeout, employeeName, employeeEmail, department, onIdleNotification]);
 
+  // =========================================================
+  // CLEAR IDLE NOTIFICATION – FIXED full reset
+  // =========================================================
   const clearIdleNotification = useCallback(async () => {
     if (!userId || !adminId) return;
     try {
       notificationSentRef.current = false;
       const notificationRef = ref(database, `users/${adminId}/idleNotifications/${userId}`);
-      await update(notificationRef, { isIdle: false, idleEndTime: Date.now(), status: 'resolved' });
+      await update(notificationRef, {
+        isIdle: false,
+        idleEndTime: Date.now(),
+        idleStartTime: null,
+        idleDuration: 0,
+        status: 'resolved',
+      });
     } catch (error) {
       console.error('Error clearing idle notification:', error);
     }
   }, [userId, adminId]);
 
   // =========================================================
-  // IDLE DETECTOR API (with fallback for missing 'active' event)
+  // IDLE DETECTOR API
   // =========================================================
   useEffect(() => {
     if (!window.IdleDetector) {
@@ -201,7 +216,6 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
             onIdleStart?.();
             sendIdleNotification();
           }
-          // FIX: when IdleDetector signals active, force cleanup
           if (detector.userState === 'active' && isIdleRef.current) {
             await updateActivityNode(false);
             await endIdleSession();
@@ -225,13 +239,11 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
   }, [idleTimeout, isActive, startIdleSession, endIdleSession, updateActivityNode, sendIdleNotification, clearIdleNotification, onIdleStart, onIdleEnd]);
 
   // =========================================================
-  // 🔥 FORCE ACTIVE DETECTION – MANUAL EVENTS
-  // This guarantees the user becomes active even if IdleDetector fails.
+  // FORCE ACTIVE DETECTION – manual events
   // =========================================================
   useEffect(() => {
     const handleUserActivity = async () => {
       if (!isIdleRef.current) return;
-      // Immediately write active state to Firebase
       await updateActivityNode(false);
       await endIdleSession();
       await clearIdleNotification();
@@ -300,7 +312,7 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
   }, [userId, isActive]);
 
   // =========================================================
-  // FORCE END IDLE (public)
+  // FORCE END IDLE
   // =========================================================
   const forceEndIdle = useCallback(async () => {
     if (!isIdleRef.current) return;
