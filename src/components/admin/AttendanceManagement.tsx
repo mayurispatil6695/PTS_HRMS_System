@@ -10,13 +10,25 @@ import { toast } from '../ui/use-toast';
 import { useAuth } from '../../hooks/useAuth';
 import { useEmployees } from '../../hooks/useEmployees';
 import { useAttendanceRealtime } from '../../hooks/useAttendanceRealtime';
-import { update, ref, remove } from 'firebase/database';
+import { update, ref, remove, get } from 'firebase/database';
 import { database } from '../../firebase';
 import { AttendanceRecord } from '@/types/attendance';
 import { calculateNetWorkDuration, calculateTotalBreakTime, getRemark } from '../../utils/attendanceHelpers';
 
-// Lazy load the table row component (optional, but keeps bundle smaller)
+// Lazy load the table row component
 const AttendanceTableRow = lazy(() => import('./AttendanceTableRow'));
+
+// Helper to fetch idle minutes for a given employee and date
+const fetchIdleMinutes = async (employeeId: string, dateStr: string): Promise<number> => {
+  try {
+    const idleRef = ref(database, `idleLogs/${employeeId}/${dateStr}/totalIdleMs`);
+    const snapshot = await get(idleRef);
+    const ms = snapshot.val() as number || 0;
+    return Math.floor(ms / 60000);
+  } catch {
+    return 0;
+  }
+};
 
 const AttendanceManagement: React.FC = () => {
   const { user } = useAuth();
@@ -29,18 +41,19 @@ const AttendanceManagement: React.FC = () => {
   const [filterDateTo, setFilterDateTo] = useState('');
   const [filterStatus, setFilterStatus] = useState('all');
   const [displayCount, setDisplayCount] = useState(50);
+  const [exporting, setExporting] = useState(false);
 
   // Memoized filtered records
   const filteredRecords = useMemo(() => {
     let filtered = allRecords;
-   if (searchTerm) {
-  const term = searchTerm.toLowerCase();
-  filtered = filtered.filter(record =>
-    record.employeeName?.toLowerCase().includes(term) ||
-    record.employeeCode?.toLowerCase().includes(term) ||
-    record.employeeId?.toLowerCase().includes(term)
-  );
-}
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      filtered = filtered.filter(record =>
+        record.employeeName?.toLowerCase().includes(term) ||
+        record.employeeCode?.toLowerCase().includes(term) ||
+        record.employeeId?.toLowerCase().includes(term)
+      );
+    }
     if (filterDateFrom) {
       filtered = filtered.filter(record => record.date?.split('T')[0] >= filterDateFrom);
     }
@@ -63,7 +76,7 @@ const AttendanceManagement: React.FC = () => {
     setDisplayCount(prev => prev + 50);
   }, []);
 
-  // Action handlers (using useCallback)
+  // Action handlers
   const updateStatus = useCallback(async (
     recordId: string,
     employeeUid: string,
@@ -128,61 +141,77 @@ const AttendanceManagement: React.FC = () => {
     }
   }, []);
 
+  // Export with idle minutes column
   const exportAttendance = useCallback(async () => {
     if (filteredRecords.length === 0) {
       toast({ title: "No Data", description: "No records to export", variant: "destructive" });
       return;
     }
 
-    // CSV headers
-    const headers = [
-      "Employee Name",
-      "Employee ID",
-      "Date",
-      "Punch In",
-      "Punch Out",
-      "Net Hours",
-      "Break",
-      "Status",
-      "Work Mode",
-      "Late By",
-      "Half-Day By",
-      "Remark"
-    ];
+    setExporting(true);
+    try {
+      // Enrich records with idle minutes
+      const enriched = await Promise.all(
+        filteredRecords.map(async (record) => {
+          const dateStr = new Date(record.date).toISOString().split('T')[0];
+          const idleMin = await fetchIdleMinutes(record.employeeId, dateStr);
+          return { ...record, idleMinutes: idleMin };
+        })
+      );
 
-    // Build rows from filteredRecords
-    const rows = filteredRecords.map(record => [
-      record.employeeName,
-      record.employeeId,
-      new Date(record.date).toLocaleDateString(),
-      record.punchIn || "-",
-      record.punchOut || "-",
-      calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks),
-      calculateTotalBreakTime(record.breaks),
-      record.status,
-      record.workMode || "office",
-      record.markedLateBy || "-",
-      record.markedHalfDayBy || "-",
-      getRemark(record)
-    ]);
+      const headers = [
+        "Employee Name",
+        "Employee ID",
+        "Date",
+        "Punch In",
+        "Punch Out",
+        "Net Hours",
+        "Break",
+        "Status",
+        "Work Mode",
+        "Idle (min)",
+        "Late By",
+        "Half-Day By",
+        "Remark"
+      ];
 
-    // Generate CSV string
-    const csvContent = [headers, ...rows]
-      .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\n");
+      const rows = enriched.map(record => [
+        record.employeeName,
+        record.employeeId,
+        new Date(record.date).toLocaleDateString(),
+        record.punchIn || "-",
+        record.punchOut || "-",
+        calculateNetWorkDuration(record.punchIn, record.punchOut, record.breaks),
+        calculateTotalBreakTime(record.breaks),
+        record.status,
+        record.workMode || "office",
+        record.idleMinutes,
+        record.markedLateBy || "-",
+        record.markedHalfDayBy || "-",
+        getRemark(record)
+      ]);
 
-    // Create download link
-    const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const url = URL.createObjectURL(blob);
-    link.href = url;
-    link.setAttribute("download", `attendance_${new Date().toISOString().slice(0,10)}.csv`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
+      const csvContent = [headers, ...rows]
+        .map(row => row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+        .join("\n");
 
-    toast({ title: "Success", description: `${filteredRecords.length} records exported` });
+      const blob = new Blob(["\uFEFF" + csvContent], { type: "text/csv;charset=utf-8;" });
+      const link = document.createElement("a");
+      const url = URL.createObjectURL(blob);
+      link.href = url;
+      link.setAttribute("download", `attendance_${new Date().toISOString().slice(0,10)}.csv`);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      toast({ title: "Success", description: `${filteredRecords.length} records exported` });
+    } catch (error) {
+      console.error("Export error:", error);
+      toast({ title: "Export Failed", description: "Could not export data", variant: "destructive" });
+    } finally {
+      setExporting(false);
+    }
   }, [filteredRecords]);
 
   const clearFilters = useCallback(() => {
@@ -240,8 +269,8 @@ const AttendanceManagement: React.FC = () => {
                 <SelectItem value="half-day">Half Day</SelectItem>
               </SelectContent>
             </Select>
-            <Button onClick={exportAttendance} disabled={filteredRecords.length === 0} className="w-full">
-              <Download className="h-4 w-4 mr-2" /> Export ({filteredRecords.length})
+            <Button onClick={exportAttendance} disabled={filteredRecords.length === 0 || exporting} className="w-full">
+              <Download className="h-4 w-4 mr-2" /> {exporting ? "Exporting..." : `Export (${filteredRecords.length})`}
             </Button>
           </div>
         </CardContent>
