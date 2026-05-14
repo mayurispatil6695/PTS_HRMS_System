@@ -529,6 +529,12 @@ const ReportsManagement: React.FC<ReportsManagementProps> = ({ role = 'admin', d
   }, [user, reportType]);
 
   // ================= FILTERING LOGIC =================
+  const getIdleMinutesForDate = async (employeeId: string, dateStr: string): Promise<number> => {
+  const idleRef = ref(database, `idleLogs/${employeeId}/${dateStr}/totalIdleMs`);
+  const snapshot = await get(idleRef);
+  const ms = snapshot.val() as number || 0;
+  return Math.floor(ms / 60000);
+};
   const getFilteredData = () => {
     let filteredAttendance: AttendanceRecord[] = [];
     let filteredLeaves: LeaveRequest[] = [];
@@ -693,31 +699,41 @@ const ReportsManagement: React.FC<ReportsManagementProps> = ({ role = 'admin', d
   const departmentData = getDepartmentWiseData();
 
   // ================= EXPORT REPORT =================
-  const exportReport = () => {
+  const exportReport =async () => {
     const timestamp = new Date().toISOString().split('T')[0];
     const currentDate = new Date().toLocaleDateString();
     let csvContent = '';
 
     if (reportType === 'attendance') {
-      csvContent = [
-        [`Attendance Report - Generated on ${currentDate}`],
-        [''],
-        ['Employee Name', 'Employee ID', 'Department', 'Date', 'Punch In', 'Punch Out', 'Status', 'Work Mode'],
-        ...filteredAttendance.map(record => {
-          const employee = employees.find(e => e.id === record.employeeId);
-          return [
-            `"${record.employeeName}"`,
-            employee?.employeeId || record.employeeId,
-            employee?.department || 'No Department',
-            new Date(record.date).toLocaleDateString(),
-            record.punchIn || '-',
-            record.punchOut || '-',
-            record.status,
-            record.workMode || 'office'
-          ];
-        })
-      ].map(row => row.join(',')).join('\n');
-    } else if (reportType === 'leaves') {
+  // Enrich each record with idleMinutes
+  const enriched = await Promise.all(
+    filteredAttendance.map(async (record) => {
+      const dateStr = new Date(record.date).toISOString().split('T')[0];
+      const idleMin = await getIdleMinutesForDate(record.employeeId, dateStr);
+      return { ...record, idleMinutes: idleMin };
+    })
+  );
+  csvContent = [
+    [`Attendance Report - Generated on ${currentDate}`],
+    [''],
+    ['Employee Name', 'Employee ID', 'Department', 'Date', 'Punch In', 'Punch Out', 'Status', 'Work Mode', 'Idle (min)'],
+    ...enriched.map(record => {
+      const employee = employees.find(e => e.id === record.employeeId);
+      return [
+        `"${record.employeeName}"`,
+        employee?.employeeId || record.employeeId,
+        employee?.department || 'No Department',
+        new Date(record.date).toLocaleDateString(),
+        record.punchIn || '-',
+        record.punchOut || '-',
+        record.status,
+        record.workMode || 'office',
+        record.idleMinutes,
+      ];
+    })
+  ].map(row => row.join(',')).join('\n');
+}
+  else if (reportType === 'leaves') {
       csvContent = [
         [`Leave Report - Generated on ${currentDate}`],
         [''],
@@ -885,6 +901,7 @@ const ReportsManagement: React.FC<ReportsManagementProps> = ({ role = 'admin', d
                     <SelectItem value="leaves">Leave</SelectItem>
                     <SelectItem value="dailyTasks">Daily Tasks</SelectItem>
                     <SelectItem value="projects">Projects</SelectItem>
+                    <SelectItem value="idle">Idle Time</SelectItem>
                   </SelectContent>
                 </Select>
               </div>

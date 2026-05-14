@@ -1,9 +1,11 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Clock, AlertTriangle, Sun, Trash2, Eye } from 'lucide-react';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { AttendanceRecord } from '@/types/attendance';
 import { calculateNetWorkDuration, calculateTotalBreakTime, isLateArrival, getRemark } from '../../utils/attendanceHelpers';
+import { ref, get } from 'firebase/database';
+import { database } from '../../firebase';
 
 interface Props {
   record: AttendanceRecord;
@@ -23,10 +25,26 @@ const AttendanceTableRow: React.FC<Props> = React.memo(({
   getStatusColor
 }) => {
   const [imageModal, setImageModal] = useState<{ src: string; title: string } | null>(null);
+  const [idleMinutes, setIdleMinutes] = useState<number | null>(null);
   const adminId = record.adminId;
   const employeeUid = record.employeeId;
 
-  // If adminId is missing, you can fetch from a separate map; for brevity, assume it's on record
+  // Fetch idle minutes for the attendance record's date
+  useEffect(() => {
+    const fetchIdleMinutes = async () => {
+      try {
+        const dateStr = new Date(record.date).toISOString().split('T')[0];
+        const idleRef = ref(database, `idleLogs/${record.employeeId}/${dateStr}/totalIdleMs`);
+        const snapshot = await get(idleRef);
+        const ms = snapshot.val() as number || 0;
+        setIdleMinutes(Math.floor(ms / 60000));
+      } catch (error) {
+        console.error('Error fetching idle minutes:', error);
+        setIdleMinutes(null);
+      }
+    };
+    fetchIdleMinutes();
+  }, [record.id, record.date, record.employeeId]);
 
   const renderBreaksTooltip = () => {
     if (!record.breaks || Object.keys(record.breaks).length === 0) return <span className="text-gray-400">No breaks</span>;
@@ -50,9 +68,9 @@ const AttendanceTableRow: React.FC<Props> = React.memo(({
     <>
       <tr className="hover:bg-gray-50 transition-colors">
         <td className="px-4 py-3 whitespace-nowrap">
-  <div className="text-sm font-medium text-gray-900">{record.employeeName}</div>
-  <div className="text-xs text-gray-500">{record.employeeCode || record.employeeId}</div>
-</td>
+          <div className="text-sm font-medium text-gray-900">{record.employeeName}</div>
+          <div className="text-xs text-gray-500">{record.employeeCode || record.employeeId}</div>
+        </td>
         <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
           {new Date(record.date).toLocaleDateString()}
         </td>
@@ -100,6 +118,10 @@ const AttendanceTableRow: React.FC<Props> = React.memo(({
         </td>
         <td className="px-4 py-3 whitespace-nowrap">
           <Badge variant="outline" className="text-xs font-medium">{record.workMode || 'office'}</Badge>
+        </td>
+        {/* 🆕 Idle minutes column */}
+        <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-600">
+          {idleMinutes !== null ? idleMinutes : '—'}
         </td>
         <td className="px-4 py-3 whitespace-nowrap">
           {record.selfie ? (

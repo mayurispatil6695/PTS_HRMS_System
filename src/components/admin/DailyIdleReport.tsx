@@ -6,7 +6,7 @@ import { Download, Clock, RefreshCw, AlertCircle } from 'lucide-react';
 import { ref, get, onValue, off, DataSnapshot } from 'firebase/database';
 import { database } from '../../firebase';
 import { useAuth } from '../../hooks/useAuth';
-import { Employee } from '@/types/employee'; // central type
+import { Employee } from '@/types/employee';
 
 interface IdleSummary {
   employeeId: string;
@@ -22,18 +22,49 @@ interface ActivityData {
   employeeName?: string;
 }
 
+type DateRangeType = 'today' | 'week' | 'month' | 'custom';
+
 export const DailyIdleReport: React.FC = () => {
   const { user } = useAuth();
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+  const [rangeType, setRangeType] = useState<DateRangeType>('today');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
   const [summaries, setSummaries] = useState<IdleSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
-  // Live idle users – updated in real time
   const [liveIdleUsers, setLiveIdleUsers] = useState<IdleSummary[]>([]);
   const isFetchingRef = useRef(false);
 
-  // 1. Real‑time idle monitoring
+  // Helper: get start/end dates for the selected range
+  const getDateRange = (): { start: Date; end: Date } => {
+    const now = new Date();
+    let start = new Date();
+    let end = new Date();
+    switch (rangeType) {
+      case 'today':
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        break;
+      case 'week':
+        start = new Date(now);
+        start.setDate(now.getDate() - now.getDay()); // Sunday
+        start.setHours(0, 0, 0, 0);
+        end = new Date(start);
+        end.setDate(start.getDate() + 6);
+        break;
+      case 'month':
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        break;
+      case 'custom':
+        start = new Date(customStartDate);
+        end = new Date(customEndDate);
+        break;
+    }
+    return { start, end };
+  };
+
+  // Real‑time idle monitoring
   useEffect(() => {
     const activityRef = ref(database, 'activity');
     const unsubscribe = onValue(activityRef, (snapshot: DataSnapshot) => {
@@ -61,7 +92,6 @@ export const DailyIdleReport: React.FC = () => {
     return () => off(activityRef);
   }, []);
 
-  // 2. Fetch historical idle totals for selected date
   const fetchReport = useCallback(async () => {
     if (!user?.id || isFetchingRef.current) return;
     isFetchingRef.current = true;
@@ -69,51 +99,58 @@ export const DailyIdleReport: React.FC = () => {
     setError(null);
 
     try {
-      // Employees under current admin (adjust path if needed)
+      // Get all employees under this admin
       const employeesRef = ref(database, `users/${user.id}/employees`);
       const employeesSnap = await get(employeesRef);
       const employees = employeesSnap.val() as Record<string, Partial<Employee>> | null;
-
       if (!employees) {
         setSummaries([]);
         return;
       }
 
-      // Parallel fetch of idle totals for all employees
+      const { start, end } = getDateRange();
+      const startStr = start.toISOString().split('T')[0];
+      const endStr = end.toISOString().split('T')[0];
+
       const employeeEntries = Object.entries(employees);
-      const idlePromises = employeeEntries.map(async ([empKey, empData]) => {
-        // Use employee's Firebase UID (empKey) as the idle log key
-        const totalRef = ref(database, `idleLogs/${empKey}/${selectedDate}/totalIdleMs`);
-        const totalSnap = await get(totalRef);
-        const totalIdleMs = (totalSnap.val() as number) || 0;
+      const idlePromises: Promise<IdleSummary>[] = employeeEntries.map(async ([empKey, empData]) => {
+        let totalMs = 0;
+        // Loop through each date in the range – use const for current date
+        const current = new Date(start);
+        while (current <= end) {
+          const dateStr = current.toISOString().split('T')[0];
+          const totalRef = ref(database, `idleLogs/${empKey}/${dateStr}/totalIdleMs`);
+          const snap = await get(totalRef);
+          totalMs += (snap.val() as number) || 0;
+          current.setDate(current.getDate() + 1);
+        }
         return {
           employeeId: empKey,
           employeeName: empData.name || empKey,
-          totalIdleMs,
+          totalIdleMs: totalMs,
         };
       });
 
-      const results = await Promise.all(idlePromises);
-      const completed = results.filter(r => r.totalIdleMs > 0);
-      
-      // Merge with live idle for today
-      const today = new Date().toISOString().split('T')[0];
-      const merged: IdleSummary[] = [...completed];
-      if (selectedDate === today) {
+      let results = await Promise.all(idlePromises);
+      results = results.filter(r => r.totalIdleMs > 0);
+
+      // Merge live idle for today if range includes today
+      const todayStr = new Date().toISOString().split('T')[0];
+      const includesToday = startStr <= todayStr && todayStr <= endStr;
+      if (includesToday) {
         for (const live of liveIdleUsers) {
-          const existing = merged.find(m => m.employeeId === live.employeeId);
+          const existing = results.find(r => r.employeeId === live.employeeId);
           if (existing) {
             existing.totalIdleMs += live.totalIdleMs;
             existing.isLive = true;
-            existing.liveStartTime = live.liveStartTime;
           } else {
-            merged.push(live);
+            results.push({ ...live, isLive: true });
           }
         }
       }
 
-      merged.sort((a, b) => b.totalIdleMs - a.totalIdleMs);
-      setSummaries(merged);
+      results.sort((a, b) => b.totalIdleMs - a.totalIdleMs);
+      setSummaries(results);
     } catch (err) {
       console.error(err);
       setError('Failed to load idle report');
@@ -121,9 +158,8 @@ export const DailyIdleReport: React.FC = () => {
       setLoading(false);
       isFetchingRef.current = false;
     }
-  }, [user, selectedDate, liveIdleUsers]);
+  }, [user, rangeType, customStartDate, customEndDate, liveIdleUsers]);
 
-  // Re-fetch when date or live idle users change (debounced a bit? not needed)
   useEffect(() => {
     fetchReport();
   }, [fetchReport]);
@@ -149,12 +185,11 @@ export const DailyIdleReport: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `idle_report_${selectedDate}.csv`;
+    a.download = `idle_report_${rangeType}_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
-  // Memoized total idle minutes for display
   const totalIdleMinutes = useMemo(() => {
     return summaries.reduce((sum, s) => sum + s.totalIdleMs, 0);
   }, [summaries]);
@@ -164,18 +199,39 @@ export const DailyIdleReport: React.FC = () => {
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
           <Clock className="h-5 w-5 text-yellow-600" />
-          Daily Idle Time Report
+          Idle Time Report
         </CardTitle>
       </CardHeader>
       <CardContent className="p-4 sm:p-6 pt-0">
-        {/* Controls */}
+        {/* Range selector */}
         <div className="flex flex-wrap gap-3 mb-6">
-          <input
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-            className="border px-3 py-2 rounded-md text-sm flex-1 min-w-[140px]"
-          />
+          <select
+            value={rangeType}
+            onChange={(e) => setRangeType(e.target.value as DateRangeType)}
+            className="border px-3 py-2 rounded-md text-sm"
+          >
+            <option value="today">Today</option>
+            <option value="week">This Week (Sun–Sat)</option>
+            <option value="month">This Month</option>
+            <option value="custom">Custom Range</option>
+          </select>
+          {rangeType === 'custom' && (
+            <>
+              <input
+                type="date"
+                value={customStartDate}
+                onChange={(e) => setCustomStartDate(e.target.value)}
+                className="border px-3 py-2 rounded-md text-sm"
+              />
+              <span className="self-center">—</span>
+              <input
+                type="date"
+                value={customEndDate}
+                onChange={(e) => setCustomEndDate(e.target.value)}
+                className="border px-3 py-2 rounded-md text-sm"
+              />
+            </>
+          )}
           <Button onClick={fetchReport} variant="outline" size="sm" disabled={loading}>
             <RefreshCw className={`h-4 w-4 mr-1 ${loading ? 'animate-spin' : ''}`} />
             Refresh
@@ -188,14 +244,8 @@ export const DailyIdleReport: React.FC = () => {
           )}
         </div>
 
-        {/* Error */}
-        {error && (
-          <div className="bg-red-50 text-red-600 p-3 rounded-md text-sm mb-4">
-            {error}
-          </div>
-        )}
+        {error && <div className="bg-red-50 text-red-600 p-3 rounded-md text-sm mb-4">{error}</div>}
 
-        {/* Loading skeleton */}
         {loading && (
           <div className="space-y-3">
             {[1, 2, 3].map(i => (
@@ -207,15 +257,13 @@ export const DailyIdleReport: React.FC = () => {
           </div>
         )}
 
-        {/* No data */}
         {!loading && summaries.length === 0 && !error && (
           <div className="text-center py-10 text-gray-500">
             <Clock className="h-10 w-10 mx-auto mb-2 opacity-30" />
-            <p>No idle time recorded for {selectedDate}</p>
+            <p>No idle time recorded for the selected period</p>
           </div>
         )}
 
-        {/* Summary list - mobile friendly */}
         {!loading && summaries.length > 0 && (
           <>
             <div className="mb-4 text-right text-sm text-gray-500">

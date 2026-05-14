@@ -263,13 +263,14 @@ const AttendanceManagement: React.FC = () => {
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Break</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Work Mode</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Idle (min)</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Selfie In</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Selfie Out</th>
                   <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                <Suspense fallback={<tr><td colSpan={11} className="text-center py-4">Loading...</td></tr>}>
+                <Suspense fallback={<tr><td colSpan={12} className="text-center py-4">Loading...</td></tr>}>
                   {displayedRecords.map((record) => (
                     <AttendanceTableRow
                       key={record.id}

@@ -17,7 +17,7 @@ interface ActivityData {
 }
 
 interface IdleEmployee {
-  id: string;               // = firebaseUid – used for activity lookup
+  id: string;
   employeeKey: string;
   name: string;
   email: string;
@@ -28,6 +28,7 @@ interface IdleEmployee {
   idleStartTime: number | null;
   lastActive: number;
   totalIdleMsToday: number;
+  ongoingIdleMs?: number;     // ✅ current idle duration (only when isIdle = true)
   adminId: string;
 }
 
@@ -114,7 +115,8 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
       if (emp.isIdle && emp.idleStartTime) {
         currentIdleMs = Math.max(0, currentTime - emp.idleStartTime);
       }
-      const totalIdleMinutes = Math.floor(emp.totalIdleMsToday / 60000);
+      const totalDisplayMs = emp.totalIdleMsToday + (emp.ongoingIdleMs || 0);
+      const totalIdleMinutes = Math.floor(totalDisplayMs / 60000);
       const status = emp.isOnBreak ? 'break' : (emp.isIdle ? 'idle' : 'active');
       const alert = totalIdleMinutes > 45 ? 'High Idle' : '';
       return [
@@ -122,7 +124,7 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
         emp.department,
         status,
         formatIdleDuration(currentIdleMs),
-        formatIdleDuration(emp.totalIdleMsToday),
+        formatIdleDuration(totalDisplayMs),
         alert,
       ];
     });
@@ -137,7 +139,7 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
     toast.success('Report downloaded');
   };
 
-  // Load employees – use empKey as fallback firebaseUid
+  // Load employees (basic info, no attendance status yet)
   useEffect(() => {
     if (!user?.id) {
       setLoading(false);
@@ -166,7 +168,6 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
         if (!employeesNode || typeof employeesNode !== 'object') continue;
         for (const [empKey, empData] of Object.entries(employeesNode)) {
           const profile = empData as RawEmployeeData;
-          // ✅ FIX: Use empKey as firebaseUid if no nested field exists
           const firebaseUid = typeof profile.firebaseUid === 'string' ? profile.firebaseUid : empKey;
           if (!firebaseUid) continue;
 
@@ -210,7 +211,7 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
     loadEmployees();
   }, [user?.id, refreshKey, isManager, effectiveDepartment]);
 
-  // Real-time attendance listeners (unchanged)
+  // Real‑time attendance listeners (punch status)
   useEffect(() => {
     attendanceUnsubsRef.current.forEach(unsub => unsub());
     attendanceUnsubsRef.current = [];
@@ -236,7 +237,6 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
                 rec.punchOut !== null &&
                 rec.punchOut !== '';
               isPunchedIn = hasPunchIn && !isPunchedOut;
-
               if (rec.breaks) {
                 isOnBreak = Object.values(rec.breaks).some(
                   (brk) => brk.breakIn && !brk.breakOut
@@ -264,21 +264,27 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
     };
   }, [employees.map(e => e.id).join(',')]);
 
-  // Real-time activity listener (unchanged)
+  // Real‑time activity listener (idle status) – adds ongoing idle duration
   useEffect(() => {
     const activityRef = ref(database, 'activity');
     const unsubscribe = onValue(activityRef, (snap) => {
       const activity = snap.val() as Record<string, ActivityData> | null;
       if (!activity) return;
+      const now = Date.now();
       setEmployees(prev =>
         prev.map(emp => {
           const act = activity[emp.id];
           const isIdleNow = act?.isIdle === true;
+          let ongoingMs = 0;
+          if (isIdleNow && act?.idleStartTime) {
+            ongoingMs = Math.max(0, now - act.idleStartTime);
+          }
           return {
             ...emp,
             isIdle: isIdleNow,
             idleStartTime: isIdleNow ? (act?.idleStartTime ?? null) : null,
             lastActive: act?.lastActive ?? emp.lastActive,
+            ongoingIdleMs: ongoingMs,
           };
         })
       );
@@ -289,9 +295,9 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
   // Update stats (include idle employees)
   useEffect(() => {
     const activeOrIdle = employees.filter(e => e.isPunchedIn || e.isIdle);
-    const totalIdleMinutes = activeOrIdle.reduce((sum, e) => sum + (e.totalIdleMsToday / 60000), 0);
+    const totalIdleMinutes = activeOrIdle.reduce((sum, e) => sum + ((e.totalIdleMsToday + (e.ongoingIdleMs || 0)) / 60000), 0);
     const avgIdleMinutes = activeOrIdle.length ? Math.round(totalIdleMinutes / activeOrIdle.length) : 0;
-    const highIdleCount = activeOrIdle.filter(e => e.totalIdleMsToday > 45 * 60000).length;
+    const highIdleCount = activeOrIdle.filter(e => (e.totalIdleMsToday + (e.ongoingIdleMs || 0)) > 45 * 60000).length;
     const onBreakCount = activeOrIdle.filter(e => e.isOnBreak).length;
     setStats({ avgIdleMinutes, highIdleCount, onBreakCount });
   }, [employees]);
@@ -376,7 +382,8 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
                 if (emp.isIdle === true && typeof emp.idleStartTime === 'number') {
                   currentIdleMs = Math.max(0, currentTime - emp.idleStartTime);
                 }
-                const totalIdleMinutes = Math.floor(emp.totalIdleMsToday / 60000);
+                const totalDisplayMs = emp.totalIdleMsToday + (emp.ongoingIdleMs || 0);
+                const totalIdleMinutes = Math.floor(totalDisplayMs / 60000);
                 const isHighIdle = totalIdleMinutes > 45;
                 const status = emp.isOnBreak ? 'break' : (emp.isIdle ? 'idle' : 'active');
                 return (
@@ -398,7 +405,7 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
                       </Badge>
                     </td>
                     <td className="px-4 py-3 font-mono text-sm">{formatIdleDuration(currentIdleMs)}</td>
-                    <td className="px-4 py-3 font-mono text-sm">{formatIdleDuration(emp.totalIdleMsToday)}</td>
+                    <td className="px-4 py-3 font-mono text-sm">{formatIdleDuration(totalDisplayMs)}</td>
                     <td className="px-4 py-3">
                       {isHighIdle && (
                         <Badge variant="outline" className="bg-red-50 text-red-700 border-red-200">
