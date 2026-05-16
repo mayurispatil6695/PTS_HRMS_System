@@ -268,7 +268,6 @@ const EmployeeDashboardHome = () => {
   const navigate = useNavigate();
   const lastNotifiedStatusRef = useRef<string | null>(null);
   const idleNotifiedRef = useRef(false);
-  // Throttling refs for browser notifications
   const lastAutoPunchOutNotif = useRef<number>(0);
   const lastReminderNotif = useRef<number>(0);
   const lastStatusNotif = useRef<Record<string, number>>({});
@@ -771,13 +770,13 @@ const EmployeeDashboardHome = () => {
     await update(recordRef, updates);
     toast(`Auto punched out at ${punchOutTime}`, { icon: '🕒' });
     const notifRef = push(ref(database, `notifications/${user.id}`));
-await set(notifRef, {
-  title: 'Auto Punch‑out',
-  body: `You were automatically punched out at ${punchOutTime}.`,
-  type: 'auto_punchout',
-  read: false,
-  createdAt: Date.now(),
-});
+    await set(notifRef, {
+      title: 'Auto Punch‑out',
+      body: `You were automatically punched out at ${punchOutTime}.`,
+      type: 'auto_punchout',
+      read: false,
+      createdAt: Date.now(),
+    });
     const adminNotifRef = push(ref(database, `notifications/${user.adminUid}`));
     await set(adminNotifRef, {
       title: 'Auto Punch‑out',
@@ -788,70 +787,68 @@ await set(notifRef, {
     });
   };
 
+  // Safety net: auto punch-out at midnight (only if still punched in)
   useEffect(() => {
     const interval = setInterval(async () => {
       if (!todayAttendance || todayAttendance.punchOut) return;
       const now = new Date();
-      if (now.getHours() >= 20) await performAutoPunchOut();
+      if (now.getHours() === 23 && now.getMinutes() >= 59) {
+        await performAutoPunchOut();
+      }
     }, 60 * 60 * 1000);
     return () => clearInterval(interval);
   }, [todayAttendance, user?.id]);
 
-  // Reminder with throttling
-  
-useEffect(() => {
-  const interval = setInterval(async () => {
-    if (!todayAttendance || todayAttendance.punchOut) return;
-    const now = new Date();
-    const hour = now.getHours();
-    if (hour >= 18 && hour < 20) {
-      const nowTime = now.getTime();
-      if (nowTime - lastReminderNotif.current > 3600000) { // 1 hour cooldown
-        lastReminderNotif.current = nowTime;
-        // Send in‑app notification via Firebase
-        const notifRef = push(ref(database, `notifications/${user?.id}`));
-        await set(notifRef, {
-          title: 'Punch‑out Reminder',
-          body: 'You have not punched out yet. Please do so before 8:00 PM.',
-          type: 'punchout_reminder',
-          read: false,
-          createdAt: Date.now(),
-        });
-        toast('You are still punched in. Please punch out before 8:00 PM.', { icon: '⚠️', duration: 10000 });
+  // Reminder between 6 PM and 8 PM
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      if (!todayAttendance || todayAttendance.punchOut) return;
+      const now = new Date();
+      const hour = now.getHours();
+      if (hour >= 18 && hour < 20) {
+        const nowTime = now.getTime();
+        if (nowTime - lastReminderNotif.current > 3600000) {
+          lastReminderNotif.current = nowTime;
+          const notifRef = push(ref(database, `notifications/${user?.id}`));
+          await set(notifRef, {
+            title: 'Punch‑out Reminder',
+            body: 'You have not punched out yet. Please do so before 8:00 PM.',
+            type: 'punchout_reminder',
+            read: false,
+            createdAt: Date.now(),
+          });
+          toast('You are still punched in. Please punch out before 8:00 PM.', { icon: '⚠️', duration: 10000 });
+        }
       }
-    }
-  }, 15 * 60 * 1000);
-  return () => clearInterval(interval);
-}, [todayAttendance, user?.id]);
+    }, 15 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [todayAttendance, user?.id]);
     
-  // Late/Half-day status notification (throttled)
-  // Late/Half-day status notification (throttled)
-useEffect(() => {
-  if (!todayAttendance) return;
-  const curStatus = todayAttendance.status;
-  const prevStatus = lastNotifiedStatusRef.current;
-  if (curStatus !== prevStatus && (curStatus === 'late' || curStatus === 'half-day')) {
-    const markedBy = curStatus === 'late' ? (todayAttendance.markedLateBy || 'System') : (todayAttendance.markedHalfDayBy || 'System');
-    const title = `Attendance Status: ${curStatus === 'late' ? 'Late' : 'Half Day'}`;
-    const body = `You have been marked as ${curStatus === 'late' ? 'Late' : 'Half Day'} by ${markedBy}.`;
-    const key = `${todayAttendance.id}-${curStatus}`;
-    const now = Date.now();
-    if (!lastStatusNotif.current[key] || now - lastStatusNotif.current[key] > 60000) {
-      lastStatusNotif.current[key] = now;
-      // Send Firebase notification instead of browser alert
-      const notifRef = push(ref(database, `notifications/${user?.id}`));
-      set(notifRef, {
-        title,
-        body,
-        type: 'attendance_status',
-        read: false,
-        createdAt: now,
-      });
+  // Late/Half-day status notification
+  useEffect(() => {
+    if (!todayAttendance) return;
+    const curStatus = todayAttendance.status;
+    const prevStatus = lastNotifiedStatusRef.current;
+    if (curStatus !== prevStatus && (curStatus === 'late' || curStatus === 'half-day')) {
+      const markedBy = curStatus === 'late' ? (todayAttendance.markedLateBy || 'System') : (todayAttendance.markedHalfDayBy || 'System');
+      const title = `Attendance Status: ${curStatus === 'late' ? 'Late' : 'Half Day'}`;
+      const body = `You have been marked as ${curStatus === 'late' ? 'Late' : 'Half Day'} by ${markedBy}.`;
+      const key = `${todayAttendance.id}-${curStatus}`;
+      const now = Date.now();
+      if (!lastStatusNotif.current[key] || now - lastStatusNotif.current[key] > 60000) {
+        lastStatusNotif.current[key] = now;
+        const notifRef = push(ref(database, `notifications/${user?.id}`));
+        set(notifRef, {
+          title,
+          body,
+          type: 'attendance_status',
+          read: false,
+          createdAt: now,
+        });
+      }
+      lastNotifiedStatusRef.current = curStatus;
     }
-    lastNotifiedStatusRef.current = curStatus;
-  }
-}, [todayAttendance, user?.id]);
-    
+  }, [todayAttendance, user?.id]);
 
   useEffect(() => {
     let unsub: (() => void) | undefined;
@@ -863,7 +860,7 @@ useEffect(() => {
     return () => { if (unsub) unsub(); };
   }, [user]);
 
-  // Idle detection (already throttled by hook)
+  // Idle detection
   const { isIdle, forceEndIdle } = useIdleDetection({
     idleTimeout: 120000,
     userId: user?.id,
@@ -979,52 +976,75 @@ useEffect(() => {
     toast.success('Auto punched out');
   };
 
+  // ==================== NEW: Auto punch-out on browser close after 6:30 PM ====================
   useEffect(() => {
-    const beforeUnload = async (e: BeforeUnloadEvent) => {
+    const handleBeforeUnload = async (e: BeforeUnloadEvent) => {
       if (!todayAttendance?.punchOut && todayAttendance) {
-        const hour = new Date().getHours();
-        const min = new Date().getMinutes();
-        if (hour > 18 || (hour === 18 && min >= 30)) {
+        const now = new Date();
+        const hour = now.getHours();
+        const minute = now.getMinutes();
+        // After 6:30 PM (18:30)
+        if (hour > 18 || (hour === 18 && minute >= 30)) {
           e.preventDefault();
-          e.returnValue = 'Auto punch‑out...';
+          e.returnValue = 'Auto punch‑out in progress...';
           await autoPunchOut();
+          // Store pending punch-out in localStorage as a backup
+          localStorage.setItem('pending_punch_out', JSON.stringify({
+            employeeId: user?.id,
+            adminId: user?.adminUid,
+            date: todayAttendance.date,
+            recordId: todayAttendance.id,
+            timestamp: Date.now(),
+          }));
         }
       }
     };
-    window.addEventListener('beforeunload', beforeUnload);
-    return () => window.removeEventListener('beforeunload', beforeUnload);
-  }, [todayAttendance]);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [todayAttendance, user?.id, autoPunchOut]);
+
+  // ==================== NEW: Recover pending punch-out on page load ====================
+  useEffect(() => {
+    const pending = localStorage.getItem('pending_punch_out');
+    if (pending && todayAttendance && !todayAttendance.punchOut) {
+      const data = JSON.parse(pending);
+      if (data.date === todayAttendance.date) {
+        autoPunchOut().then(() => localStorage.removeItem('pending_punch_out'));
+      } else {
+        localStorage.removeItem('pending_punch_out');
+      }
+    }
+  }, [todayAttendance, autoPunchOut]);
+
+  // ==================== END OF NEW SECTION ====================
 
   const handlePunchIn = () => { setPendingPunchType('in'); setShowSelfieCapture(true); };
   const handlePunchOut = () => { setPendingPunchType('out'); setShowSelfieCapture(true); };
   const handleMarkAttendance = () => { setPendingPunchType(todayAttendance && !todayAttendance.punchOut ? 'out' : 'in'); setShowSelfieCapture(true); };
   
   const handleBreakIn = async () => {
-  if (!user?.id || !user?.adminUid || !todayAttendance?.id) { toast.error("Cannot start break"); return; }
-  if (currentBreakId) { toast.error("Already in break"); return; }
-
-  // ✅ Force end any active idle session before break starts
-  forceEndIdle();
-
-  setBreakLoading(true);
-  try {
-    const now = new Date();
-    const breakInTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    const breakId = `break_${now.getTime()}`;
-    await update(ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`), {
-      [`breaks/${breakId}/breakIn`]: breakInTime,
-      [`breaks/${breakId}/timestamp`]: now.getTime()
-    });
-    await startBreak();
-    setCurrentBreakId(breakId);
-    toast.success("Break started");
-  } catch (err) {
-    console.error(err);
-    toast.error("Failed to start break");
-  } finally {
-    setBreakLoading(false);
-  }
-};
+    if (!user?.id || !user?.adminUid || !todayAttendance?.id) { toast.error("Cannot start break"); return; }
+    if (currentBreakId) { toast.error("Already in break"); return; }
+    forceEndIdle();
+    setBreakLoading(true);
+    try {
+      const now = new Date();
+      const breakInTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const breakId = `break_${now.getTime()}`;
+      await update(ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`), {
+        [`breaks/${breakId}/breakIn`]: breakInTime,
+        [`breaks/${breakId}/timestamp`]: now.getTime()
+      });
+      await startBreak();
+      setCurrentBreakId(breakId);
+      toast.success("Break started");
+    } catch (err) {
+      console.error(err);
+      toast.error("Failed to start break");
+    } finally {
+      setBreakLoading(false);
+    }
+  };
 
   const calculateBreakDuration = (inTime: string, outTime: string): string => {
     const inMin = convertTimeToMinutes(inTime);
@@ -1035,6 +1055,7 @@ useEffect(() => {
     const m = dur % 60;
     return `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
   };
+  
   const handleBreakOut = async () => {
     if (!user?.id || !user?.adminUid || !todayAttendance?.id || !currentBreakId) { toast.error("Cannot end break"); return; }
     setBreakLoading(true);
@@ -1044,7 +1065,11 @@ useEffect(() => {
       const inTime = todayAttendance.breaks?.[currentBreakId]?.breakIn;
       if (!inTime) throw new Error("No break in time");
       const duration = calculateBreakDuration(inTime, outTime);
-      await update(ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`), { [`breaks/${currentBreakId}/breakOut`]: outTime, [`breaks/${currentBreakId}/duration`]: duration, [`breaks/${currentBreakId}/timestamp`]: now.getTime() });
+      await update(ref(database, `users/${user.adminUid}/employees/${user.id}/punching/${todayAttendance.id}`), { 
+        [`breaks/${currentBreakId}/breakOut`]: outTime,
+        [`breaks/${currentBreakId}/duration`]: duration,
+        [`breaks/${currentBreakId}/timestamp`]: now.getTime()
+      });
       await endBreak();
       setCurrentBreakId(null);
       toast.success("Break ended");
@@ -1100,7 +1125,6 @@ useEffect(() => {
 
   return (
     <div className="space-y-6">
-      {/* JSX unchanged – same as original */}
       <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="bg-gradient-to-r from-blue-600 to-purple-600 text-white p-6 rounded-lg">
         <div className="flex justify-between">
           <div>
@@ -1116,7 +1140,7 @@ useEffect(() => {
         </div>
       </motion.div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-6">
         <motion.div variants={cardVariants} initial="hidden" animate="visible" transition={{ delay: 0.1 }}>
           <Card><CardHeader className="flex flex-row justify-between pb-2"><CardTitle className="text-sm font-medium">Attendance Rate</CardTitle><Clock className="h-4 w-4 text-blue-600" /></CardHeader><CardContent><div className="text-2xl font-bold">{stats.attendanceRate}%</div><p className="text-xs text-muted-foreground">{stats.presentDays} of {stats.totalDays} days</p></CardContent></Card>
         </motion.div>
