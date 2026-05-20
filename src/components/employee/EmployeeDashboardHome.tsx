@@ -977,44 +977,45 @@ const EmployeeDashboardHome = () => {
   };
 
   // ==================== NEW: Auto punch-out on browser close after 6:30 PM ====================
-  useEffect(() => {
-    const handleBeforeUnload = async (e: BeforeUnloadEvent) => {
-      if (!todayAttendance?.punchOut && todayAttendance) {
-        const now = new Date();
-        const hour = now.getHours();
-        const minute = now.getMinutes();
-        // After 6:30 PM (18:30)
-        if (hour > 18 || (hour === 18 && minute >= 30)) {
-          e.preventDefault();
-          e.returnValue = 'Auto punch‑out in progress...';
-          await autoPunchOut();
-          // Store pending punch-out in localStorage as a backup
-          localStorage.setItem('pending_punch_out', JSON.stringify({
-            employeeId: user?.id,
-            adminId: user?.adminUid,
-            date: todayAttendance.date,
-            recordId: todayAttendance.id,
-            timestamp: Date.now(),
-          }));
-        }
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
-    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [todayAttendance, user?.id, autoPunchOut]);
-
-  // ==================== NEW: Recover pending punch-out on page load ====================
-  useEffect(() => {
-    const pending = localStorage.getItem('pending_punch_out');
-    if (pending && todayAttendance && !todayAttendance.punchOut) {
-      const data = JSON.parse(pending);
-      if (data.date === todayAttendance.date) {
-        autoPunchOut().then(() => localStorage.removeItem('pending_punch_out'));
-      } else {
-        localStorage.removeItem('pending_punch_out');
+  // ==================== AUTO PUNCH-OUT ON BROWSER CLOSE AFTER 6:30 PM ====================
+useEffect(() => {
+  const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+    if (!todayAttendance?.punchOut && todayAttendance) {
+      const now = new Date();
+      const hour = now.getHours();
+      const minute = now.getMinutes();
+      if (hour > 18 || (hour === 18 && minute >= 30)) {
+        // Store pending punch-out synchronously
+        localStorage.setItem('pending_punch_out', JSON.stringify({
+          employeeId: user?.id,
+          adminId: user?.adminUid,
+          date: todayAttendance.date,
+          recordId: todayAttendance.id,
+          timestamp: Date.now(),
+        }));
+        e.preventDefault();
+        // Return a string to show confirmation message
+        return 'You are still punched in. Auto punch‑out will be attempted on next login.';
       }
     }
-  }, [todayAttendance, autoPunchOut]);
+  };
+  window.addEventListener('beforeunload', handleBeforeUnload);
+  return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+}, [todayAttendance, user?.id, user?.adminUid]);
+
+// ==================== RECOVER PENDING PUNCH-OUT ON PAGE LOAD ====================
+useEffect(() => {
+  const pending = localStorage.getItem('pending_punch_out');
+  if (pending && todayAttendance && !todayAttendance.punchOut) {
+    const data = JSON.parse(pending);
+    if (data.date === todayAttendance.date) {
+      autoPunchOut().then(() => localStorage.removeItem('pending_punch_out'));
+    } else {
+      localStorage.removeItem('pending_punch_out');
+    }
+  }
+}, [todayAttendance, autoPunchOut]);
+// ==================== END OF AUTO PUNCH-OUT SECTION ====================
 
   // ==================== END OF NEW SECTION ====================
 

@@ -79,15 +79,24 @@ const AdminDashboardHome = () => {
     }
   }, []);
 
-  // ========== Idle Users Monitoring ==========
+  // ========== Idle Users Monitoring (FILTERED by punched-in today) ==========
   useEffect(() => {
+    // Build set of employee IDs that are punched in today (open record)
+    const todayStr = new Date().toISOString().split('T')[0];
+    const punchedInToday = new Set<string>(
+      attendanceRecords
+        .filter(rec => rec.date.split('T')[0] === todayStr && rec.punchOut === null)
+        .map(rec => rec.employeeId)
+    );
+
     const activityRef = ref(database, 'activity');
     const unsubscribe = onValue(activityRef, (snapshot: DataSnapshot) => {
       const data = snapshot.val() as Record<string, ActivityData> | null;
       const newIdleUsers: IdleUser[] = [];
       if (data) {
         Object.entries(data).forEach(([userId, userData]) => {
-          if (userData.status === 'idle' || userData.isIdle === true) {
+          // Only consider idle if the user is punched in today
+          if (punchedInToday.has(userId) && (userData.status === 'idle' || userData.isIdle === true)) {
             newIdleUsers.push({
               id: userId,
               idleStartTime: userData.idleStartTime || userData.timestamp || Date.now(),
@@ -125,7 +134,7 @@ const AdminDashboardHome = () => {
       }
     });
     return () => unsubscribe();
-  }, [employees, notificationPermission, notifiedIdleIds]);
+  }, [employees, attendanceRecords, notificationPermission, notifiedIdleIds]);
 
   // Clear idle alerts (button handler)
   const clearIdleAlerts = () => {

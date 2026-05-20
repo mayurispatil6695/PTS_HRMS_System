@@ -28,7 +28,7 @@ interface IdleEmployee {
   idleStartTime: number | null;
   lastActive: number;
   totalIdleMsToday: number;
-  ongoingIdleMs?: number;     // ✅ current idle duration (only when isIdle = true)
+  ongoingIdleMs?: number;
   adminId: string;
 }
 
@@ -104,13 +104,13 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
   const handleRefresh = () => setRefreshKey(prev => prev + 1);
 
   const exportDailyReport = () => {
-    const activeEmployees = employees.filter(e => e.isPunchedIn || e.isIdle);
-    if (activeEmployees.length === 0) {
-      toast.error('No active or idle employees to export');
+    const punchedIn = employees.filter(e => e.isPunchedIn);
+    if (punchedIn.length === 0) {
+      toast.error('No punched‑in employees to export');
       return;
     }
     const headers = ['Employee', 'Department', 'Status', 'Current Idle', 'Total Idle Today', 'Alert'];
-    const rows = activeEmployees.map(emp => {
+    const rows = punchedIn.map(emp => {
       let currentIdleMs = 0;
       if (emp.isIdle && emp.idleStartTime) {
         currentIdleMs = Math.max(0, currentTime - emp.idleStartTime);
@@ -292,13 +292,13 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
     return () => off(activityRef);
   }, []);
 
-  // Update stats (include idle employees)
+  // Update stats – only for punched‑in employees
   useEffect(() => {
-    const activeOrIdle = employees.filter(e => e.isPunchedIn || e.isIdle);
-    const totalIdleMinutes = activeOrIdle.reduce((sum, e) => sum + ((e.totalIdleMsToday + (e.ongoingIdleMs || 0)) / 60000), 0);
-    const avgIdleMinutes = activeOrIdle.length ? Math.round(totalIdleMinutes / activeOrIdle.length) : 0;
-    const highIdleCount = activeOrIdle.filter(e => (e.totalIdleMsToday + (e.ongoingIdleMs || 0)) > 45 * 60000).length;
-    const onBreakCount = activeOrIdle.filter(e => e.isOnBreak).length;
+    const punchedIn = employees.filter(e => e.isPunchedIn);
+    const totalIdleMinutes = punchedIn.reduce((sum, e) => sum + ((e.totalIdleMsToday + (e.ongoingIdleMs || 0)) / 60000), 0);
+    const avgIdleMinutes = punchedIn.length ? Math.round(totalIdleMinutes / punchedIn.length) : 0;
+    const highIdleCount = punchedIn.filter(e => (e.totalIdleMsToday + (e.ongoingIdleMs || 0)) > 45 * 60000).length;
+    const onBreakCount = punchedIn.filter(e => e.isOnBreak).length;
     setStats({ avgIdleMinutes, highIdleCount, onBreakCount });
   }, [employees]);
 
@@ -310,7 +310,8 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
     );
   }
 
-  const displayedEmployees = employees.filter(e => e.isPunchedIn || e.isIdle);
+  // ✅ FIX: Only show employees who are currently punched in (active work session)
+  const displayedEmployees = employees.filter(e => e.isPunchedIn);
 
   return (
     <div className="space-y-6">
@@ -320,7 +321,7 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
           <p className="text-sm text-muted-foreground mt-0.5">
             {isManager && effectiveDepartment
               ? `Real‑time idle monitoring for ${effectiveDepartment} department`
-              : 'Real‑time idle monitoring for employees currently punched in or idle'}
+              : 'Real‑time idle monitoring for employees currently punched in'}
           </p>
         </div>
         <div className="flex gap-2">
@@ -434,7 +435,7 @@ const IdleDetectionPage: React.FC<{ role?: string; department?: string }> = ({
           </table>
         </div>
         {displayedEmployees.length === 0 && (
-          <div className="text-center py-8 text-gray-500">No active or idle employees at the moment</div>
+          <div className="text-center py-8 text-gray-500">No employees currently punched in</div>
         )}
       </div>
     </div>

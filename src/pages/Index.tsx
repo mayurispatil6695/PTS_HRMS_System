@@ -8,6 +8,9 @@ import ClientDashboard from '../components/client/ClientDashboard';
 import EnhancedLoginPage from '../components/auth/EnhancedLoginPage';  // ✅ use EnhancedLoginPage
 import { useAuth } from '../hooks/useAuth';
 import { useEffect } from 'react';
+import EmployeeDetails from '../components/admin/EmployeeDetails';
+
+// Inside your Router
 
 const Index = () => {
   const { user, loading } = useAuth();
@@ -50,6 +53,7 @@ const Index = () => {
       <Route path="/client/*" element={user?.role === 'client' ? <ClientDashboard /> : <Navigate to="/login" />} />
       <Route path="/employee/*" element={user?.role === 'employee' ? <EmployeeDashboard /> : <Navigate to="/login" />} />
       <Route path="/" element={<Navigate to={getDashboardPath(user?.role)} />} />
+      <Route path="/admin/employees/:employeeId" element={<EmployeeDetails />} />
     </Routes>
   );
 };

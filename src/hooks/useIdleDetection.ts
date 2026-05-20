@@ -334,6 +334,14 @@ export const useIdleDetection = (options: IdleDetectionOptions) => {
     if (fallbackTimerRef.current) clearTimeout(fallbackTimerRef.current);
     if (isIdleRef.current) forceEndIdle();
   }, [forceEndIdle]);
-
+// Cleanup on unmount: set activity to active
+useEffect(() => {
+  return () => {
+    if (userId) {
+      // Force activity node to active and idleStartTime null
+      updateActivityNode(false).catch(console.error);
+    }
+  };
+}, [userId, updateActivityNode]);
   return { isIdle, resetIdleTimer, forceEndIdle };
 };
