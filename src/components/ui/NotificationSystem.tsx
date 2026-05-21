@@ -191,9 +191,10 @@ const NotificationSystem = () => {
           >
             <Card className="shadow-lg border-border">
               <CardContent className="p-0">
-                <div className="flex items-center justify-between p-4 border-b border-border">
+                {/* Fixed header with flex-wrap to prevent button overflow */}
+                <div className="flex items-center justify-between gap-2 p-4 border-b border-border flex-wrap">
                   <h3 className="font-semibold text-foreground">Notifications</h3>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 flex-wrap">
                     {unreadCount > 0 && (
                       <Button variant="ghost" size="sm" onClick={markAllAsRead}>
                         <Check className="h-3 w-3 mr-1" /> Mark all read
